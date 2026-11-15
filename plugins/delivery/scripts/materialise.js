@@ -95,6 +95,66 @@ function isMaterialised(b, initiative) {
   return m.materialised_by === 'delivery' && String(m.roadmap_ref || '').startsWith(`${initiative}/`);
 }
 
+// dha: a story's bead is <prefix>-<story id>, but work tracked before the roadmap existed has a bead of its
+// own, whose metadata names the story. Created again under the planned id, shipped work doubled. A bead
+// names the story when its metadata has roadmap_ref "<initiative>/<story id>" (the form such beads were
+// filed with), story equal to the story id with a roadmap_ref in this initiative (what materialise writes,
+// roadmap_ref then being "<initiative>/roadmap.md@<sha> phase <n>", so a renamed story file still maps),
+// or the story's file in story_file. Such a bead is the story's bead: the plan takes its id, in the beads
+// and in every dependency. One that is closed stays closed (applyPlan skips it); more than one naming a
+// story is a warning, and an open one wins.
+function namesStory(b, initiative, planned) {
+  const m = (b && b.metadata) || {};
+  const ref = String(m.roadmap_ref || '');
+  const story = planned.metadata && planned.metadata.story;
+  if (story && ref === `${initiative}/${story}`) return true;
+  if (story && m.story === story && ref.startsWith(`${initiative}/`)) return true;
+  const file = planned.metadata && planned.metadata.story_file;
+  return Boolean(file && m.story_file && path.basename(String(m.story_file)) === file);
+}
+// rv-205: a mapped bead is someone else's record (a bug, a builder's bead): it gets the roadmap metadata
+// only. Its title, parent, type and labels stay its own, so a bug is never moved under a phase epic or
+// renamed after a story. It is not marked materialised_by either, so materialise never strips a
+// dependency someone else gave it.
+function asMapped(planned, existing, initiative) {
+  const { materialised_by: _m, ...rest } = planned.metadata || {};
+  // marked as mapped for this initiative (rv-205), so a dependency toward it stays removable after it stops being mapped
+  const metadata = { ...rest, materialise_mapped: initiative };
+  // its own labels, with the managed size and wave labels the story gives (rv-205: a size-L story is costed
+  // as L and gets the stronger model); a stale size or wave label of its own goes, as on any story bead
+  const MANAGED = /^(size-[SML]|wave-\d+)$/;
+  const labels = [...(existing.labels || []).filter((l) => !MANAGED.test(l)), ...planned.labels.filter((l) => MANAGED.test(l))];
+  return { ...planned, id: existing.id, title: existing.title, parent: existing.parent || null, type: existing.type || existing.issue_type || planned.type,
+    labels, metadata, mappedFrom: planned.id };
+}
+function mapToExisting(plan, beads, initiative) {
+  const byId = new Map(beads.map((b) => [b.id, b]));
+  const alias = new Map();
+  const mapped = [];
+  const warnings = [];
+  for (const p of plan.beads) {
+    if (!p.labels.includes('story')) continue;
+    const named = beads.filter((b) => b.id !== p.id && namesStory(b, initiative, p));
+    // the planned bead exists already: it is the story's bead, and another naming the story is a warning
+    if (byId.has(p.id)) {
+      if (named.length) warnings.push(`story ${p.metadata.story}: ${p.id} is its bead, but ${named.map((b) => b.id).join(', ')} name${named.length > 1 ? '' : 's'} it too`);
+      continue;
+    }
+    if (!named.length) continue;
+    const pick = named.find((b) => b.status !== 'closed') || named[0];
+    if (named.length > 1) warnings.push(`story ${p.metadata.story}: ${named.length} beads name it (${named.map((b) => b.id).join(', ')}); mapped to ${pick.id}`);
+    alias.set(p.id, pick);
+    mapped.push({ story: p.metadata.story, planned: p.id, bead: pick.id, status: pick.status === 'closed' ? 'closed' : 'open' });
+  }
+  if (!alias.size) return { plan, mapped, warnings };
+  const to = (id) => (alias.has(id) ? alias.get(id).id : id);
+  return {
+    plan: { ...plan, beads: plan.beads.map((b) => (alias.has(b.id) ? asMapped(b, alias.get(b.id), initiative) : b)), deps: plan.deps.map((d) => ({ ...d, id: to(d.id), blockedBy: to(d.blockedBy) })) },
+    mapped,
+    warnings,
+  };
+}
+
 function plannedBlockers(plan) {
   const out = new Map();
   for (const d of plan.deps) (out.get(d.id) || out.set(d.id, []).get(d.id)).push(d.blockedBy);
@@ -103,7 +163,7 @@ function plannedBlockers(plan) {
 
 function applyPlan({ plan, bd, dryRun, initiative }) {
   if (!initiative) throw new Error('applyPlan: initiative is required');
-  const result = { created: [], updated: [], depsAdded: [], depsRemoved: [], skippedClosed: [], skippedDeps: [], commands: [] };
+  const result = { created: [], updated: [], depsAdded: [], depsRemoved: [], skippedClosed: [], skippedDeps: [], mapped: [], mapWarnings: [], commands: [] };
   try {
     applyPlanSteps({ plan, bd, dryRun, initiative, result });
   } catch (err) {
@@ -113,8 +173,16 @@ function applyPlan({ plan, bd, dryRun, initiative }) {
   return result;
 }
 
-function applyPlanSteps({ plan, bd, dryRun, initiative, result }) {
-  const known = new Map(bd.list({ all: true }).map((b) => [b.id, b]));
+function applyPlanSteps({ plan: planned0, bd, dryRun, initiative, result }) {
+  const all = bd.list({ all: true });
+  const known = new Map(all.map((b) => [b.id, b]));
+  // a story already tracked by a bead of its own is mapped to it (dha), in the beads and every dependency
+  const { plan, mapped, warnings } = mapToExisting(planned0, all, initiative);
+  for (const m of mapped) result.commands.push(`map ${m.planned} -> ${m.bead}`);
+  result.mapped.push(...mapped);
+  result.mapWarnings.push(...warnings);
+  // the plan as applied, so the reality-check scripts are planned on the beads that hold each story (rv-205)
+  result.plan = plan;
   for (const b of plan.beads) {
     const existing = known.get(b.id);
     if (!existing) {
@@ -136,10 +204,20 @@ function applyPlanSteps({ plan, bd, dryRun, initiative, result }) {
       ...existing.labels.filter((l) => /^(size-[SML]|wave-\d+)$/.test(l) && !b.labels.includes(l)),
     ];
     // a story that no longer names a model: the bead's model override goes too
-    const unsetMetadata = ['model', 'wave'].filter((k) => b.labels.includes('story') && (existing.metadata || {})[k] !== undefined && b.metadata[k] === undefined);
+    const unsetMetadata = ['model', 'wave'].filter((k) => (b.labels.includes('story') || b.mappedFrom) && (existing.metadata || {})[k] !== undefined && b.metadata[k] === undefined);
     if (!missingLabels.length && !staleLabels.length && !metaDrift && !titleChanged && !parentChanged && !unsetMetadata.length) continue;
     result.commands.push(`update ${b.id}`);
-    if (!dryRun) bd.update(b.id, { title: titleChanged ? b.title : undefined, parent: parentChanged ? b.parent : undefined, addLabels: missingLabels, removeLabels: staleLabels, metadata: metaDrift ? b.metadata : undefined, unsetMetadata });
+    // rv-205: --metadata replaces what the bead holds, so the bead's own metadata is copied in first, as
+    // every other writer does; a mapped bead carries merged_pr, deployed_sha, evidence_head and the like
+    const merged = metaDrift ? { ...(existing.metadata || {}), ...b.metadata } : undefined;
+    if (merged) for (const k of unsetMetadata) delete merged[k];
+    if (!dryRun) bd.update(b.id, { title: titleChanged ? b.title : undefined, parent: parentChanged ? b.parent : undefined, addLabels: missingLabels, removeLabels: staleLabels, metadata: merged, unsetMetadata });
+    // later writes in this run (the dependency record below) start from what the bead now holds
+    if (merged || unsetMetadata.length) {
+      const now = { ...(merged || existing.metadata || {}) };
+      for (const k of unsetMetadata) delete now[k];
+      known.set(b.id, { ...existing, metadata: now });
+    }
     result.updated.push(b.id);
   }
   const closed = new Set(result.skippedClosed);
@@ -149,15 +227,20 @@ function applyPlanSteps({ plan, bd, dryRun, initiative, result }) {
   // Re-thread: drop deps between this initiative's materialised beads that the plan no longer has,
   // before adding new ones, so a moved story never leaves a cycle for bd to reject.
   const planned = plannedBlockers(plan);
+  // rv-205: on a mapped bead (someone else's record) only the deps materialise itself added to it may go,
+  // and it keeps the list of those in its metadata; any other dep on it was given by someone else and stays.
+  const own = new Map(plan.beads.filter((b) => b.mappedFrom).map((b) => [b.id, new Set(ownDeps(known.get(b.id)))]));
+  const ownChanged = new Set();
   for (const b of plan.beads) {
     if (created.has(b.id) || closed.has(b.id)) continue;
     const want = planned.get(b.id) || [];
     for (const blocker of [...blockers(b.id)]) {
-      if (want.includes(blocker) || !isMaterialised(known.get(blocker), initiative)) continue;
+      if (want.includes(blocker) || !removableDep(b, blocker, { known, own, initiative })) continue;
       result.commands.push(`dep-remove ${b.id} blocked-by ${blocker}`);
       if (!dryRun) bd.depRemove(b.id, blocker);
       cache.set(b.id, blockers(b.id).filter((x) => x !== blocker));
       result.depsRemoved.push({ id: b.id, blockedBy: blocker });
+      if (own.has(b.id) && own.get(b.id).delete(blocker)) ownChanged.add(b.id);
     }
   }
   for (const d of plan.deps) {
@@ -167,8 +250,32 @@ function applyPlanSteps({ plan, bd, dryRun, initiative, result }) {
     if (!dryRun) bd.depAdd(d.id, d.blockedBy);
     blockers(d.id).push(d.blockedBy);
     result.depsAdded.push(d);
+    if (own.has(d.id)) { own.get(d.id).add(d.blockedBy); ownChanged.add(d.id); }
+  }
+  // the record of which deps on a mapped bead are materialise's own, so the next run removes only those
+  for (const id of ownChanged) {
+    result.commands.push(`record ${id} materialise_deps`);
+    // the bead's metadata as it now stands, with the record changed: --metadata replaces (rv-205)
+    if (!dryRun) bd.update(id, { metadata: { ...((known.get(id) || {}).metadata || {}), materialise_deps: [...own.get(id)].sort() } });
   }
   return result;
+}
+
+// rv-205: the deps materialise added to a mapped bead, as its metadata records them
+function ownDeps(b) {
+  const list = b && b.metadata && b.metadata.materialise_deps;
+  return Array.isArray(list) ? list.map(String) : [];
+}
+// May materialise remove the dep "b blocked by blocker" once the plan no longer has it? On a mapped bead,
+// only one it recorded adding. On one of its own beads, one whose blocker is its own too, or a mapped bead
+// it threaded into the plan (a dependency the plan once put toward a mapped bead); never one toward
+// someone else's bead.
+function removableDep(b, blocker, { known, own, initiative }) {
+  if (b.mappedFrom) return own.has(b.id) && own.get(b.id).has(blocker);
+  // a bead materialise once mapped for this initiative keeps the mark after it stops being mapped, so a
+  // dependency the plan put toward it can still go when the plan drops it (rv-205)
+  const m = ((known.get(blocker) || {}).metadata) || {};
+  return isMaterialised(known.get(blocker), initiative) || [...own.keys()].includes(blocker) || m.materialise_mapped === initiative;
 }
 
 function refSha(ref) { const m = /@(\S+) phase /.exec(ref || ''); return m ? m[1] : 'none'; }
@@ -184,16 +291,19 @@ function beadDiff(existing, planned) {
   const meta = existing.metadata || {};
   for (const k of Object.keys(planned.metadata)) if (JSON.stringify(meta[k]) !== JSON.stringify(planned.metadata[k])) fields.push(k);
   // a story's model override materialise would unset
-  if (planned.labels.includes('story') && meta.model !== undefined && planned.metadata.model === undefined && !fields.includes('model')) fields.push('model');
+  if ((planned.labels.includes('story') || planned.mappedFrom) && meta.model !== undefined && planned.metadata.model === undefined && !fields.includes('model')) fields.push('model');
   return fields;
 }
 
 function reconcile({ plan, bd, roadmap, initiative }) {
   if (!initiative) throw new Error('reconcile: initiative is required');
   const out = { storiesWithoutBead: [], spikesWithoutBead: [], staleRef: [], titleDrift: [], parentDrift: [], otherDrift: [], closedNotRealigned: [], unknownRoadmapBeads: [], depDrift: [] };
+  const all = bd.list({ all: true });
+  // the same mapping as applyPlan (dha), so a story tracked by a bead of its own is not reported missing
+  plan = mapToExisting(plan, all, initiative).plan;
   const planned = new Map(plan.beads.map((b) => [b.id, b]));
   const doneByPhase = new Map(roadmap.phases.map((p) => [p.number, p.done]));
-  const known = new Map(bd.list({ all: true }).map((x) => [x.id, x]));
+  const known = new Map(all.map((x) => [x.id, x]));
   for (const b of plan.beads) {
     const existing = known.get(b.id);
     if (!existing) {
@@ -218,13 +328,15 @@ function reconcile({ plan, bd, roadmap, initiative }) {
     if (rest.length) out.otherDrift.push({ id: b.id, fields: rest });
   }
   const want = plannedBlockers(plan);
+  // the same rule as applyPlan's re-thread (rv-205): extra is only a dep materialise would remove
+  const own = new Map(plan.beads.filter((b) => b.mappedFrom).map((b) => [b.id, new Set(ownDeps(known.get(b.id)))]));
   for (const b of plan.beads) {
     const existing = known.get(b.id);
     if (!existing || existing.status === 'closed') continue;
     const have = bd.depsOf(b.id);
     const wanted = want.get(b.id) || [];
     const missing = wanted.filter((x) => !have.includes(x));
-    const extra = have.filter((x) => !wanted.includes(x) && isMaterialised(known.get(x), initiative));
+    const extra = have.filter((x) => !wanted.includes(x) && removableDep(b, x, { known, own, initiative }));
     if (missing.length || extra.length) out.depDrift.push({ id: b.id, missing, extra });
   }
   for (const b of known.values()) {
@@ -242,7 +354,8 @@ function planChecks({ projectRoot, plan, bd, by, at }) {
   const rc = require('./reality-check.js');
   const written = [];
   for (const b of plan.beads) {
-    if (!b.labels.includes('story')) continue;
+    // a mapped bead keeps its own labels (a bug's), but it holds the story all the same
+    if (!b.labels.includes('story') && !b.mappedFrom) continue;
     const bead = bd.show(b.id);
     if (!bead || bead.status === 'closed') continue;
     const inp = gateInputs(projectRoot, bead, { bd });
@@ -317,12 +430,13 @@ if (require.main === module) {
     const entries = denylistFrom({ initiative: args.initiative, roadmap: inputs.roadmap, stories: inputs.stories, spikes: inputs.spikes, briefText: inputs.briefText, prdText: inputs.prdText, personaNames: inputs.personaNames });
     const denylistPath = path.join(root, '.delivery', 'team', 'denylist.txt');
     if (!dryRun) writeDenylist(root, entries);
-    const checks = dryRun ? [] : planChecks({ projectRoot: root, plan, bd, by: 'materialise', at: new Date().toISOString() });
+    const checks = dryRun ? [] : planChecks({ projectRoot: root, plan: r.plan || plan, bd, by: 'materialise', at: new Date().toISOString() });
     const denyText = dryRun ? `denylist would have ${entries.length} entries at ${denylistPath}` : `denylist ${denylistPath} (${entries.length} entries)`;
     console.log(`${dryRun ? 'dry run: ' : ''}created ${r.created.length}, updated ${r.updated.length}, deps ${r.depsAdded.length}, deps removed ${r.depsRemoved.length}, skipped closed ${r.skippedClosed.length}, skipped deps ${r.skippedDeps.length}; roadmap ${args.initiative}/roadmap.md@${inputs.sha}; ${denyText}`);
     if (checks.length) console.log(`reality-check scripts planned: ${checks.map((id) => require('./reality-check.js').scriptRel(id)).join(' ')}`);
+    for (const m of r.mapped) console.log(`mapped story ${m.story} to ${m.bead} (${m.status}${m.status === 'closed' ? ', skipped' : ''}), not ${m.planned}`);
     if (args.flags.has('dry-run')) for (const c of r.commands) console.log(`  ${c}`);
-    const warnings = [...inputs.warnings, ...plan.warnings];
+    const warnings = [...inputs.warnings, ...plan.warnings, ...r.mapWarnings];
     if (warnings.length) { console.log('warnings:'); for (const w of warnings) console.log(`  ${w}`); }
   } catch (err) {
     const p = err.partial;
