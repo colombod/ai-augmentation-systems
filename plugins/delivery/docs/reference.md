@@ -891,7 +891,10 @@ owner and is reviewed again; gates block only on authority or serious divergence
   would merge new code at a version already installed, so the self-update would never install it. The
   refusal names both versions and the send-back command; a plugin.json that cannot be read, or one on
   the base branch with no valid version, refuses too, and a product with no plugin directory is never
-  asked. When gh cannot read the pull request or its list of changed files, the gate already stands
+  asked. The marketplace beside the plugins directory (`.claude-plugin/marketplace.json`) carries the
+  version an install reads, so when the base branch's marketplace lists the plugin with a version, the
+  head's entry must name the same version as the head's plugin.json and be above the base's entry; a
+  marketplace that cannot be read, or that is gone at the head, refuses too. When gh cannot read the pull request or its list of changed files, the gate already stands
   on the record for the head and CI, and the version step is skipped with it. A new commit changes the head, so the old
   review no longer counts. A change users can see also needs a doc-impact line in its description,
   at the start of a line: `Doc-impact: <the docs it updates>`, with at least one doc file (Markdown,
