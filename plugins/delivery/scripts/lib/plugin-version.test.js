@@ -49,8 +49,9 @@ test('8wz: a session that last ran an older plugin is woken fresh, not resumed; 
       assert.equal(WD.wakeCommand({ ...s, pluginVersion: v }, 'go', [], 'auto', { installed }).mode, 'resume', String(v));
     }
     assert.equal(WD.wakeCommand(s, 'go', [], 'auto', {}).mode, 'resume', 'no installed version known: resume');
-    // an open session is forked as before, and a busy one is never touched: a running wake is not stopped
-    assert.equal(WD.wakeCommand(s, 'go', [{ sessionId: 's-dm', status: 'idle' }], 'auto', { installed }).mode, 'fork');
+    // an open session is handed the wake as a message, never forked or started fresh beside it (one live
+    // session per role, hjx.1.6.17), and a busy one is never touched: a running wake is not stopped
+    assert.equal(WD.wakeCommand(s, 'go', [{ sessionId: 's-dm', status: 'idle' }], 'auto', { installed }).mode, 'message');
     assert.ok(WD.wakeCommand(s, 'go', [{ sessionId: 's-dm', status: 'busy' }], 'auto', { installed }).skip);
     // the heavy-context fresh wake keeps its own words
     assert.match(WD.wakeCommand({ ...s, pluginVersion: installed, context: 236000 }, 'go', [], 'auto', { installed }).args[5], /\(236k tokens\) is not loaded/);

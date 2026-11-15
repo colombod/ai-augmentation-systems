@@ -451,7 +451,6 @@ test('every wake the watchdog sends is never human, in each mode it wakes a sess
   const prompt = wakePrompt(['[from delivery-lead: merge it] please merge the branch.'], 'did');
   const cases = {
     resume: wakeCommand(s, prompt, []),
-    fork: wakeCommand(s, prompt, [{ sessionId: 'sess-w', status: 'idle' }]),
     continue: wakeCommand({ ...s, session: null }, prompt, []),
     fresh: wakeCommand({ ...s, context: FRESH_ABOVE + 1 }, prompt, []),
   };
@@ -460,6 +459,11 @@ test('every wake the watchdog sends is never human, in each mode it wakes a sess
     const text = c.args[c.args.indexOf('-p') + 1];
     assert.strictEqual(t.classifyRecord(RS.typed(text, 12)).source, 'system', mode);
   }
+  // an open idle session is handed the same prompt as a message (hjx.1.6.17): no command, the prompt itself
+  const message = wakeCommand(s, prompt, [{ sessionId: 'sess-w', status: 'idle' }]);
+  assert.strictEqual(message.mode, 'message');
+  assert.strictEqual(message.args, undefined);
+  assert.strictEqual(t.classifyRecord(RS.typed(prompt, 12)).source, 'system', 'message');
   // the fresh session's preamble follows the opening, and the carried message is still there
   const fresh = cases.fresh.args[cases.fresh.args.indexOf('-p') + 1];
   assert.match(fresh, /^Watchdog \(a host job, not the owner\): You are chief-of-staff, starting a fresh session.*please merge the branch/);

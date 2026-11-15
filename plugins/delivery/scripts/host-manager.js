@@ -26,6 +26,8 @@
 //   host-manager.js install [--dry-run] --project <root> [--instance <id>]
 //                                       the systemd user units: delivery-host-manager.service (the Remote
 //                                       Control session, restarted always) and the tick's service and timer
+//                                       (each watchdog run also runs it when the units are missing and the
+//                                       host manager's role directory is prepared)
 // The teams are the host file (${XDG_CONFIG_HOME:-~/.config}/delivery/host-teams.json, which each install
 // adds its project to) together with every installed watchdog host job. In a role session only the host
 // manager runs restart and tick; install runs outside any role session. Exit codes: 0 ok (something down
@@ -50,6 +52,12 @@ const RESTART_STEPS = 5;
 const RESTART_MAX_DELAY = '30min';
 const START_LIMIT_INTERVAL = '15min';
 const START_LIMIT_BURST = 5;
+// run-session's exit when a host-manager session is already live: a success the unit does not restart
+// (SuccessExitStatus and RestartPreventExitStatus). With Restart=always any other exit, 0 included, is
+// restarted, so a live host manager made the unit exit five times in its start limit, fail, and be reset
+// and started again by the watchdog's next pass, every pass (rv-198). Inactive, the unit is started once a
+// pass and stops again until the live session ends.
+const ALREADY_RUNNING = 3;
 // its own unit, so not inside a watchdog job's cgroup: a Remote Control session and the tools it runs
 // need far more tasks than a capped host job allows. KillMode=process on both services: the role
 // sessions a restart starts are children of the unit that ran it, and a restart of the host manager (or
@@ -367,7 +375,7 @@ function unitFiles(root, team, instance, { env, home, host, roleDir }) {
     stateDir: HM.stateDir(env, home),
     modeSkip: m.skip || null,
     files: [
-      { file: path.join(dir, HM.UNIT), body: `[Unit]\nDescription=delivery host manager: the Remote Control session ${sdName(instance, host)} for every product team on this machine\nAfter=network-online.target\nWants=network-online.target\nStartLimitIntervalSec=${START_LIMIT_INTERVAL}\nStartLimitBurst=${START_LIMIT_BURST}\n\n[Service]\nType=simple\nWorkingDirectory=${W.sdPct(roleDir)}\n${env1}ExecStart=/usr/bin/env ${['node', launcher, 'host-manager.js', 'run-session', '--project', root, '--instance', instance].map(W.sdq).join(' ')}\nKillMode=process\nRestart=always\nRestartSec=${RESTART_SEC}\nRestartSteps=${RESTART_STEPS}\nRestartMaxDelaySec=${RESTART_MAX_DELAY}\nTasksMax=${TASKS_MAX}\n\n[Install]\nWantedBy=default.target\n` },
+      { file: path.join(dir, HM.UNIT), body: `[Unit]\nDescription=delivery host manager: the Remote Control session ${sdName(instance, host)} for every product team on this machine\nAfter=network-online.target\nWants=network-online.target\nStartLimitIntervalSec=${START_LIMIT_INTERVAL}\nStartLimitBurst=${START_LIMIT_BURST}\n\n[Service]\nType=simple\nWorkingDirectory=${W.sdPct(roleDir)}\n${env1}ExecStart=/usr/bin/env ${['node', launcher, 'host-manager.js', 'run-session', '--project', root, '--instance', instance].map(W.sdq).join(' ')}\nKillMode=process\nRestart=always\nSuccessExitStatus=${ALREADY_RUNNING}\nRestartPreventExitStatus=${ALREADY_RUNNING}\nRestartSec=${RESTART_SEC}\nRestartSteps=${RESTART_STEPS}\nRestartMaxDelaySec=${RESTART_MAX_DELAY}\nTasksMax=${TASKS_MAX}\n\n[Install]\nWantedBy=default.target\n` },
       { file: path.join(dir, HM.TICK_SERVICE), body: `[Unit]\nDescription=delivery host manager: the unattended pass over every product team on this machine\n\n[Service]\nType=oneshot\nKillMode=process\nTasksMax=${TASKS_MAX}\nWorkingDirectory=${W.sdPct(root)}\n${vars.filter((v) => !v.startsWith('DELIVERY_ROLE=')).map((v) => `Environment=${W.sdq(v)}\n`).join('')}ExecStart=/usr/bin/env ${['node', launcher, 'host-manager.js', 'tick'].map(W.sdq).join(' ')}\nStandardOutput=append:${W.sdPct(log)}\nStandardError=append:${W.sdPct(log)}\n` },
       { file: path.join(dir, HM.TICK_TIMER), body: `[Unit]\nDescription=delivery host manager: its pass every 5 min\n\n[Timer]\nOnBootSec=2min\nOnUnitActiveSec=5min\n\n[Install]\nWantedBy=timers.target\n` },
     ],
@@ -385,48 +393,95 @@ function lingerLine(run, env) {
   return /Linger=yes/.test(out) ? null : `Lingering is off for ${user}: the host manager starts at login, not at boot, until this is run once on this machine: loginctl enable-linger ${user}`;
 }
 
-// install(root, o, deps) -> { code, out }. Used by host-manager.js install and by watchdog.js install
-// (when the units are missing), so a team's first install also brings the host manager.
-function install(root, o = {}, { env = process.env, home = os.homedir(), exec, has, hostname, cwd, who } = {}) {
-  const no = guard('install', { cwd, env, who });
-  if (no) return { code: 1, out: no };
-  if (!whichOf(has)('systemctl')) return { code: 1, out: 'host-manager.js: this host has no systemctl, so the host manager\'s units cannot be installed here; nothing was installed.' };
+// The host manager this host would install, by the rules install applies: the team's manifest names a
+// host-manager instance on this host (or the one asked for) and its role directory is prepared here.
+// -> { team, host, hm, roleDir } or { why, unreadable? } (the line install says). watchdog.js reads it
+// before each run's install, so a team with no host manager, or one not yet prepared, is left alone and
+// unrecorded; a team.json that cannot be read (missing, not JSON, no roles list) is said, never thrown.
+// Prepared means the role directory holds its role marker (.delivery-role.json, which prepare-role.js
+// writes): the directory is the roster's role_dir when one is recorded, and role sessions write the
+// roster, so a directory that merely exists is not taken as a prepared host manager.
+function installTarget(root, o = {}, { env = process.env, hostname } = {}) {
+  const unreadable = (err) => ({ unreadable: true, why: `host-manager.js: the team at ${root} could not be read (${firstLine(err)}); nothing was installed.` });
   let team;
-  try { team = M.loadManifest(root).team; } catch (err) { return { code: 1, out: `host-manager.js: the team at ${root} could not be read (${firstLine(err)}); nothing was installed.` }; }
+  try { team = M.loadManifest(root).team; } catch (err) { return unreadable(err); }
+  if (!team || typeof team !== 'object' || !Array.isArray(team.roles)) return unreadable(new Error('team.json has no roles list'));
   const host = R.hostOf(env, hostname !== undefined ? hostname : os.hostname());
-  const hm = hostManagerOf(root, team, host, o.instance);
-  if (!hm) return { code: 1, out: `host-manager.js: team.json of ${root} has no host manager${o.instance ? ` instance ${o.instance}` : ` on host "${host}"`} (Staffing adds it: team-role.js add host-manager), so its session has no role directory; nothing was installed.` };
+  let hm;
+  try { hm = hostManagerOf(root, team, host, o.instance); } catch (err) { return unreadable(err); }
+  if (!hm) return { why: `host-manager.js: team.json of ${root} has no host manager${o.instance ? ` instance ${o.instance}` : ` on host "${host}"`} (Staffing adds it: team-role.js add host-manager), so its session has no role directory; nothing was installed.` };
   const { roleDir } = roleDirOf(root, team, hm.instance);
-  if (!fs.existsSync(roleDir)) return { code: 1, out: `host-manager.js: the host manager's role directory ${roleDir} is not prepared on this host (prepare-role.js --instance ${hm.instance} prepares it); nothing was installed.` };
+  if (!fs.existsSync(roleDir)) return { why: `host-manager.js: the host manager's role directory ${roleDir} is not prepared on this host (prepare-role.js --instance ${hm.instance} prepares it); nothing was installed.` };
+  const markerFile = path.join(roleDir, '.delivery-role.json');
+  if (!fs.existsSync(markerFile)) return { why: `host-manager.js: the host manager's role directory ${roleDir} is not prepared on this host (it holds no .delivery-role.json; prepare-role.js --instance ${hm.instance} prepares it); nothing was installed.` };
+  // the marker must be this instance's: a directory another role was prepared in (or a marker someone
+  // wrote by hand with other fields) is not a prepared host manager, so its session is never put there
+  let marker = null;
+  try { marker = JSON.parse(fs.readFileSync(markerFile, 'utf8')); } catch (err) { marker = null; }
+  if (!marker || marker.role !== 'host-manager' || marker.instance !== hm.instance) return { why: `host-manager.js: the role marker in ${roleDir} is not the host manager's (it names role ${(marker && marker.role) || 'none'}, instance ${(marker && marker.instance) || 'none'}; prepare-role.js --instance ${hm.instance} prepares it); nothing was installed.` };
+  return { team, host, hm, roleDir };
+}
+
+// install(root, o, deps) -> { code, out, wrote }. Used by host-manager.js install, by watchdog.js install
+// (when the units are missing), so a team's first install also brings the host manager, and by each
+// watchdog run (watchdog.js ensureHostManager) when Staffing prepared the host manager after that.
+// wrote: the unit files written, also on a failure part way; attempted: the install got past its guards
+// and began writing (a failure from then on is the caller's to record).
+// o.onlyMissing (the watchdog's installs): a unit file that already exists is kept as it is, never
+// rewritten, so an owner's edit of the tick service or timer survives; the reload, enable and start
+// still run, which is how a run repeats an enable that failed without writing anything again.
+// deps.writeFile: the write of a unit file (a test's failing write).
+function install(root, o = {}, { env = process.env, home = os.homedir(), exec, has, hostname, cwd, who, writeFile = fs.writeFileSync, live } = {}) {
+  const no = guard('install', { cwd, env, who });
+  if (no) return { code: 1, out: no, wrote: [] };
+  if (!whichOf(has)('systemctl')) return { code: 1, out: 'host-manager.js: this host has no systemctl, so the host manager\'s units cannot be installed here; nothing was installed.', wrote: [] };
+  const target = installTarget(root, o, { env, hostname });
+  if (target.why) return { code: 1, out: target.why, wrote: [] };
+  const { team, host, hm, roleDir } = target;
   const u = unitFiles(root, team, hm.instance, { env, home, host, roleDir });
-  if (u.modeSkip) return { code: 1, out: `host-manager.js: ${u.modeSkip}; nothing was installed.` };
+  if (u.modeSkip) return { code: 1, out: `host-manager.js: ${u.modeSkip}; nothing was installed.`, wrote: [] };
   const run = runner(exec);
   const file = HM.hostFile(env, home);
   const lines = [];
   const head = `The host manager ${hm.instance}@${host} runs as ${HM.UNIT} in ${roleDir} (Restart=always, started at boot), and ${HM.TICK_TIMER} runs host-manager.js tick every 5 minutes. Teams it serves: ${file}, and every installed watchdog host job.`;
+  // the service is started at once only when no host manager is live and the open sessions could be
+  // read: started beside a live one it is a second host manager (rv-198). Otherwise it is enabled for the
+  // next boot and left to the watchdog's start check (startHostManager), which makes the same match. The
+  // dry run prints the same choice.
+  const lv = liveHostManager(root, { env, home, hostname, live });
+  const startNow = !lv.unreadable && !lv.sessions.length;
+  const commands = startNow ? u.commands : u.commands.map(([c, a]) => (a.join(' ') === `--user enable --now ${HM.UNIT}` ? [c, ['--user', 'enable', HM.UNIT]] : [c, a]));
+  const notNow = startNow ? null : lv.unreadable ? `the open sessions could not be listed, so ${HM.UNIT} is enabled and left to the watchdog's start check.` : `the host manager already runs, so ${HM.UNIT} is enabled for the next boot.`;
   if (o.dryRun) {
     lines.push(`Dry run. ${head}`, `Would add ${root} to ${file}.`);
     for (const f of u.files) lines.push(`Would write ${f.file}:`, f.body.trimEnd());
-    for (const [cmd, args] of u.commands) lines.push(`Would run: ${cmd} ${args.join(' ')}`);
+    for (const [cmd, args] of commands) lines.push(`Would run: ${cmd} ${args.join(' ')}`);
+    if (notNow) lines.push(`Would not start it now: ${notNow}`);
     const l = lingerLine(run, env);
     if (l) lines.push(l);
     lines.push('Nothing was written.');
-    return { code: 0, out: lines.join('\n') };
+    return { code: 0, out: lines.join('\n'), wrote: [] };
   }
+  const wrote = [];
+  const kept = [];
   try {
     if (HM.addHostTeam(file, root)) lines.push(`Added ${root} to ${file}`);
     const lp = require('./lib/launcher.js').ensureLauncher(root, PLUGIN_ROOT, env.CLAUDE_CONFIG_DIR);
     if (lp) throw new Error(lp);
-    for (const f of u.files) { fs.mkdirSync(path.dirname(f.file), { recursive: true }); fs.writeFileSync(f.file, f.body); lines.push(`Wrote ${f.file}`); }
+    for (const f of u.files) {
+      if (o.onlyMissing && fs.existsSync(f.file)) { kept.push(f.file); lines.push(`Kept ${f.file} (installed already)`); continue; }
+      fs.mkdirSync(path.dirname(f.file), { recursive: true }); writeFile(f.file, f.body); wrote.push(f.file); lines.push(`Wrote ${f.file}`);
+    }
     // before the units are enabled: systemd opens the tick's StandardOutput=append: file itself and
     // fails the service (status 209/STDOUT) when its directory is missing
     fs.mkdirSync(u.stateDir, { recursive: true });
-    for (const [cmd, args] of u.commands) { run(cmd, args); lines.push(`Ran: ${cmd} ${args.join(' ')}`); }
-  } catch (err) { return { code: 1, out: `${lines.join('\n')}\nhost-manager.js: not installed (${firstLine(err)})`.trim() }; }
+    for (const [cmd, args] of commands) { run(cmd, args); lines.push(`Ran: ${cmd} ${args.join(' ')}`); }
+    if (notNow) lines.push(`Not started now: ${notNow}`);
+  } catch (err) { return { code: 1, out: `${lines.join('\n')}\nhost-manager.js: not installed (${firstLine(err)})`.trim(), wrote, kept, attempted: true }; }
   lines.push(`Installed. ${head}`);
   const l = lingerLine(run, env);
   if (l) lines.push(l);
-  return { code: 0, out: lines.join('\n') };
+  return { code: 0, out: lines.join('\n'), wrote, kept, attempted: true };
 }
 
 // run-session: what the host manager's unit runs. The session it reattaches to is read now, not at
@@ -434,12 +489,39 @@ function install(root, o = {}, { env = process.env, home = os.homedir(), exec, h
 // process is claude and Restart= sees it exit. A node without execve starts nothing: claude as a child
 // would outlive a stop of the unit (KillMode=process stops only the main process), and the next start
 // would be a second host manager beside it. deps: execve, resolveBin, now (in a test).
+// A live host-manager session: one in its role directory or under its name <instance>@<host>
+// (lib/one-session.js), the match run-session makes before it starts one and the watchdog makes before it
+// starts the unit (rv-198). { sessions } (possibly none), or { unreadable } when the open sessions could
+// not be listed. With no host manager in this project's team.json, the unit's own WorkingDirectory is
+// its role directory.
+function hostManagerMatch(roleDirs, names) {
+  const OS = require('./lib/one-session.js');
+  return (s) => Boolean(s) && (roleDirs.some((d) => d && OS.inside(s.cwd, d)) || (Boolean(s.name) && names.includes(s.name)));
+}
+function liveHostManager(root, { env = process.env, home = os.homedir(), hostname, live } = {}) {
+  const host = R.hostOf(env, hostname !== undefined ? hostname : os.hostname());
+  let team = null;
+  try { team = M.loadManifest(root).team; } catch (err) { team = null; }
+  const hm = team ? hostManagerOf(root, team, host) : null;
+  const roleDirs = [];
+  const names = [];
+  if (hm) { roleDirs.push(roleDirOf(root, team, hm.instance).roleDir); names.push(`${hm.instance}@${host}`); }
+  try {
+    const wd = /^WorkingDirectory=(.+)$/m.exec(fs.readFileSync(path.join(HM.unitDir(home), HM.UNIT), 'utf8'));
+    if (wd) roleDirs.push(wd[1].trim().replace(/%%/g, '%'));
+  } catch (err) { /* no unit: the team's role directory alone */ }
+  if (!roleDirs.length && !names.length) return { sessions: [] };
+  const listed = sessionsNow({ env, live });
+  if (!Array.isArray(listed)) return { unreadable: true };
+  return { sessions: listed.filter(hostManagerMatch(roleDirs, names)) };
+}
+
 function resolveOnPath(bin, env) {
   if (bin.includes('/')) return bin;
   for (const d of String(env.PATH || '').split(path.delimiter)) { if (!d) continue; const f = path.join(d, bin); try { fs.accessSync(f, fs.constants.X_OK); return f; } catch (err) { /* not here */ } }
   return null;
 }
-function runSession(root, o, { env = process.env, home = os.homedir(), hostname, execve, resolveBin, now } = {}) {
+function runSession(root, o, { env = process.env, home = os.homedir(), hostname, execve, resolveBin, now, live } = {}) {
   let team;
   try { team = M.loadManifest(root).team; } catch (err) { return { code: 1, out: `host-manager.js: the team at ${root} could not be read (${firstLine(err)}); no session started.` }; }
   const host = R.hostOf(env, hostname !== undefined ? hostname : os.hostname());
@@ -447,6 +529,15 @@ function runSession(root, o, { env = process.env, home = os.homedir(), hostname,
   if (!hm) return { code: 1, out: `host-manager.js: team.json of ${root} has no host manager${o.instance ? ` instance ${o.instance}` : ` on host "${host}"`}; no session started.` };
   const a = sessionArgs(root, team, hm.instance, { env, home, host });
   if (a.modeSkip) return { code: 1, out: `host-manager.js: ${a.modeSkip}; no session started.` };
+  // One live session per role (lib/one-session.js, hjx.1.6.17): a host-manager session already live in its
+  // role directory or under its own name <instance>@<host> is never given a second one beside it, and
+  // none is started while the open sessions cannot be read. A live one is a success the unit does not
+  // restart (ALREADY_RUNNING); a list that cannot be read is a failure Restart= tries again.
+  const OS = require('./lib/one-session.js');
+  const listed = sessionsNow({ env, live });
+  if (!Array.isArray(listed)) return { code: 1, out: 'host-manager.js: the open sessions could not be listed (claude agents --json), so a start could put a second host manager beside a live one; no session started.' };
+  const running = listed.filter(hostManagerMatch([a.roleDir], [`${hm.instance}@${host}`]));
+  if (running.length) return { code: ALREADY_RUNNING, out: `host-manager.js: ${hm.instance} already runs as ${OS.described(running)}; no second session started.` };
   const ex = execve !== undefined ? execve : (typeof process.execve === 'function' ? process.execve.bind(process) : null);
   if (!ex) return { code: 1, out: `host-manager.js: run-session needs node 22.15 or later (process.execve), so that claude is the unit's own process; this is node ${process.version}. No session started.` };
   const bin = env.DELIVERY_CLAUDE_BIN || 'claude';
@@ -466,7 +557,7 @@ function runSession(root, o, { env = process.env, home = os.homedir(), hostname,
 function refusal(cmd, cwd, env, who) {
   const role = WD().roleContext(cwd, env);
   if (!role) return null;
-  if (cmd === 'install') return `host-manager.js: install writes this machine's user units and runs from a shell outside any role session (${role}); watchdog.js install --apply runs it too.`;
+  if (cmd === 'install') return `host-manager.js: install writes this machine's user units and runs from a shell outside any role session (${role}); watchdog.js install --apply runs it too, and so does each run of the watchdog's host job when the units are missing.`;
   const id = (who && who.roleId) || env.DELIVERY_ROLE_ID || M.canonicalRoleId(env.DELIVERY_ROLE) || null;
   if (id === HM.ROLE) return null;
   return `host-manager.js: ${cmd} is the host manager's (${role}${id ? `, role ${id}` : ''}); message the host manager with what is down.`;
@@ -502,7 +593,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, who, ...deps } = {
   return tick(d);
 }
 
-module.exports = { main, read, status, restart, tick, install, runSession, sessionArgs, unitFiles, refusal, deliverAlert, lastPassOf, factsOf, sessionsNow, POLL_EVERY_MS, POLL_MAX_MS };
+module.exports = { liveHostManager, main, read, status, restart, tick, install, installTarget, runSession, sessionArgs, unitFiles, refusal, deliverAlert, lastPassOf, factsOf, sessionsNow, POLL_EVERY_MS, POLL_MAX_MS };
 
 if (require.main === module) {
   let r;
