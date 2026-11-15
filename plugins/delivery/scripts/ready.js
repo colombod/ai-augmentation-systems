@@ -112,8 +112,9 @@ async function main(argv, { cwd = process.cwd(), env = process.env, bd, now, ver
   const id = a._[0];
   if (!id) return { code: 2, out: USAGE };
   const store = bd || require('./lib/bd.js').makeBd({ cwd: who.root });
-  const bead = store.show(id);
-  if (!bead) return { code: 1, out: `ready.js: no bead ${id}` };
+  const found = require('./lib/bd.js').lookupBead(store, id);
+  if (!found.bead) return { code: 1, out: `ready.js: ${require('./lib/bd.js').lookupProblem(id, found)}` };
+  const bead = found.bead;
   const inp = gateInputs(who.root, bead, { bd: store, team: who.team });
   if (!inp.story) return { code: 1, out: `ready.js: ${id} has no readable story file (metadata story_file under .delivery/stories/)` };
   const judged = await judgeShippable(inp.story, inp.surface, who, deps).catch(() => null);
