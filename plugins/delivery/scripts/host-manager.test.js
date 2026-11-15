@@ -1481,3 +1481,57 @@ test('run-session starts the Chief of Staff by the same rules as the host manage
   assert.equal(no.code, 1);
   assert.equal(calls.length, 1);
 });
+
+// The guard: two start paths never serve one role directory. For a unit the plugin wrote and for one it
+// did not, every path that starts or restarts a role (the owner's restart of a down role and of a running
+// one, the unattended tick, team-revive's start pass with its stale-session restart, the watchdog's wake)
+// starts nothing in a scope or a wake beside the unit; only the unit starts it.
+test('guard: a role a user unit serves is never spawned in a scope, stopped, or woken by any start path; the plugin\'s own unit is started through systemctl alone', () => {
+  const TR = require('./team-revive.js');
+  const WDL = require('./lib/watchdog.js');
+  for (const kind of ['hand', 'own']) {
+    const unitOf = (m) => (kind === 'own' ? cosUnit(m) : 'claude-rc-chief-of-staff.service');
+    const exec = (m) => (kind === 'own' ? `/usr/bin/env "node" "${path.join(m.alpha.root, '.delivery', 'bin', 'delivery.js')}" "host-manager.js" "run-session" "--project" "${m.alpha.root}" "--instance" "chief-of-staff"` : '/opt/tools/bin/claude remote-control --name cos');
+    const served = (m) => { roleUnit(m, m.alpha.dir('chief-of-staff'), unitOf(m), exec(m)); m.sd.units[unitOf(m)] = loaded(false); };
+    const noCos = (m, what) => {
+      assert.ok(!m.spawned.some((s) => s.cwd === m.alpha.dir('chief-of-staff')), `${kind}, ${what}: spawned beside its unit`);
+      assert.ok(!m.stops.some((s) => s.pid === 61), `${kind}, ${what}: stopped`);
+      const starts = m.sd.calls.filter((c) => / (start|restart|reset-failed) /.test(` ${c} `) && c.includes(unitOf(m)));
+      if (kind === 'hand') assert.ok(!starts.some((c) => / (start|reset-failed) /.test(` ${c} `)), `${kind}, ${what}: the plugin started a unit it did not write: ${starts.join(' | ')}`);
+      return starts;
+    };
+    // the owner's restart, the Chief of Staff down and holding work
+    const down = machine({ beads: WORK });
+    served(down);
+    const r1 = down.run(['restart']);
+    const s1 = noCos(down, 'owner\'s restart, down');
+    assert.ok(down.spawned.some((s) => s.cwd === down.alpha.dir('builder')), 'a role with no unit still starts');
+    if (kind === 'own') {
+      assert.ok(s1.includes(`systemctl --user start ${cosUnit(down)}`), `${s1.join(" | ")} ${r1.out} ${down.sd.calls.join(" ; ")}`);
+      assert.match(r1.out, new RegExp(`alpha chief-of-staff: started through its user unit ${esc(cosUnit(down))}`), r1.out);
+    } else assert.match(r1.out, /alpha chief-of-staff \(not started: it is served by the user unit claude-rc-chief-of-staff\.service/, r1.out);
+    // the owner's restart, the Chief of Staff running and idle: only through its unit
+    const up = machine({ beads: WORK });
+    served(up);
+    runningRole(up, up.alpha, 'chief-of-staff', { pid: 61, server: false, bridge: null });
+    up.run(['restart']);
+    const s2 = noCos(up, 'owner\'s restart, running');
+    assert.ok(s2.includes(`systemctl --user restart ${unitOf(up)}`), s2.join(' | '));
+    // the unattended tick, the Chief of Staff down
+    const tick = machine({ beads: WORK });
+    served(tick);
+    tick.run(['tick'], { env: { DELIVERY_HOST: 'pc', PATH: '/usr/bin', USER: 'dev', DELIVERY_ROLE: 'host-manager', DELIVERY_ROLE_ID: 'host-manager' }, who: { roleId: 'host-manager' } });
+    noCos(tick, 'tick');
+    // team-revive's own pass: the Chief of Staff on an older plugin, idle (the stale-session restart)
+    const st = machine({ beads: WORK });
+    served(st);
+    runningRole(st, st.alpha, 'chief-of-staff', { pid: 61, version: '1.0.0' });
+    const units = [];
+    TR.revive(st.alpha.root, st.alpha.team, { start: true, env: { DELIVERY_HOST: 'pc' }, home: st.home, live: st.live, spawn: (b, a, o) => { st.spawned.push({ args: a, cwd: o.cwd }); return 1; }, stop: (s, p) => { st.stops.push({ server: s, pid: p }); return true; }, startUnit: (u) => units.push(u), settle: null, ...st.deps().teamDeps(st.alpha.root) });
+    noCos(st, 'team-revive stale restart');
+    assert.deepEqual(units, []);
+    // the watchdog's wake: no session is started for it
+    const c = WDL.wakeCommand({ instance: 'chief-of-staff', role: 'chief-of-staff', session: 's', roleDir: down.alpha.dir('chief-of-staff') }, 'go', [], 'auto', { unit: R.remoteControlUnitFor(down.alpha.dir('chief-of-staff'), { home: down.home }) });
+    assert.equal(c.args, undefined, `${kind}: the wake starts a session beside the unit`);
+  }
+});

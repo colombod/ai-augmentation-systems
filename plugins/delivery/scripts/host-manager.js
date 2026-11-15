@@ -269,6 +269,8 @@ function restart(deps = {}, before, o = {}) {
   const oldSessions = {};
   // a role a user unit serves is restarted through that unit (lib/team-revive.js remoteControlUnitFor)
   const restartUnit = (unit) => run('systemctl', ['--user', 'restart', unit]);
+  // a missing role the plugin's own unit serves is started through it (team-revive.js startOwnUnit)
+  const startUnit = (unit) => require('./team-revive.js').startOwnUnit(unit, { exec: run });
   for (const t of before.teams) {
     if (t.manifestUnavailable || !t.team) continue;
     const root = t.root;
@@ -278,12 +280,13 @@ function restart(deps = {}, before, o = {}) {
     refused[root] = {};
     let r;
     try {
-      r = TR.revive(root, t.team, { start: true, cwd: deps.cwd, env: deps.env || process.env, home: deps.home, live: before.live, relist: () => sessionsNow(deps), only: want, ...(force.length ? { force } : {}), restartUnit, ...(deps.spawn ? { spawn: deps.spawn } : {}), ...(deps.stop ? { stop: deps.stop } : {}), ...(deps.teamDeps ? deps.teamDeps(root) : {}) });
+      r = TR.revive(root, t.team, { start: true, cwd: deps.cwd, env: deps.env || process.env, home: deps.home, live: before.live, relist: () => sessionsNow(deps), only: want, ...(force.length ? { force } : {}), restartUnit, startUnit, ...(deps.spawn ? { spawn: deps.spawn } : {}), ...(deps.stop ? { stop: deps.stop } : {}), ...(deps.teamDeps ? deps.teamDeps(root) : {}) });
     } catch (err) { for (const i of want) refused[root][i] = `the start failed: ${firstLine(err)}`; for (const i of force) (unforced[root] = unforced[root] || {})[i] = `the restart pass failed: ${firstLine(err)}`; continue; }
     started[root] = {};
     // a start that exited within its settle is recorded failed by the start pass: named, not waited for
     for (const [i, x] of Object.entries(r.started || {})) {
       if (x && x.failed) refused[root][i] = 'its start exited at once, recorded failed; the next pass retries it';
+      else if (x && x.why) refused[root][i] = x.why;
       else started[root][i] = x;
     }
     for (const i of r.a.missing) if (want.includes(i.instance) && !(r.started || {})[i.instance]) refused[root][i.instance] = whyNot(r.a, i);
