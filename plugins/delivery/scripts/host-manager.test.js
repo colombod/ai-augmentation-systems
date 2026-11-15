@@ -358,7 +358,7 @@ const WORK = { alpha: [{ id: 'al-1', status: 'in_progress', assignee: 'dev@pc/bu
 // only the builder holds work
 const WORK_B = { alpha: [WORK.alpha[0]] };
 // a user unit that serves a role: its WorkingDirectory the role directory, its ExecStart claude remote-control
-function roleUnit(m, dir, name, execStart = `/home/dev/.local/bin/claude remote-control --name builder@alpha --spawn same-dir --capacity 1`) {
+function roleUnit(m, dir, name, execStart = `/opt/tools/bin/claude remote-control --name builder@alpha --spawn same-dir --capacity 1`) {
   fs.writeFileSync(path.join(HM.unitDir(m.home), name), `[Unit]\nDescription=a role\n\n[Service]\nWorkingDirectory=${dir.replace(/%/g, '%%')}\nExecStart=${execStart}\nRestart=always\n`);
 }
 

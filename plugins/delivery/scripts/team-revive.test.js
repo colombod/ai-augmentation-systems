@@ -968,7 +968,7 @@ test('remoteControlUnitFor names the user service whose WorkingDirectory is the 
   const home = unitHome({
     'a-node.service': unitBody(b, '/usr/bin/node server.js remote-control'),
     'b-other-dir.service': unitBody(p.dir('chief-of-staff') + '-x', '/usr/bin/claude remote-control'),
-    'c-builder.service': unitBody(b, '/usr/bin/env "/home/dev/.local/bin/claude" remote-control --name builder@ex'),
+    'c-builder.service': unitBody(b, '/usr/bin/env "/opt/tools/bin/claude" remote-control --name builder@ex'),
     'd-builder.timer': unitBody(b, '/usr/bin/claude remote-control'),
   });
   assert.equal(R.remoteControlUnitFor(b, { home }), 'c-builder.service');
