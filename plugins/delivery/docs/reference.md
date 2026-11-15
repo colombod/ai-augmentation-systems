@@ -1447,7 +1447,7 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   other role (its handovers likewise go up to 96 a day, against 48 for other roles); each stall waits
   1, 2, 4, 8 ... hours after each wake that carried it; never while that session's last wake still runs, however long ago it started (each wake runs in its own process group
   under `lib/wake-run.js`, which stops the whole group after 2 hours, SIGTERM then SIGKILL, and lives
-  until the group is gone; the guard checks that the logged pid is alive and is still that supervisor. The supervisor and
+  until the group is gone; the guard checks that the logged pid is alive and is still that supervisor, reading its command and start time from /proc where there is one: a pid that runs another program, or started more than a minute after its wake row, is not that wake, and a pid whose command and start cannot be read counts only within the 2-hour wake timeout plus the 30-second kill grace of its row; the wake plan, the Delivery Manager's pass and the plugin's self-update all ask this about a wake pid with its own row's time before they hold anything. The supervisor and
   its session run in a systemd user scope of their own, `delivery-role-<instance>-<ms>.scope` with
   `TasksMax=1000` and `MemoryMax=3G`, wherever the user's systemd manager can be reached
   (`lib/role-scope.js`), as `team-revive.js` starts and `start.js --launch` do: started straight from the

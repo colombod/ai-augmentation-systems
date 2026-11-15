@@ -206,10 +206,21 @@ const HEADLESS_WAIT = { CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0' };
 // hold what it was kicked to hand over until the timer pass. A pid named in a kick has ended.
 const endedPids = (kicks) => new Set(kicks.map((k) => Number((/a wake ended \(pid (\d+)\)/.exec(k) || [])[1])).filter((n) => n > 0));
 
+// A wake pid still running, as the host job asks it: not one whose wake ended in this run (its kick
+// said so), and that wake by its row's time (lib/watchdog.js pidAlive). One check for the wake plan and
+// the plugin's self-update, so both read a reused or unreadable pid the same way (hjx.1.6.20).
+function wakeAlive(ended, now) {
+  return (pid, since) => !ended.has(pid) && WD.pidAlive(pid, { since, now });
+}
+
 function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWake, ended = new Set(), deliver = defaultDeliver }) {
   const at = now || new Date().toISOString();
   if (res.unreadable || res.paused) return [];
-  const p = WD.plan(res, { root, now: at, alive: (pid) => !ended.has(pid) && WD.pidAlive(pid) });
+  // a wake row is stamped at its spawn, not at the pass start: the check reads the supervisor's start
+  // against the row (lib/watchdog.js pidAlive), and the reads and spawns before it take real time. A run
+  // given its clock (a test, a replay) keeps that clock exactly, so its gates read as it set them.
+  const spawnStamp = () => (now ? at : new Date().toISOString());
+  const p = WD.plan(res, { root, now: at, alive: wakeAlive(ended, at) });
   const lines = [];
   const bin = env.DELIVERY_CLAUDE_BIN || 'claude';
   const open = p.wakes.length ? (live !== undefined ? live : liveSessions(bin, env)) : null;
@@ -268,7 +279,7 @@ function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWa
       lines.push(`Not woken: ${w.target}: its start ran nothing (systemd-run refused the scope; log ${path.relative(root, logPath)}); its messages stay waiting. ${w.lines[0]}`);
       continue;
     }
-    WD.log(root, { type: 'wake', at, keys: w.keys, instance: w.target, session: s.session, mode: c.mode, ...(c.why ? { fresh: c.why } : {}), wake_id: wakeId, prompt: w.prompt, pid, log: path.relative(root, logPath) });
+    WD.log(root, { type: 'wake', at: spawnStamp(), keys: w.keys, instance: w.target, session: s.session, mode: c.mode, ...(c.why ? { fresh: c.why } : {}), wake_id: wakeId, prompt: w.prompt, pid, log: path.relative(root, logPath) });
     // the messages and handoffs it carries are handed over: the next run does not wake for them again
     for (const d of w.delivers || []) require('./lib/inbox.js').markDelivered(root, d.to, d.upTo);
     // a handoffs file another writer holds: the wake stands, the row is handed over at the next pass
@@ -694,7 +705,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
     // starts in a new process under the new plugin, whose wakes start the old-version sessions fresh.
     // a pass taken for a kick looks again while an install is held: the kick is often the held-for wake
     // ending, and installing then beats waiting for the next cycle
-    const updated = cmd === 'run' && (first || state.held) ? require('./lib/self-update.js').selfUpdate(who.root, { pluginRoot: PLUGIN_ROOT, env, now, dryRun: !!o.dryRun, alive: (pid) => !endedPids(kicked).has(pid) && WD.pidAlive(pid), roleDirs: (res.sessions || []).map((s) => s.roleDir).filter(Boolean), ...update }) : { lines: [], installed: false };
+    const updated = cmd === 'run' && (first || state.held) ? require('./lib/self-update.js').selfUpdate(who.root, { pluginRoot: PLUGIN_ROOT, env, now, dryRun: !!o.dryRun, alive: wakeAlive(endedPids(kicked), now), roleDirs: (res.sessions || []).map((s) => s.roleDir).filter(Boolean), ...update }) : { lines: [], installed: false };
     if (updated.installed) { KICK.kick(who.root, `plugin ${updated.version} installed`); state.installed = true; }
     state.held = !!updated.held;
     // a held install starts no wake: one started now is another run the install must wait for, and with
@@ -748,7 +759,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
   return r || { code: 0, out: 'Another watchdog run holds the lock; this one does nothing.' };
 }
 
-module.exports = { spawnWake, main, liveSessions, defaultUserGuard, checkLines, jobFiles, shimBody, everySeconds, roleContext, kickWatchUnit, tagOf, sdq, sdPct, jobPath, ensureHostManager, hostManagerSetup, teamSessionsHere };
+module.exports = { spawnWake, main, liveSessions, wakeAlive, defaultUserGuard, checkLines, jobFiles, shimBody, everySeconds, roleContext, kickWatchUnit, tagOf, sdq, sdPct, jobPath, ensureHostManager, hostManagerSetup, teamSessionsHere };
 
 if (require.main === module) {
   let r;

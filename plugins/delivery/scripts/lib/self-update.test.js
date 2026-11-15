@@ -167,6 +167,22 @@ test('a wake still running holds the install; it goes once the wake has ended', 
   assert.equal(run(f, exec, { alive: () => false }).installed, true);
 });
 
+// hjx.1.6.20: the running check is asked about each wake row's pid with that row's time, so a pid the
+// system gave to another program after its wake ended does not hold every install
+test('the install asks about each wake pid with its own row time, and installs once no pid is that wake', () => {
+  const f = fixture();
+  merged(f, 140, true);
+  const old = '2026-11-01T22:53:39.312Z';
+  WD.log(f.project, { type: 'wake', at: old, instance: 'reality-checker', pid: 2162035 });
+  const exec = claude(f);
+  const asked = [];
+  const held = run(f, exec, { alive: (pid, since) => { asked.push([pid, since]); return true; } });
+  assert.deepEqual(asked, [[2162035, old]], 'the row time goes with the pid');
+  assert.match(held.lines[0], /held: a run is in progress \(wake pid 2162035\)/);
+  // the same pid read as no longer that wake: the install goes
+  assert.equal(run(f, exec, { alive: (pid, since) => !(pid === 2162035 && since === old) }).installed, true);
+});
+
 test('a failed update is logged, not retried within the hour, retried after it', () => {
   const f = fixture();
   merged(f, 140, true);
@@ -270,12 +286,13 @@ test('a role directory behind a current job install passes the same gate check f
 
 // through the host job: an install wakes no one this pass and kicks the next run; a failure keeps the wakes
 const memStore = (h) => { const b = Object.values(h.db().issues); return { list: () => b, ready: () => b.filter((x) => x.status === 'open'), show: (id) => b.find((x) => x.id === id) || null }; };
-function jobRun(h, f, exec, { alive = () => false, now = later(2e3) } = {}) {
+// ownCheck: the job's own running-wake check (watchdog.js wakeAlive), not an injected one
+function jobRun(h, f, exec, { alive = () => false, now = later(2e3), ownCheck = false } = {}) {
   registerInstance(h.root, { instance: 'delivery-lead', session_id: 'sess-dl', host: 'pc', model: 'sonnet', role_dir: h.roleDir('delivery-lead'), now: later(-30 * 60e3) });
   IB.queue(h.root, { to: 'delivery-lead', from: 'builder-1', message: 'PR ready', at: T0 });
   KICK.take(h.root);
   const woke = [];
-  const r = watchdog.main(['run'], { cwd: h.root, env: { ...process.env, DELIVERY_ROLE: '', BD_FAKE_STORE: h.store, PATH: `${path.join(__dirname, '..', 'testing')}${path.delimiter}${process.env.PATH}` }, now, live: [], bd: memStore(h), sweep: () => ({ removed: [], failed: [] }), spawn: (bin, args, o) => { woke.push(o.env.DELIVERY_ROLE); return 999999999; }, update: { pluginRoot: f.pluginRoot, configDir: f.config, exec, alive } });
+  const r = watchdog.main(['run'], { cwd: h.root, env: { ...process.env, DELIVERY_ROLE: '', BD_FAKE_STORE: h.store, PATH: `${path.join(__dirname, '..', 'testing')}${path.delimiter}${process.env.PATH}` }, now, live: [], bd: memStore(h), sweep: () => ({ removed: [], failed: [] }), spawn: (bin, args, o) => { woke.push(o.env.DELIVERY_ROLE); return 999999999; }, update: { pluginRoot: f.pluginRoot, configDir: f.config, exec, ...(ownCheck ? {} : { alive }) } });
   return { out: r.out, woke };
 }
 
@@ -477,6 +494,53 @@ test('a role install behind the job own install is checked over its own range: a
 // delivery-plugin-planning-0ba.6: wakes ran back to back, so some wake was always running when the job
 // looked and every merged release was held for hours. A held install now starts no new wake, so the
 // running ones end and the next cycle installs.
+// hjx.1.6.20, end to end through the host job's run and its own check: a wake pid that is now a later
+// process (the system reused it) holds no install; the wake that pid really is, by its own row, does.
+// Every time comes from the supervisor's own start, as the kernel reports it, so the case holds with the
+// suite's clock a month ahead.
+test('the host job\'s run installs past a wake pid that started after its row, and holds for the wake it is', (t) => {
+  if (!fs.existsSync('/proc/self/stat')) { t.skip('no /proc on this host'); return; }
+  const sup = require('child_process').spawn(process.execPath, [path.join(__dirname, 'wake-run.js'), '60000', process.execPath, '-e', 'setTimeout(() => {}, 20000)'], { stdio: 'ignore', detached: true });
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 400);
+  const started = WD.procReads.startedMs(sup.pid);
+  try {
+    if (!Number.isFinite(started)) { t.skip('the start time of a process cannot be read here'); return; }
+    const now = new Date(started + 5000).toISOString();
+    // the reused case: the row is from long before this process existed
+    const h = harness({});
+    const f = fixture({ root: h.root });
+    merged(f, 140, true);
+    WD.log(h.root, { type: 'wake', at: new Date(started - 3 * 3600e3).toISOString(), instance: 'reality-checker', pid: sup.pid });
+    const exec = claude(f);
+    const go = jobRun(h, f, exec, { ownCheck: true, now });
+    assert.match(go.out, /self-update: installed plugin delivery 0\.43\.31/, go.out);
+    assert.doesNotMatch(go.out, /a run is in progress/);
+    // the other direction: the same live supervisor, by its own row, holds the install
+    const h2 = harness({});
+    const f2 = fixture({ root: h2.root });
+    merged(f2, 140, true);
+    WD.log(h2.root, { type: 'wake', at: new Date(started + 1000).toISOString(), instance: 'builder-1', pid: sup.pid });
+    const held = jobRun(h2, f2, claude(f2), { ownCheck: true, now });
+    assert.match(held.out, new RegExp(`held: a run is in progress \\(wake pid ${sup.pid}\\)`), held.out);
+  } finally { try { process.kill(-sup.pid, 'SIGKILL'); } catch (e) { /* gone */ } }
+});
+
+test('the self-update\'s own default check reads a wake pid by its row time', (t) => {
+  if (!fs.existsSync('/proc/self/stat')) { t.skip('no /proc on this host'); return; }
+  const sup = require('child_process').spawn(process.execPath, [path.join(__dirname, 'wake-run.js'), '60000', process.execPath, '-e', 'setTimeout(() => {}, 20000)'], { stdio: 'ignore', detached: true });
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 400);
+  const started = WD.procReads.startedMs(sup.pid);
+  try {
+    if (!Number.isFinite(started)) { t.skip('the start time of a process cannot be read here'); return; }
+    const now = new Date(started + 5000).toISOString();
+    const f = fixture();
+    merged(f, 140, true);
+    WD.log(f.project, { type: 'wake', at: new Date(started - 3 * 3600e3).toISOString(), instance: 'reality-checker', pid: sup.pid });
+    // no alive given: the default, asked with the row's time, finds this pid is not that old wake
+    assert.equal(SU.selfUpdate(f.project, { pluginRoot: f.pluginRoot, configDir: f.config, exec: claude(f), now }).installed, true);
+  } finally { try { process.kill(-sup.pid, 'SIGKILL'); } catch (e) { /* gone */ } }
+});
+
 test('a held install starts no new wake, and the next cycle installs once the running wake has ended', () => {
   const h = harness({});
   const f = fixture({ root: h.root });
