@@ -1010,3 +1010,56 @@ test('force: a running role on the installed plugin is restarted through the sta
   assert.equal(row.forced, true);
   assert.equal(row.session_id, 'session_b');
 });
+
+// ---- the plugin's own role unit, and a unit someone else wrote (hjx.1.6.10.1.2.1) ----
+
+// the ExecStart the plugin writes for a role's unit: its launcher runs host-manager.js run-session
+const pluginExec = (root, instance) => `/usr/bin/env node ${path.join(root, '.delivery', 'bin', 'delivery.js')} host-manager.js run-session --project ${root} --instance ${instance}`;
+
+test('servingUnits names every user service that serves a role directory: one running claude remote-control is not the plugin\'s, one running run-session is', () => {
+  const p = project();
+  const cos = COS_DIR(p);
+  const home = unitHome({
+    'claude-rc-chief-of-staff.service': unitBody(cos, '/usr/bin/claude remote-control --name cos'),
+    'delivery-role-chief-of-staff-1234abcd.service': unitBody(cos, pluginExec(p.root, 'chief-of-staff')),
+    'other.service': unitBody(cos, '/usr/bin/node something.js run-session'),
+  });
+  assert.deepEqual(R.servingUnits(cos, { home }), [
+    { unit: 'claude-rc-chief-of-staff.service', written: false },
+    { unit: 'delivery-role-chief-of-staff-1234abcd.service', written: true },
+  ]);
+  // the plugin's unit alone serves it, and the shared helper names it as the role's start path
+  const h2 = unitHome({ 'delivery-role-chief-of-staff-1234abcd.service': unitBody(cos, pluginExec(p.root, 'chief-of-staff')) });
+  assert.equal(R.remoteControlUnitFor(cos, { home: h2 }), 'delivery-role-chief-of-staff-1234abcd.service');
+  assert.deepEqual(R.servingUnits(p.dir('builder'), { home }), []);
+});
+
+test('a missing role the plugin\'s own unit serves is started through that unit, never in a scope; a unit someone else wrote beside it starts nothing', () => {
+  const p = project();
+  register(p, 'chief-of-staff', { plugin_version: '0.43.74' });
+  const unit = 'delivery-role-chief-of-staff-1234abcd.service';
+  const home = unitHome({ [unit]: unitBody(COS_DIR(p), pluginExec(p.root, 'chief-of-staff')) });
+  const spawn = spawner();
+  const units = [];
+  const live = [{ cwd: p.dir('builder'), sessionId: 'sess-builder', pid: 5200, name: 'builder@ex', status: 'idle' }];
+  const deps = (extra) => ({ start: true, env: { DELIVERY_HOST: 'pc' }, now: T0, bd: store(BUSY), live, prs: [], alive: () => false, configDir: p.config, spawn: spawn.fn, installed: '0.43.74', home, startUnit: (u) => units.push(u), settle: null, ...extra });
+  const r = TR.revive(p.root, p.team, deps());
+  assert.deepEqual(spawn.calls, [], 'no scope, no plain start');
+  assert.deepEqual(units, [unit]);
+  assert.match(r.lines.join('\n'), /^Started: chief-of-staff through its user unit delivery-role-chief-of-staff-1234abcd\.service/m, r.lines.join('\n'));
+  const row = R.ledger(p.root).find((x) => x.type === 'start');
+  assert.equal(row.unit, unit);
+  assert.equal(row.via, 'unit');
+  // the start caps hold for a start through the unit as for any other: not again within the hour
+  const again = TR.revive(p.root, p.team, deps({ now: iso(Date.parse(T0) + 60e3) }));
+  assert.deepEqual(units, [unit]);
+  assert.match(again.lines.join('\n'), /^Missing: chief-of-staff .*held: started/m, again.lines.join('\n'));
+  // a hand-written unit serving the same directory: two start paths, so the plugin uses neither
+  const q = project();
+  const h2 = unitHome({ 'claude-rc-cos.service': unitBody(COS_DIR(q), '/usr/bin/claude remote-control'), [unit]: unitBody(COS_DIR(q), pluginExec(q.root, 'chief-of-staff')) });
+  const units2 = [];
+  const r2 = TR.revive(q.root, q.team, { ...deps({ home: h2, configDir: q.config, live: [], startUnit: (u) => units2.push(u) }) });
+  assert.deepEqual(units2, []);
+  assert.deepEqual(spawn.calls.filter((c) => c.cwd === COS_DIR(q)), []);
+  assert.match(r2.lines.join('\n'), /^Missing: chief-of-staff .*not started: it is served by the user unit claude-rc-cos\.service, which the delivery plugin did not write, and by the plugin's own delivery-role-chief-of-staff-1234abcd\.service: two start paths for one role directory; stop and disable claude-rc-cos\.service/m, r2.lines.join('\n'));
+});
