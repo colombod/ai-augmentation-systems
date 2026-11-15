@@ -246,11 +246,13 @@ function selfUpdate(root, { pluginRoot, configDir, env = process.env, exec = def
       if (!since && !dryRun) WD.log(root, { ...base, result: 'held', why: held.d.why });
       const age = since ? Date.parse(at) - Date.parse(since.at) : 0;
       const overdue = age > HOLD_BOUND_MS;
-      if (overdue && !dryRun && !current.some((r) => r.result === 'held-overdue')) WD.log(root, { ...base, result: 'held-overdue', since: since.at, why: held.d.why });
+      // the first pass past the bound says so once: the host job alerts the owner then (hjx.1.6.20.1)
+      const overdueNew = overdue && !current.some((r) => r.result === 'held-overdue');
+      if (overdueNew && !dryRun) WD.log(root, { ...base, result: 'held-overdue', since: since.at, why: held.d.why });
       const line = overdue
         ? `self-update: ${label} held since ${since.at} (over ${Math.floor(age / 3600e3)} h, past the ${HOLD_BOUND_MS / 3600e3} h bound): ${held.d.why}, a wake that outlived its timeout; tried again next cycle.`
         : `self-update: ${label} held: ${held.d.why}; tried again next cycle.`;
-      return { lines: [line, ...refusals], installed: false, held: label };
+      return { lines: [line, ...refusals], installed: false, held: label, overdueNew, heldSince: since ? since.at : at };
     }
     const go = checks.filter((c) => c.d.action === 'install');
     if (!go.length) return { lines: refusals, installed: false };
