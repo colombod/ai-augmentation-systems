@@ -2324,6 +2324,22 @@ test('hjx.1.6.17: a live session that does not take the wake is reported and lef
   assert.deepEqual(spawn.list, []);
 });
 
+// rv-202: a wake whose start ran nothing (systemd-run refused the scope, and the role had a live session
+// by then) was still logged as woken, and its messages were marked delivered
+test('a wake that started nothing is no wake: no wake row, and its messages stay waiting for the next pass', () => {
+  const t0 = '2026-11-14T14:00:00Z';
+  const h = harness({});
+  const IB = require('./lib/inbox.js');
+  session(h, 'builder-1', { seen: iso(Date.parse(t0) - 2 * H) });
+  IB.queue(h.root, { to: 'builder-1', from: DM, message: 'merge main into your branch', at: t0 });
+  const seen = [];
+  const r = at(h, t0, ['run'], { spawn: (bin, args, o) => { seen.push(typeof o.stillMissing); return null; }, bd: memStore(h), live: [] });
+  assert.deepEqual(seen, ['function'], 'the spawner is given the live re-check for its plain retry');
+  assert.match(r.out, /^Not woken: builder-1: its start ran nothing \(systemd-run refused the scope; log \S+\); its messages stay waiting\./m);
+  assert.equal(WD.logRows(h.root).filter((x) => x.type === 'wake').length, 0, 'no wake row');
+  assert.equal(IB.pending(h.root).length, 1, 'the message is still waiting');
+});
+
 // rv-204: a wake row is stamped at its spawn on the real clock, not at the pass start: the running-wake
 // check reads the supervisor's start against the row, and a pass's reads and earlier spawns take real
 // time. Every other case injects its clock; this one runs on the real one.

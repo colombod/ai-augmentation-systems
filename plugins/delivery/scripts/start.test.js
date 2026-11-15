@@ -634,6 +634,50 @@ test('--launch starts no role that already has a live session, by its role direc
   assert.deepEqual(fs.readdirSync(rec2.dir).filter((f) => f.endsWith('.json')), [], 'nothing started');
 });
 
+// rv-202: --launch printed "started" when systemd-run refused the scope and nothing ran
+test('--launch with a systemd-run that refuses the scope starts each role plain, and says so', () => {
+  if (process.platform !== 'linux') return;
+  const project = path.join(mk('start-launch5-'), 'acme');
+  const rec = recordingClaude();
+  const dir = bin();
+  fs.writeFileSync(path.join(dir, 'systemd-run'), '#!/bin/sh\necho "Failed to start transient scope unit: refused" >&2\nexit 1\n', { mode: 0o755 });
+  const rt = mk('start-rt-');
+  fs.mkdirSync(path.join(rt, 'systemd'));
+  fs.writeFileSync(path.join(rt, 'systemd', 'private'), '');
+  const r = start(['--project', project, '--host', 'laptop', '--launch'], { path: dir, env: { DELIVERY_CLAUDE_BIN: rec.bin, XDG_RUNTIME_DIR: rt } });
+  assert.equal(r.status, 0, r.out);
+  const roles = ['chief-of-staff', 'product-manager', 'delivery-lead', 'builder'];
+  for (const i of roles) assert.match(r.out, new RegExp(`${i}: started \\(pid \\d+, a plain start: systemd-run refused its scope\\)`), r.out);
+  assert.ok(waitFor(roles.map((i) => path.join(rec.dir, `${i}.json`))), 'each role ran');
+});
+
+// rv-202-delivery-lead-8: a refused scope with the role live by the re-check (start.js stillMissing) starts
+// nothing for that role, and says so; a role still missing at its re-check gets its plain start
+test('--launch with a refused scope starts no plain session for a role that is live by the re-check', () => {
+  if (process.platform !== 'linux') return;
+  const project = path.join(mk('start-launch6-'), 'acme');
+  const team = path.join(path.dirname(project), 'acme-team');
+  const rec = recordingClaude();
+  // the first read of the sessions lists none; every read after it (each role's re-check) lists the
+  // Chief of Staff live in its role directory
+  const live = JSON.stringify([{ sessionId: 'late-cos', cwd: path.join(team, 'chief-of-staff'), name: 'Chief of Staff', status: 'busy' }]);
+  const wrap = path.join(rec.dir, 'claude-late');
+  fs.writeFileSync(wrap, `#!/bin/sh\nif [ "$1" = agents ]; then n="${rec.dir}/agents-reads"; if [ -f "$n" ]; then printf '%s' '${live}'; else : > "$n"; printf '[]'; fi; exit 0; fi\nexec "${rec.bin}" "$@"\n`, { mode: 0o755 });
+  const dir = bin();
+  fs.writeFileSync(path.join(dir, 'systemd-run'), '#!/bin/sh\necho "Failed to start transient scope unit: refused" >&2\nexit 1\n', { mode: 0o755 });
+  const rt = mk('start-rt6-');
+  fs.mkdirSync(path.join(rt, 'systemd'));
+  fs.writeFileSync(path.join(rt, 'systemd', 'private'), '');
+  const r = start(['--project', project, '--host', 'laptop', '--launch'], { path: dir, env: { DELIVERY_CLAUDE_BIN: wrap, XDG_RUNTIME_DIR: rt } });
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /chief-of-staff: not started: systemd-run refused its scope, and no plain start followed \(it has a live session by now\)/, r.out);
+  const others = ['product-manager', 'delivery-lead', 'builder'];
+  for (const i of others) assert.match(r.out, new RegExp(`${i}: started \\(pid \\d+, a plain start: systemd-run refused its scope\\)`), r.out);
+  assert.ok(waitFor(others.map((i) => path.join(rec.dir, `${i}.json`))), 'each missing role ran');
+  cp.spawnSync('sleep', ['1']);
+  assert.ok(!fs.existsSync(path.join(rec.dir, 'chief-of-staff.json')), 'no second Chief of Staff beside the live one');
+});
+
 test('a project repo start.js creates starts on main, whatever the machine\'s git default', () => {
   const project = path.join(mk('start-main-'), 'acme');
   const r = start(['--project', project, '--host', 'laptop']);
