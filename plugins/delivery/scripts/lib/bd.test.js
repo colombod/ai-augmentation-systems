@@ -154,3 +154,17 @@ test('lookup reads once more after a failed read, and not after a missing bead',
   assert.deepEqual(makeBd({ env: gone }).lookup('ex-1'), { missing: true });
   assert.equal(fs.readFileSync(path.join(gone.BD_LOOK_DIR, 'n'), 'utf8').trim(), '1', 'a missing bead is not read twice');
 });
+
+test('rv-216: a timeout is not read again, an error is; show() reads once; a timeout after a warning is named a timeout', () => {
+  // a bd that counts its calls and never answers in time
+  const slow = bdThat(`${COUNT} sleep 5`);
+  assert.deepEqual(makeBd({ env: slow, timeoutMs: 300 }).lookup('ex-1'), { error: 'bd did not answer within 300 ms (timed out)' });
+  assert.equal(fs.readFileSync(path.join(slow.BD_LOOK_DIR, 'n'), 'utf8').trim(), '1', 'a timeout is not waited for twice');
+  // show() is one read, as before lookup existed: a failed read is null after one call
+  const flaky = bdThat(`${COUNT} [ "$n" = 0 ] && { echo "Error: database is locked" >&2; exit 1; }; ${BEAD_JSON}`);
+  assert.equal(makeBd({ env: flaky }).show('ex-1'), null);
+  assert.equal(fs.readFileSync(path.join(flaky.BD_LOOK_DIR, 'n'), 'utf8').trim(), '1', 'show() does not retry');
+  // bd printed its beads.role warning, then hung: the error is the timeout, not the warning or "bd failed"
+  const warned = makeBd({ env: bdThat('echo "warning: beads.role not configured (GH#2950)." >&2; sleep 5'), timeoutMs: 300 }).lookup('ex-1');
+  assert.deepEqual(warned, { error: 'bd did not answer within 300 ms (timed out)' });
+});

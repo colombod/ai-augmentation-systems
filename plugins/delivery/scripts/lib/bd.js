@@ -4,10 +4,14 @@ const { execFileSync } = require('child_process');
 // bd's answer for an id no issue matches (bd show prints it on stderr and in its JSON, exit 1)
 const NOT_FOUND = /no issues? found matching/i;
 
+// A read that timed out: execFileSync kills it and says ETIMEDOUT (exec() keeps the code and signal, so a
+// warning bd printed first does not hide it)
+const timedOut = (err) => Boolean(err && (err.code === 'ETIMEDOUT' || /\bETIMEDOUT\b/.test(String(err.message || ''))));
+
 // A failed bd read in one line: a timeout named as one, else bd's own first error line.
 function readError(err, timeoutMs) {
   const text = String((err && err.message) || err || 'unknown error');
-  if ((err && err.code === 'ETIMEDOUT') || /ETIMEDOUT|timed out/i.test(text)) { const ms = timeoutMs || 30000; return `bd did not answer within ${ms >= 1000 ? `${Math.round(ms / 1000)} s` : `${ms} ms`} (timed out)`; }
+  if (timedOut(err) || /timed out/i.test(text)) { const ms = timeoutMs || 30000; return `bd did not answer within ${ms >= 1000 ? `${Math.round(ms / 1000)} s` : `${ms} ms`} (timed out)`; }
   // exec() prefixes the command ("bd show x --json: "); bd's stderr may lead with warnings and hints
   const lines = text.replace(/^bd [^:\n]*: /, '').split('\n').map((l) => l.trim()).filter((l) => l && !/^(warning:|Fix:|Or:|Hint:)/i.test(l));
   return (lines.find((l) => /error/i.test(l)) || lines[0] || 'bd failed').slice(0, 200);
@@ -37,7 +41,11 @@ function makeBd({ cwd, env, timeoutMs } = {}) {
       return execFileSync('bd', args, opts).toString();
     } catch (err) {
       const stderr = err.stderr ? err.stderr.toString().trim() : '';
-      throw new Error(`bd ${args.join(' ')}: ${stderr || err.message}`);
+      // the code and signal stay on the error: a timeout after bd printed a warning is still a timeout
+      const e = new Error(`bd ${args.join(' ')}: ${stderr || err.message}`);
+      if (err.code !== undefined) e.code = err.code;
+      if (err.signal !== undefined) e.signal = err.signal;
+      throw e;
     }
   }
 
@@ -57,9 +65,10 @@ function makeBd({ cwd, env, timeoutMs } = {}) {
     return { ...b, type: b.issue_type !== undefined ? b.issue_type : b.type, labels: b.labels || [], metadata: b.metadata || {}, parent: b.parent || null };
   }
 
-  // One bead, read with a retry: { bead }, { missing } when bd says no issue matches, or { error } naming
-  // what failed. A bd read that timed out or errored under load was taken as a missing bead, so the
-  // scripts said "no bead <id>" for a bead bd show then found (8l1.4.1.2.1).
+  // One bead: { bead }, { missing } when bd says no issue matches, or { error } naming what failed. A bd
+  // read that timed out or errored under load was taken as a missing bead, so the scripts said "no bead
+  // <id>" for a bead bd show then found (8l1.4.1.2.1). An error is read once more; a timeout is not, since
+  // a hook's deadline (bd-guard's budget, claim-stop's) would pass during a second wait and fail open.
   function lookup(id) {
     let last = null;
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -69,16 +78,19 @@ function makeBd({ cwd, env, timeoutMs } = {}) {
       } catch (err) {
         if (NOT_FOUND.test(String((err && err.message) || ''))) return { missing: true };
         last = err;
+        if (timedOut(err)) break;
       }
     }
     return { error: readError(last, opts.timeout) };
   }
 
-  // null for a missing bead, and also for a read that failed twice: the callers that only need to know
-  // whether a bead is there keep their contract; a script that reports to a role uses lookupBead
+  // One read, null for a missing bead and for a failed read, as before lookup existed: the callers that
+  // only need to know whether a bead is there, the hooks among them, keep their contract and their time
   function show(id) {
-    const r = lookup(id);
-    return r.bead || null;
+    let b;
+    try { b = one(json(['show', id, '--json'])); } catch (err) { return null; }
+    if (!b) return null;
+    return normalise(b);
   }
 
   function create({ id, title, type, parent, labels, metadata, priority, description }) {
