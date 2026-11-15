@@ -66,7 +66,7 @@ function pass({ now, dm = 'delivery-lead', staffing = 'staffing', chief = 'chief
     const last = mine[mine.length - 1];
     const lastActive = s && Number.isFinite(s.lastActive) ? s.lastActive : -Infinity;
     const limit = s && s.limit && lastActive <= ms(s.limit.at) + 60e3 ? s.limit : null;
-    const running = Boolean(s) && !limit && ((last && alive(last.pid)) || t - lastActive <= RUNNING_MIN * 60e3);
+    const running = Boolean(s) && !limit && ((last && alive(last.pid, last.at)) || t - lastActive <= RUNNING_MIN * 60e3);
     // held work that waits on the Delivery Manager (a review, a merge, a deploy or a check) is not the holder's to move
     const onDm = held.filter((b) => shipped(b) || (openPrOf(b.id) && openPrOf(b.id).state !== 'sent-back'));
     const movable = held.filter((b) => !onDm.includes(b));
@@ -163,7 +163,7 @@ function read(root, { bd, now, team, rows } = {}) {
     const beads = bd.list({ all: true }) || [];
     const ready = bd.ready() || [];
     return { now, dm, staffing, chief, cap, builders, beads, ready, sessions: W.sessions(root, { team: t, rows }), wakes: W.logRows(root).filter((r) => r.type === 'wake'), prs: prsOf(root),
-      handoffs: require('./handoff.js').pending(root), messages: require('./inbox.js').pending(root), stallHours: require('./goal.js').value(root, 'stall_hours'), alive: W.pidAlive };
+      handoffs: require('./handoff.js').pending(root), messages: require('./inbox.js').pending(root), stallHours: require('./goal.js').value(root, 'stall_hours'), alive: (pid, since) => W.pidAlive(pid, { since, now }) };
   } catch (err) { return { unreadable: String(err.message).split('\n')[0] }; }
 }
 
