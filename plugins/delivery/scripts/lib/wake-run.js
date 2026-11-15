@@ -31,6 +31,12 @@ function stopGroup(code) {
     if (!killed && Date.now() >= until) { killed = true; try { process.kill(-child.pid, 'SIGKILL'); } catch (err) { /* gone */ } }
   }, 100);
 }
+// the host job ends a wake that outlived its bound with SIGTERM (lib/watchdog.js stopWake): the group
+// goes the same way as at the limit, never left as orphans of a supervisor that died first
+process.on('SIGTERM', () => {
+  process.stderr.write('watchdog: the wake was ended by the host job; stopped\n');
+  stopGroup(143);
+});
 const timer = setTimeout(() => {
   process.stderr.write(`watchdog: the wake ran past its limit of ${Math.round(Number(limit) / 60000)} min; stopped\n`);
   stopGroup(124);
