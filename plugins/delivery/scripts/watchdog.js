@@ -677,7 +677,7 @@ function defaultRevive(root, { team, env, now, dryRun, bd, live }) {
   return require('./team-revive.js').revive(root, team, { start: true, cwd: root, dryRun, env, now, bd, relist, ...(live !== undefined ? { live } : {}) }).lines;
 }
 
-function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, live, spawn, deliver, platform = process.platform, home = os.homedir(), exec, has, sweep, lockWaitMs, update = {}, userGuard, revive, hostUnit, stopWake } = {}) {
+function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, live, spawn, deliver, platform = process.platform, home = os.homedir(), exec, has, sweep, lockWaitMs, update = {}, userGuard, revive, hostUnit, stopWake, kill: killFn } = {}) {
   let o;
   try { o = parse(argv); } catch (err) { return { code: 2, out: `watchdog.js: ${err.message}\n${USAGE}` }; }
   const [cmd] = o._;
@@ -715,10 +715,15 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
     const stoppedLines = [];
     if (cmd === 'run' && first && !o.dryRun) {
       const stopAt = now || new Date().toISOString();
+      // a stop from an earlier pass whose group outlived the kill grace is finished with SIGKILL
+      for (const k of WD.finishStops(WD.logRows(who.root), { now: Date.parse(stopAt), ...(killFn ? { kill: killFn } : {}) })) {
+        WD.log(who.root, { type: 'wake-killed', at: stopAt, pid: k.pid, instance: k.instance, killed: k.killed });
+        if (k.killed.length) stoppedLines.push(`Killed: ${k.instance || 'a role'}'s stopped wake (pid ${k.pid}) outlived the kill grace (${k.killed.join(', ')}).`);
+      }
       for (const w of WD.overdueWakes(WD.logRows(who.root), { now: Date.parse(stopAt), alive: wakeAlive(ended, stopAt) })) {
-        (stopWake || WD.stopWake)(w.pid);
+        const signalled = (stopWake || WD.stopWake)(w.pid) || [];
         ended.add(w.pid);
-        WD.log(who.root, { type: 'wake-stopped', at: stopAt, pid: w.pid, instance: w.instance, wake_at: w.at, why: 'ran past its time limit plus the kill grace' });
+        WD.log(who.root, { type: 'wake-stopped', at: stopAt, pid: w.pid, instance: w.instance, wake_at: w.at, signalled, why: 'ran past its time limit plus the kill grace' });
         stoppedLines.push(`Stopped: ${w.instance || 'a role'}'s wake (pid ${w.pid}, started ${w.at}) ran past its time limit plus the kill grace; the role starts fresh at the next run.`);
       }
     }

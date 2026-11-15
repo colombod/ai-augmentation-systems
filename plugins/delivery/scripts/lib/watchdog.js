@@ -836,12 +836,16 @@ function stopWake(pid, { kill = process.kill.bind(process), children = childPids
   try { kill(pid, signal); sent.push(pid); } catch (err) { /* gone */ }
   return sent;
 }
-// The roles waiting through an install hold: each one quiet with in-progress work it holds (an assigned
-// stall on a bead in progress). [{ instance, beads }]
+// The roles waiting through an install hold: each one quiet with in-progress work it holds, as an assigned
+// stall on a bead in progress, or a quiet stall (in progress past stall_hours) aimed at its holder; the
+// hold bound is longer than stall_hours, so a long hold's waiting roles are mostly quiet ones. [{ instance, beads }]
 function waitingRoles(res) {
   const by = new Map();
   for (const s of (res && res.stalls) || []) {
-    if (s.kind !== 'assigned' || !/^in_progress\b/.test(String(s.detail || ''))) continue;
+    const detail = String(s.detail || '');
+    const assigned = s.kind === 'assigned' && /^in_progress\b/.test(detail);
+    const quiet = s.kind === 'quiet' && /^in progress with /.test(detail) && detail.slice('in progress with '.length).split(';')[0].split('/').pop() === s.target;
+    if (!assigned && !quiet) continue;
     if (!by.has(s.target)) by.set(s.target, []);
     by.get(s.target).push(s.bead);
   }
@@ -870,6 +874,23 @@ function waitedRoles(rows, now) {
 // the team's Chief of Staff instance, for the owner's alert
 function chiefOf(team) {
   try { const i = require('./manifest.js').expandInstances(team).find((x) => x.role.id === 'chief-of-staff' && !x.role.retired); return i ? i.instance : 'chief-of-staff'; } catch (err) { return 'chief-of-staff'; }
+}
+// The stops not yet finished: each wake-stopped row past the kill grace whose signalled pids or groups
+// still answer gets SIGKILL, once (a wake-killed row). [{ pid, killed: [targets] }]
+function finishStops(rows, { now = Date.now(), kill = process.kill.bind(process) } = {}) {
+  const t = typeof now === 'number' ? now : ms(now);
+  const all = rows || [];
+  const done = new Set(all.filter((r) => r && r.type === 'wake-killed').map((r) => r.pid));
+  const out = [];
+  for (const r of all.filter((x) => x && x.type === 'wake-stopped' && !done.has(x.pid) && t - ms(x.at) >= KILL_GRACE_MS)) {
+    const killed = [];
+    for (const target of r.signalled || [r.pid]) {
+      try { kill(target, 0); } catch (err) { if (err.code !== 'EPERM') continue; }
+      try { kill(target, 'SIGKILL'); killed.push(target); } catch (err) { /* gone */ }
+    }
+    out.push({ pid: r.pid, instance: r.instance || null, killed });
+  }
+  return out;
 }
 function childPids(pid) {
   try { return fs.readFileSync(`/proc/${pid}/task/${pid}/children`, 'utf8').trim().split(/\s+/).map(Number).filter((n) => Number.isInteger(n) && n > 0); } catch (err) { return []; }
@@ -1083,4 +1104,4 @@ function wakeArgs(s, prompt, live, { prefix = null } = {}) {
   return { mode: 'resume', args: ['--resume', s.session, '-p', prompt] };
 }
 
-module.exports = { overdueWakes, stopWake, waitingRoles, noteWaiting, waitedRoles, chiefOf, KILL_GRACE_MS, START_SLACK_MS, procReads, reviveStarts, START_SETTLE_MIN, START_FRESH_H, MANAGER_STEP, managerPrs, refusedInstalls, MANAGER_DAILY_CAP, MANAGER_MESSAGE_DAILY_CAP, ASSIGNED_DAILY_CAP, MANAGER_ASSIGNED_DAILY_CAP, reviewFacts, capsOf, ASSIGNED_IDLE_MIN, WAKE_OPENING, wakePrompt, withA3s, FRESH_ABOVE, contextOf, MESSAGE_EVERY_MS, MESSAGE_DAILY_CAP, WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };
+module.exports = { overdueWakes, stopWake, finishStops, waitingRoles, noteWaiting, waitedRoles, chiefOf, KILL_GRACE_MS, START_SLACK_MS, procReads, reviveStarts, START_SETTLE_MIN, START_FRESH_H, MANAGER_STEP, managerPrs, refusedInstalls, MANAGER_DAILY_CAP, MANAGER_MESSAGE_DAILY_CAP, ASSIGNED_DAILY_CAP, MANAGER_ASSIGNED_DAILY_CAP, reviewFacts, capsOf, ASSIGNED_IDLE_MIN, WAKE_OPENING, wakePrompt, withA3s, FRESH_ABOVE, contextOf, MESSAGE_EVERY_MS, MESSAGE_DAILY_CAP, WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };
