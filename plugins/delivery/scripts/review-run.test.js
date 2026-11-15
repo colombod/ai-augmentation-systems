@@ -1,5 +1,6 @@
 // scripts/review-run.test.js — the reviewer's one runner: the product's own test command, in any
 // language, only inside review/, with the role's variables cleared.
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

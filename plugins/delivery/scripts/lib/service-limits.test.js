@@ -1,6 +1,7 @@
 // scripts/lib/service-limits.test.js — a service's TasksMax is read against the team's role sessions on
 // its host (hjx.1.6.14: a Chief of Staff service at TasksMax 300 started two or three roles), with
 // systemctl injected.
+require('../testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const SL = require('./service-limits.js');

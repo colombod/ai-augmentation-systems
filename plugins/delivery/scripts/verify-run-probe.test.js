@@ -1,6 +1,7 @@
 // scripts/verify-run-probe.test.js — the Reality Checker's runner for an external-host spike: a step file
 // committed in the project repository, run on the host with no story, script or deploy, its capture saved
 // and accepted by assumptions.js probe; every other role refused, here and in assumptions.js.
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

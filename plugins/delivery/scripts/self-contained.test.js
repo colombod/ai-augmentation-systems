@@ -2,6 +2,7 @@
 // nothing it ships points outside plugins/delivery. The plugin's own dogfood records
 // (.delivery/ and .superpowers/, the repository's engineering record for this plugin) are the
 // documented exception: they are history, not something a skill, hook or script reads.
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

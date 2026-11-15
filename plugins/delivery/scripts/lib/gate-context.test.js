@@ -1,4 +1,5 @@
 // scripts/lib/gate-context.test.js — the project root a gate reads follows its origin (freshRoot).
+require('../testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

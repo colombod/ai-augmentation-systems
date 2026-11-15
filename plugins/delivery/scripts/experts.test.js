@@ -2,6 +2,7 @@
 // Run with: node --test scripts/experts.test.js
 // Each test runs the real prepare-role as a child process where a role session would, so what is
 // checked is the file a session loads, not a function's return value.
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

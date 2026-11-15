@@ -1,6 +1,7 @@
 // scripts/testing/role-env.test.js — hjx.1.1.2: a test file run straight from a role session (a reality
 // check runs the watchdog tests this way) clears the role's own variables, as run-tests.js does, and
 // keeps the seal's, so it sees what CI sees and the seal still holds.
+require('./role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { clearRoleEnv, SEAL_VARS } = require('./role-env.js');
@@ -67,4 +68,40 @@ test('hjx.1.1.2: with no argument it clears a role session\'s variables from pro
   } finally {
     for (const [k, v] of Object.entries(old)) if (v !== undefined) process.env[k] = v;
   }
+});
+
+// hjx.1.1.3, the class fix of a3-reality-checker-16 and -17: the sealed runner clears the role's
+// variables once for the suite, so a file that does not clear them itself passes in CI and sees the
+// role when a reality check runs it straight from its session. Every test file the runner runs clears
+// them as its first statement; this names each one that does not.
+test('hjx.1.1.3: every test file the suite runs clears the role\'s variables as its first statement', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const { testFiles } = require('./run-tests.js');
+  const { firstStatementClears } = require('./role-env.js');
+  const root = path.join(__dirname, '..', '..');
+  const files = testFiles(root);
+  assert.ok(files.length > 50, `the suite's test files were found (${files.length})`);
+  const missing = files.filter((f) => !firstStatementClears(fs.readFileSync(f, 'utf8'), path.dirname(f))).map((f) => path.relative(root, f));
+  assert.deepEqual(missing, [], `these test files do not call require('<path>/testing/role-env.js').clearRoleEnv() first: ${missing.join(', ')}`);
+});
+
+test('hjx.1.1.3: the guard takes the call only first, and only from role-env.js', () => {
+  const { firstStatementClears } = require('./role-env.js');
+  const dir = __dirname;
+  const call = "require('./role-env.js').clearRoleEnv();";
+  assert.equal(firstStatementClears(`${call}\nconst test = require('node:test');`, dir), true);
+  assert.equal(firstStatementClears(`#!/usr/bin/env node\n'use strict';\n// why\n/* more\n   why */\n\n${call}\n`, dir), true, 'after a header');
+  assert.equal(firstStatementClears(`const test = require('node:test');\n${call}`, dir), false, 'a require ahead of it');
+  assert.equal(firstStatementClears(`process.env.TZ = 'UTC';\n${call}`, dir), false, 'any statement ahead of it');
+  // built at run time: a literal would read as a require of a file that is not there (self-contained.test.js)
+  const other = ['require(', "'./other", "-env.js')", '.clearRoleEnv();'].join('');
+  assert.equal(firstStatementClears(other, dir), false, 'another file\'s clearRoleEnv');
+  assert.equal(firstStatementClears("require('../testing/role-env.js').clearRoleEnv();", path.join(dir, '..', 'lib')), true, 'from another directory');
+  assert.equal(firstStatementClears("// require('./role-env.js').clearRoleEnv();\nconst x = 1;", dir), false, 'a call in a comment');
+});
+
+test('hjx.1.1.3: every BD_ variable is cleared, by prefix, not only BD_ACTOR', () => {
+  const env = clearRoleEnv({ BD_ACTOR: 'a', BD_NON_INTERACTIVE: '1', BD_SOMETHING_NEW: 'x', BEADS_NEW: 'y', DELIVERY_NEW: 'z', BDX: 'kept', HOME: '/h' });
+  assert.deepEqual(Object.keys(env).filter((k) => k !== 'CLAUDE_CONFIG_DIR').sort(), ['BDX', 'HOME']);
 });

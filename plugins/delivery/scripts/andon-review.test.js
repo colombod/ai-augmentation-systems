@@ -1,6 +1,7 @@
 // scripts/andon-review.test.js — the PR 57 review findings on stop the line (R-22) and flow (R-23), each
 // replayed first as a failing case: through the real lane and bd-guard hooks where a claim decides it,
 // on the library where a rule does.
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

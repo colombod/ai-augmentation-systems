@@ -2,6 +2,7 @@
 // link counts only when it names shipped work, a counting failed check row, the owner's own report of
 // the defect, or a security finding; the labels and links are the Delivery Manager's and Product
 // Manager's to set; and a peer agent's message is never the owner's record (evidence.js cut too).
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

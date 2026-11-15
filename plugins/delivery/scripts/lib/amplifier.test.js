@@ -1,5 +1,6 @@
 // scripts/lib/amplifier.test.js — run with: node --test scripts/lib/amplifier.test.js
 // The owner's ruling (2026-10-28): a session on a machine with Microsoft Amplifier leans on it first.
+require('../testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

@@ -1,5 +1,6 @@
 // scripts/judge.test.js — run with: node --test scripts/judge.test.js
 // The judge CLI against a local fake provider; the real API is never called here.
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

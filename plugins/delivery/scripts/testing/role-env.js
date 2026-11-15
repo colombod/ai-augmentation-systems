@@ -30,4 +30,21 @@ function clearRoleEnv(env = process.env) {
   return env;
 }
 
-module.exports = { clearRoleEnv, SEAL_VARS };
+// Whether a test file's first statement is the call to clearRoleEnv() from this file (hjx.1.1.3). Every
+// test file makes it, not only those whose code reads a role variable today: which of them does changes
+// with any require, and one require that loads a reader ahead of the call is enough to see the role's
+// variables. Leading comments, blank lines, a shebang and 'use strict' may come first.
+const CALL = /^require\((['"])([^'"]+)\1\)\.clearRoleEnv\(\);/;
+function firstStatementClears(text, fromDir) {
+  const path = require('path');
+  let rest = String(text);
+  for (;;) {
+    const before = rest;
+    rest = rest.replace(/^\s+/, '').replace(/^#![^\n]*/, '').replace(/^\/\/[^\n]*/, '').replace(/^\/\*[\s\S]*?\*\//, '').replace(/^(['"])use strict\1;?/, '');
+    if (rest === before) break;
+  }
+  const m = CALL.exec(rest);
+  return Boolean(m) && path.resolve(fromDir, m[2]) === __filename;
+}
+
+module.exports = { clearRoleEnv, firstStatementClears, SEAL_VARS };

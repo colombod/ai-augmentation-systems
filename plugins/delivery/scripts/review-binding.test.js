@@ -2,6 +2,7 @@
 // facts (its head branch), the reviewer is the one requested, identities are normalised, gh reads the
 // product repository, the merge command cannot hide a flag, and status reads the live pull request.
 // Through the real lane and bd-guard hook processes (testing/role-harness.js) where a session acts.
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
