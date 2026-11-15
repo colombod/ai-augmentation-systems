@@ -87,6 +87,39 @@ function pointerOf(configDir, dir) {
   return j && ID_RE.test(String(j.sessionId || '')) ? { sessionId: j.sessionId, pid: Number(j.pid) || null } : null;
 }
 
+// The systemd user unit that serves a role directory, or null: a service in ~/.config/systemd/user whose
+// WorkingDirectory= is that directory and whose ExecStart= runs `claude remote-control`. Some owners run a
+// role as a unit of their own, which restarts it and keeps its link; a start or a restart here in a scope
+// of its own would be a second session beside the unit's (and the unit would bring its own back), so for
+// such a role the unit is the only start path. Shared by every start and restart path (and by what builds
+// on it), so they all agree on which roles a unit serves. dir: the unit directory (a test's); readdir and
+// readFile: a test's reads.
+const unitDirOf = (home = os.homedir()) => path.join(home, '.config', 'systemd', 'user');
+const unquote = (x) => x.replace(/^["']|["']$/g, '');
+function runsRemoteControl(execStart) {
+  // ExecStart may carry systemd's prefixes (-, @, +, !, :) and an /usr/bin/env in front of claude
+  const words = String(execStart || '').trim().replace(/^[-@+!:]+/, '').split(/\s+/).map(unquote);
+  const k = words.findIndex((w) => path.basename(w) === 'claude');
+  return k >= 0 && words.slice(k + 1).includes('remote-control');
+}
+function remoteControlUnitFor(roleDir, { home, dir = unitDirOf(home), readdir = fs.readdirSync, readFile = (f) => fs.readFileSync(f, 'utf8') } = {}) {
+  if (!roleDir) return null;
+  let names = [];
+  try { names = readdir(dir).filter((f) => /\.service$/.test(f)).sort(); } catch (err) { return null; }
+  const want = path.resolve(roleDir);
+  for (const f of names) {
+    let body = '';
+    try { body = readFile(path.join(dir, f)); } catch (err) { continue; }
+    const wd = /^WorkingDirectory=(.+)$/m.exec(body);
+    if (!wd) continue;
+    const d = unquote(wd[1].trim().replace(/^-/, '')).replace(/%%/g, '%');
+    if (!path.isAbsolute(d) || path.resolve(d) !== want) continue;
+    const execs = [...body.matchAll(/^ExecStart=(.*)$/gm)].map((x) => x[1]);
+    if (execs.some(runsRemoteControl)) return f;
+  }
+  return null;
+}
+
 // the open sessions' own files that name a Remote Control session: [{ sessionId, cwd, bridgeSessionId, pid }]
 function bridgeSessions(configDir) {
   let names = [];
@@ -192,31 +225,44 @@ function modeOf(team) {
 // roster names this very session; another session's version says nothing about this one.
 // null when it is not stale; else { version, installed, server, remoteId, args } with skip or held when
 // it is not restarted now, and why.
-function staleOf(f, { e, open, starts, last, t, team, name, same }) {
-  if (!f.installed || !e.session_id || e.session_id !== open.sessionId) return null;
-  if (PV.compare(e.plugin_version, f.installed) !== -1) return null;
-  const st = { version: e.plugin_version, installed: f.installed, session: open.sessionId, pid: open.pid || null, server: null, remoteId: null, skip: null, held: null };
-  const server = f.serverOf ? f.serverOf(open.pid) : null;
+// forced (the owner's restart, host-manager.js): the session is a restart target even on the installed
+// version; every other rule below still holds (idle, its server, its recorded link, the caps). unit: the
+// user unit that serves its role directory (remoteControlUnitFor); such a session is restarted only
+// through that unit, and only on the owner's restart: never stopped and started again in a scope here.
+// st.busy: the status that holds it (not idle between turns).
+function staleOf(f, { e, open, starts, last, t, team, name, same, forced = false, unit = null }) {
+  const older = Boolean(f.installed && e.session_id && e.session_id === open.sessionId && PV.compare(e.plugin_version, f.installed) === -1);
+  if (!older && !forced) return null;
+  const version = e.session_id && e.session_id === open.sessionId ? e.plugin_version || null : null;
+  const st = { version, installed: f.installed || null, session: open.sessionId, pid: open.pid || null, server: null, remoteId: null, skip: null, held: null, ...(forced ? { forced: true } : {}), ...(unit ? { unit } : {}) };
   const bridge = (f.bridges || []).find((s) => same(s.cwd) && (!s.sessionId || s.sessionId === open.sessionId));
   st.remoteId = bridge ? bridge.bridgeSessionId : null;
   const m = modeOf(team);
   st.mode = m.mode || null;
-  if (server && server.unreadable) st.held = `the process list could not be read, so its Remote Control server is not known (${server.unreadable})`;
-  else if (!server || !server.pid) st.skip = 'it does not run under a Remote Control server this host started, so it is not stopped here; it runs the installed plugin from its next start';
-  else if (server.self) st.skip = 'this pass runs inside it, so it is not stopped from here; the host job restarts it';
-  else if (!st.remoteId) st.skip = 'no Remote Control session id is recorded for it, so a restart would give the owner a new link';
-  else if (m.skip) st.skip = m.skip;
-  if (server && server.pid) st.server = server.pid;
+  if (unit) {
+    // the unit has its own command and its own link: no server to stop, no argv to build
+    if (!forced) st.skip = `it is served by the user unit ${unit}, so it is not restarted in a scope here; the owner's restart restarts it through that unit`;
+  } else {
+    const server = f.serverOf ? f.serverOf(open.pid) : null;
+    if (server && server.unreadable) st.held = `the process list could not be read, so its Remote Control server is not known (${server.unreadable})`;
+    else if (!server || !server.pid) st.skip = 'it does not run under a Remote Control server this host started, so it is not stopped here; it runs the installed plugin from its next start';
+    else if (server.self) st.skip = 'this pass runs inside it, so it is not stopped from here; the host job restarts it';
+    else if (!st.remoteId) st.skip = 'no Remote Control session id is recorded for it, so a restart would give the owner a new link';
+    else if (m.skip) st.skip = m.skip;
+    if (server && server.pid) st.server = server.pid;
+  }
+  // the read just before the stop finds the session by its id
+  if (!st.skip && !st.held && !open.sessionId) st.skip = 'the session list gives it no session id, so it cannot be read again just before a stop';
   if (st.skip || st.held) return st;
   // a restart onto this version that did not take (the session still records the older one since) is
   // not tried again: a loop of stops would cost the owner the link each hour
   const tried = starts.filter((r) => r.type === 'restart' && r.to === f.installed);
   const lastTry = tried[tried.length - 1];
-  if (lastTry && ms(e.last_seen) > ms(lastTry.at)) st.held = `restarted ${WD.clock(ms(lastTry.at))} onto ${f.installed}, and its session still records ${e.plugin_version}; not tried again`;
-  else if (open.status !== 'idle') st.held = `it is ${open.status || 'busy'}; it is restarted only when idle between turns`;
+  if (older && lastTry && ms(e.last_seen) > ms(lastTry.at)) st.held = `restarted ${WD.clock(ms(lastTry.at))} onto ${f.installed}, and its session still records ${e.plugin_version}; not tried again`;
+  else if (open.status !== 'idle') { st.busy = open.status || 'busy'; st.held = `it is ${st.busy}; it is restarted only when idle between turns`; }
   else if (last && t - ms(last.at) < START_EVERY_MS) st.held = `started ${WD.clock(ms(last.at))}; the next start is after ${WD.clock(ms(last.at) + START_EVERY_MS)} (one start an hour)`;
   else if (starts.filter((r) => t - ms(r.at) < DAY).length >= DAILY_CAP) st.held = 'started the most times a day allows';
-  st.args = ['remote-control', '--name', name, '--session-id', st.remoteId, ...(st.mode ? ['--permission-mode', st.mode] : [])];
+  if (!unit) st.args = ['remote-control', '--name', name, '--session-id', st.remoteId, ...(st.mode ? ['--permission-mode', st.mode] : [])];
   return st;
 }
 
@@ -242,7 +288,9 @@ function linkFor(remoteId, starts, e = {}) {
 //   defaultDir(instance), exists(dir), inProgress: [bead] | { unreadable }, prs: [{number, headRefName}] |
 //   { unreadable }, messages: inbox.pending(), handoffs: handoff.pending(), paused: bool | { unreadable },
 //   rows: ledger rows, alive(pid), installed: the installed plugin version, serverOf(pid): the Remote
-//   Control server a session runs under, { pid, self } | null | { unreadable } }
+//   Control server a session runs under, { pid, self } | null | { unreadable }, unitOf(dir): the user unit
+//   that serves a role directory or null (remoteControlUnitFor), force: [instance] the owner asked to
+//   restart although they may run the installed plugin (host-manager.js restart), or none }
 function assess(f) {
   const team = f.team;
   const out = { host: f.host, team: (team && SN.teamTag(team.prefix)) || null, instances: [], work: [], unreadable: [], paused: false, missing: [], inFlight: false, go: false };
@@ -268,6 +316,9 @@ function assess(f) {
     const roleDir = e.role_dir || f.defaultDir(instance);
     const same = (d) => Boolean(d) && path.resolve(d) === path.resolve(roleDir);
     const it = { instance, roleDir, name: SN.sessionName(instance, team.prefix), running: null, remoteId: null, skip: null, held: null };
+    // a role a user unit of its own serves is started and restarted only through that unit
+    const unit = f.unitOf ? f.unitOf(roleDir) : null;
+    if (unit) it.unit = unit;
     // every live session of this instance (lib/one-session.js): in or under its role directory, or under
     // its own session name; the roster's own session first when it is one of them
     const lives = OS.liveOf(instance, { roleDir, live: f.live, prefix: team.prefix }) || [];
@@ -289,7 +340,7 @@ function assess(f) {
     const alive = open || !last || failed ? false : f.alive(last.pid);
     if (open) {
       it.running = `session ${open.name || open.sessionId || 'open'} in ${roleDir}`;
-      it.stale = staleOf(f, { e, open, roleDir, starts, last, t, team, name: it.name, same });
+      it.stale = staleOf(f, { e, open, roleDir, starts, last, t, team, name: it.name, same, forced: Array.isArray(f.force) && f.force.includes(instance), unit });
       // a restart stops one session and starts another: with two running it would still leave two
       if (it.stale && it.twice && !it.stale.skip) it.stale.skip = `it runs twice (${it.twice}); one must end first`;
     }
@@ -306,6 +357,7 @@ function assess(f) {
       // it ran and ended, so it is started again at once, not after the hour that holds a start that died
       const ran = Boolean(last) && ms(e.last_seen) > ms(last.at);
       if (!f.exists(roleDir)) it.skip = `its role directory ${roleDir} is not on this host (prepare-role.js prepares it)`;
+      else if (unit) it.skip = `it is served by the user unit ${unit}, which is its start path, so no scope is started beside it; the plugin does not start a unit it did not write: start that unit, or replace it with the plugin's own`;
       else { const l = linkFor(it.remoteId, starts, e); it.remoteId = l.remoteId; if (l.staleId) it.staleId = l.staleId; if (l.endedId) it.endedId = l.endedId; }
       const m = modeOf(team);
       if (!it.skip && m.skip) it.skip = m.skip;
@@ -360,15 +412,18 @@ function lines(a, { bin = 'claude', started = null, restarted = null, dryRun = f
   }
   for (const i of a.stale || []) {
     const st = i.stale;
-    const what = `${i.instance} runs the delivery plugin ${st.version} and ${st.installed} is installed`;
-    if (st.skip) { out.push(`Stale: ${what}; not restarted: ${st.skip}.`); continue; }
-    if (st.held) { out.push(`Stale: ${what}; held: ${st.held}.`); continue; }
-    const how = `stop its Remote Control server (pid ${st.server}), then ${shown(bin, st.args)} in ${i.roleDir}, reattaching Remote Control session ${st.remoteId}`;
+    const older = st.version && st.installed && PV.compare(st.version, st.installed) === -1;
+    const what = older || !st.forced ? `${i.instance} runs the delivery plugin ${st.version} and ${st.installed} is installed` : `${i.instance}, restart asked by the owner, runs the delivery plugin ${st.version || '(not recorded)'} and ${st.installed || '(not known)'} is installed`;
+    const tag = older || !st.forced ? 'Stale' : 'Restart';
+    if (st.skip) { out.push(`${tag}: ${what}; not restarted: ${st.skip}.`); continue; }
+    if (st.held) { out.push(`${tag}: ${what}; held: ${st.held}.`); continue; }
+    const how = st.unit ? `systemctl --user restart ${st.unit}, the user unit that serves ${i.roleDir}` : `stop its Remote Control server (pid ${st.server}), then ${shown(bin, st.args)} in ${i.roleDir}, reattaching Remote Control session ${st.remoteId}`;
     const r = restarted && restarted[i.instance];
-    if (r && r.pid) out.push(`Restarted: ${i.instance} on ${st.installed} (pid ${r.pid}): ${how}; log ${r.log}.`);
-    else if (r) out.push(`Stale: ${what}; not restarted: ${r.why}.`);
-    else if (a.restart) out.push(`Stale: ${what}; ${dryRun ? 'would restart' : 'restart runs'}: ${how}.`);
-    else out.push(`Stale: ${what}; not restarted now (${a.paused ? 'paused' : 'the open sessions could not be read'}); restart would ${how}.`);
+    if (r && r.unit) out.push(`Restarted: ${i.instance} on ${st.installed}: ${how}.`);
+    else if (r && r.pid) out.push(`Restarted: ${i.instance} on ${st.installed} (pid ${r.pid}): ${how}; log ${r.log}.`);
+    else if (r) out.push(`${tag}: ${what}; not restarted: ${r.why}.`);
+    else if (a.restart) out.push(`${tag}: ${what}; ${dryRun ? 'would restart' : 'restart runs'}: ${how}.`);
+    else out.push(`${tag}: ${what}; not restarted now (${a.paused ? 'paused' : 'the open sessions could not be read'}); restart would ${how}.`);
   }
   for (const i of a.instances.filter((x) => x.twice)) out.push(`Running twice: ${i.instance}: ${i.twice}. One session per role: Staffing is told (on a start pass) and names the one that stays; nothing more is started for it.`);
   const unknown = a.instances.filter((i) => i.running === 'not known');
@@ -379,4 +434,4 @@ function lines(a, { bin = 'claude', started = null, restarted = null, dryRun = f
   return out;
 }
 
-module.exports = { STAY_UP, linkFor, LEDGER, ledgerFile, SETTLE_MS, SCOPE_LIMITS, scopedCommand, LOCK, lockFile, LOCK_STALE_MS, startLock, START_EVERY_MS, DAILY_CAP, RC_MODES, hostOf, configDirOf, projectKey, pointerOf, bridgeSessions, remoteSessionOf, ledger, record, modeOf, staleOf, assess, lines, shown };
+module.exports = { remoteControlUnitFor, unitDirOf, STAY_UP, linkFor, LEDGER, ledgerFile, SETTLE_MS, SCOPE_LIMITS, scopedCommand, LOCK, lockFile, LOCK_STALE_MS, startLock, START_EVERY_MS, DAILY_CAP, RC_MODES, hostOf, configDirOf, projectKey, pointerOf, bridgeSessions, remoteSessionOf, ledger, record, modeOf, staleOf, assess, lines, shown };
