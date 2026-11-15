@@ -176,26 +176,13 @@ function spawnRemote(bin, args, { cwd, env, logPath }) {
   return child.pid || null;
 }
 
-// systemd-run where it can reach this user's systemd manager (Linux with a user manager: the host job's
-// service runs under it, and so does a desktop login), else null, and a start is a plain detached child.
-// The manager is reached through XDG_RUNTIME_DIR, so without it systemd-run --user would fail every start.
-function systemdRunOf(env = process.env, { platform = process.platform, exists = fs.existsSync } = {}) {
-  if (platform !== 'linux' || !env.XDG_RUNTIME_DIR) return null;
-  const rt = env.XDG_RUNTIME_DIR;
-  if (!exists(path.join(rt, 'systemd', 'private')) && !exists(path.join(rt, 'bus'))) return null;
-  for (const d of String(env.PATH || '/usr/bin:/bin').split(path.delimiter)) {
-    const f = path.join(d || '.', 'systemd-run');
-    if (d && exists(f)) return f;
-  }
-  return null;
-}
+// systemd-run, where this user's systemd manager can be reached (lib/role-scope.js)
+const systemdRunOf = (...a) => require('./lib/role-scope.js').systemdRunOf(...a);
 
 // systemd-run's own refusal in a start's log, before claude ran: "Failed to start transient scope unit",
 // "Failed to connect to bus", "Failed to create bus connection", an unknown property
-const SYSTEMD_RUN_REFUSED = /^(Failed to (start transient|connect to (bus|user scope bus)|create bus connection|set unit properties)|Unknown assignment|Failed to parse)/m;
-function systemdRunRefused(logFile) {
-  try { return SYSTEMD_RUN_REFUSED.test(fs.readFileSync(logFile, 'utf8')); } catch (err) { return false; }
-}
+// systemd-run's own refusal in a start's log (lib/role-scope.js)
+const systemdRunRefused = (logFile) => require('./lib/role-scope.js').refusedIn(logFile);
 
 // Whether pid has exited: gone, or a zombie (a detached child of this pass that died is not reaped while
 // the pass runs synchronously). A process that cannot be read is taken as still running.
@@ -278,7 +265,7 @@ function restartStale(root, f, a, { env, bin, spawn, stop, relist, systemdRun = 
     const logPath = path.join(root, WD.REL, 'logs', `revive-${i.instance}-${at.replace(/[:.]/g, '-')}.log`);
     let pid;
     // a restarted session gets its own scope too, as a start does
-    const cmd = R.scopedCommand(bin, st.args, { instance: i.instance, at, systemdRun });
+    const cmd = require('./lib/role-scope.js').roleCommand(bin, st.args, { instance: i.instance, at, systemdRun });
     try { pid = spawn(cmd.bin, cmd.args, { cwd: i.roleDir, env: startEnv(env, i.instance), logPath }); } catch (err) {
       // its server is already stopped: the row says so, the caps count it, and the next pass starts the missing session
       R.record(root, { type: 'restart-failed', at, instance: i.instance, server: st.server, stopped: st.server, from: st.version, to: st.installed, error: err.message, ...forced });
@@ -336,7 +323,7 @@ function revivePass(root, team, { start = false, dryRun = false, env = process.e
     for (const i of a.missing.filter((x) => !x.skip && !x.held && (!only || only.includes(x.instance)))) {
       const at = f.now;
       const logPath = path.join(root, WD.REL, 'logs', `revive-${i.instance}-${at.replace(/[:.]/g, '-')}.log`);
-      const cmd = R.scopedCommand(bin, i.args, { instance: i.instance, at, systemdRun: sdRun });
+      const cmd = require('./lib/role-scope.js').roleCommand(bin, i.args, { instance: i.instance, at, systemdRun: sdRun });
       const pid = spawn(cmd.bin, cmd.args, { cwd: i.roleDir, env: startEnv(env, i.instance), logPath });
       R.record(root, { type: 'start', at, instance: i.instance, pid, args: i.args, session_id: i.remoteId, mode: i.mode, log: path.relative(root, logPath), ...(cmd.unit ? { unit: cmd.unit } : {}) });
       started[i.instance] = { pid, log: path.relative(root, logPath), at, args: i.args, roleDir: i.roleDir, ...(cmd.unit ? { unit: cmd.unit } : {}) };
