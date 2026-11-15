@@ -595,6 +595,38 @@ test('the start pass (the watchdog\'s) restarts an older, idle host manager thro
   assert.ok(!spawned.includes(f.alpha.dir('host-manager')), spawned.join('\n'));
 });
 
+// A unit restart that did not take (run-session found the old session still live and exited 3, so the same
+// session runs on) is not a restart onto the installed plugin: the next pass, after the hourly cap, tries
+// again. One that took (a new session came up, still recording the older version) is held as before.
+test('a host manager\'s unit restart that left the same old session running is tried again after the cap; one that brought a new session is held', () => {
+  const TR = require('./team-revive.js');
+  const m = machine({ alphaRoles: HM_ROLES });
+  hostManagerUnit(m);
+  const hm = runningRole(m, m.alpha, 'host-manager', { pid: 90, version: '1.1.0' });
+  const units = [];
+  const pass = () => TR.revive(m.alpha.root, m.alpha.team, { start: true, cwd: m.base, env: { DELIVERY_HOST: 'pc', PATH: '/usr/bin', DELIVERY_CLAUDE_BIN: NO_CLAUDE }, home: m.home, live: m.live, relist: () => m.live, restartUnit: (u) => units.push(u), spawn: () => { throw new Error('no spawn'); }, stop: () => { throw new Error('no stop'); }, systemdRun: null, ...m.deps().teamDeps(m.alpha.root) });
+  pass();
+  assert.deepEqual(units, [HM.UNIT]);
+  // the restart did not take: the same session, seen again since, still on 1.1.0
+  m.now = iso(Date.parse(T0) + 61 * MIN);
+  require('./lib/roster.js').registerInstance(m.alpha.root, { instance: 'host-manager', session_id: hm.sessionId, host: 'pc', role_dir: hm.dir, now: iso(Date.parse(T0) + 30 * MIN), plugin_version: '1.1.0' });
+  const again = pass();
+  assert.deepEqual(units, [HM.UNIT, HM.UNIT], again.lines.join('\n'));
+  // within the hour after that, the cap holds it
+  m.now = iso(Date.parse(T0) + 70 * MIN);
+  const capped = pass();
+  assert.equal(units.length, 2);
+  assert.ok(capped.lines.some((l) => /^Stale: host-manager .*; held: started .* \(one start an hour\)\.$/.test(l)), capped.lines.join('\n'));
+  // the restart took: a new session came up, and it still records 1.1.0: not tried again
+  m.live = [{ cwd: hm.dir, sessionId: 'hm-new', pid: 91, status: 'idle' }];
+  require('./lib/roster.js').registerInstance(m.alpha.root, { instance: 'host-manager', session_id: 'hm-new', host: 'pc', role_dir: hm.dir, now: iso(Date.parse(T0) + 75 * MIN), plugin_version: '1.1.0' });
+  m.now = iso(Date.parse(T0) + 200 * MIN);
+  const took = pass();
+  assert.equal(units.length, 2, took.lines.join('\n'));
+  assert.ok(took.lines.some((l) => /^Stale: host-manager .*; held: restarted .* onto 1\.2\.0, and its session still records 1\.1\.0; not tried again\.$/.test(l)), took.lines.join('\n'));
+  assert.deepEqual(R.ledger(m.alpha.root).filter((x) => x.type === 'restart').map((x) => x.from_session), [hm.sessionId, hm.sessionId]);
+});
+
 test('a role served by a user unit that is down is never started in a scope: the reply names its unit', () => {
   const m = machine({ beads: WORK });
   roleUnit(m, m.alpha.dir('builder'), 'claude-alpha-builder.service');

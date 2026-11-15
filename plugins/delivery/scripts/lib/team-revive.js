@@ -351,7 +351,10 @@ function staleOf(f, { e, open, starts, last, t, team, name, same, forced = false
   if (st.skip || st.held) return st;
   // a restart onto this version that did not take (the session still records the older one since) is
   // not tried again: a loop of stops would cost the owner the link each hour
-  const tried = starts.filter((r) => r.type === 'restart' && r.to === f.installed);
+  // a unit restart whose session it meant to replace is still the one open did not take (the unit's
+  // run-session found it live and exited 3): it is not a restart onto this version, so it holds nothing
+  // beyond the start caps, and a later pass or the owner's restart tries again
+  const tried = starts.filter((r) => r.type === 'restart' && r.to === f.installed && !(r.via === 'unit' && r.from_session && r.from_session === open.sessionId));
   const lastTry = tried[tried.length - 1];
   if (older && lastTry && ms(e.last_seen) > ms(lastTry.at)) st.held = `restarted ${WD.clock(ms(lastTry.at))} onto ${f.installed}, and its session still records ${e.plugin_version}; not tried again`;
   else if (open.status !== 'idle') { st.busy = open.status || 'busy'; st.held = `it is ${st.busy}; it is restarted only when idle between turns`; }
