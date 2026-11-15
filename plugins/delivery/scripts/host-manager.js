@@ -695,18 +695,31 @@ function inUnit(text) {
   if (typeof text !== 'string' || !text.trim()) return null;
   return text.split('\n').some((l) => { const p = l.split(':').slice(2).join(':').trim(); return p.split('/').includes(HM.UNIT); });
 }
-// The one live host-manager session that runs outside this unit, read while this run is the unit's own:
-// { session, server } when its `claude remote-control` server is known and its cgroup is not the unit's;
-// null for anything else (two sessions, no server, a list or cgroup that cannot be read, this run not in
-// the unit, a server inside it), which leaves the live host manager as it is.
-function outsideUnit(running, { server, cgroupOf } = {}) {
+// Whether a /proc cgroup text places the process in no service unit at all: every cgroup path holds no
+// `.service` segment but the user manager's own `user@<uid>.service` (a `.scope`, a role scope, a login
+// session's scope, a slice). A process in any other service is that unit's, possibly one the plugin did
+// not write, and the plugin never stops what such a unit runs. null when it cannot be read.
+function inNoService(text) {
+  if (typeof text !== 'string' || !text.trim()) return null;
+  const paths = text.split('\n').filter((l) => l.trim()).map((l) => l.split(':').slice(2).join(':').trim());
+  return paths.every((p) => p.split('/').every((seg) => !/\.service$/.test(seg) || /^user@\d+\.service$/.test(seg)));
+}
+// The one live host-manager session that runs outside every unit, read while this run is the host
+// manager's own unit: { session, server } when its `claude remote-control` server is known and its cgroup
+// is in no service (inNoService), and no unit the plugin did not write serves the host manager's
+// directory; null for anything else (two sessions, no server, a list or cgroup that cannot be read, this
+// run not in the unit, a server in this or any other unit, a hand-written unit on the directory), which
+// leaves the live host manager as it is.
+function outsideUnit(running, { server, cgroupOf, roleDir, home, unitOf } = {}) {
   if (running.length !== 1 || !running[0].sessionId) return null;
   const s = running[0];
   const srv = (server || require('./team-revive.js').serverOf)(s.pid);
   if (!srv || srv.unreadable || !srv.pid || srv.self) return null;
   const read = cgroupOf || readCgroup;
   if (inUnit(read('self')) !== true) return null;
-  if (inUnit(read(srv.pid)) !== false) return null;
+  if (inNoService(read(srv.pid)) !== true) return null;
+  const served = (unitOf || ((d) => R.unitServing(d, { home })))(roleDir);
+  if (served && (served.hand || []).length) return null;
   return { session: s, server: srv.pid };
 }
 // deps (tests): server (team-revive's serverOf), cgroupOf(pid), stop (team-revive's stopServer).
@@ -741,7 +754,7 @@ function runSession(root, o, { env = process.env, home = os.homedir(), hostname,
   if (running.length) {
     // the one live host-manager session runs outside this unit: replaced only when idle on a fresh read,
     // and only once this run can start claude in its place; anything else is the live host manager left alone
-    const out = outsideUnit(running, { server, cgroupOf });
+    const out = outsideUnit(running, { server, cgroupOf, roleDir: a.roleDir, home });
     if (!out || !ex || !fileOf()) return already;
     const again = sessionsNow({ env, live });
     if (!Array.isArray(again)) return already;
@@ -750,7 +763,7 @@ function runSession(root, o, { env = process.env, home = os.homedir(), hostname,
     if (!fresh || fresh.status !== 'idle' || others.length) return already;
     if (!(stop || require('./team-revive.js').stopServer)(out.server, out.session.pid)) return { code: 1, out: `host-manager.js: the host-manager session ${out.session.sessionId} runs outside ${HM.UNIT}, and its Remote Control server (pid ${out.server}) did not stop; no session started.` };
     R.record(root, { type: 'host-manager-replaced', at: now || new Date().toISOString(), instance: hm.instance, server: out.server, pid: out.session.pid || null, session: out.session.sessionId });
-    replaced = `host-manager.js: replaced the host-manager session ${out.session.sessionId}, whose Remote Control server (pid ${out.server}) ran outside ${HM.UNIT}: stopped while idle, and the unit's own session starts.`;
+    replaced = `host-manager.js: replaced the host-manager session ${out.session.sessionId}, whose Remote Control server (pid ${out.server}) ran in no unit: stopped while idle, and the unit's own session starts.`;
   }
   if (!ex) return noExec;
   const file = fileOf();

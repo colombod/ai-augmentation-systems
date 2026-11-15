@@ -952,9 +952,10 @@ test('run-session replaces an idle host-manager session running outside its unit
   const env = { DELIVERY_HOST: 'pc', PATH: '/usr/bin', USER: 'dev', DELIVERY_ROLE: 'host-manager' };
   const UNIT_CG = `0::/user.slice/user-1000.slice/user@1000.service/app.slice/${HM.UNIT}\n`;
   const OTHER_CG = '0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-term-1.scope\n';
-  const setup = ({ status = 'idle', again, serverCg = OTHER_CG, selfCg = UNIT_CG, server = { pid: 3531014, self: false }, stopOk = true } = {}) => {
+  const setup = ({ status = 'idle', again, serverCg = OTHER_CG, selfCg = UNIT_CG, server = { pid: 3531014, self: false }, stopOk = true, handUnit = false } = {}) => {
     const m = machine({ alphaRoles: HM_ROLES });
     m.env = { ...env, CLAUDE_CONFIG_DIR: m.config };
+    if (handUnit) roleUnit(m, m.alpha.dir('host-manager'), 'claude-rc-hm.service', '/opt/tools/bin/claude remote-control --name host-manager@pc');
     const old = { sessionId: 'hm-old', pid: 3531100, cwd: m.alpha.dir('host-manager'), name: 'host-manager@pc', status };
     const reads = [[old], again === undefined ? [old] : again];
     let k = 0;
@@ -979,7 +980,7 @@ test('run-session replaces an idle host-manager session running outside its unit
   assert.deepEqual(a.calls.execve[0].argv.slice(0, 4), ['claude', 'remote-control', '--name', 'host-manager@pc']);
   assert.deepEqual(R.ledger(a.m.alpha.root).filter((x) => x.type === 'host-manager-replaced').map((x) => [x.server, x.pid, x.session]), [[3531014, 3531100, 'hm-old']]);
   assert.equal(R.ledger(a.m.alpha.root).filter((x) => x.type === 'host-manager-session').length, 1);
-  assert.match(a.r.out, /replaced the host-manager session hm-old, whose Remote Control server \(pid 3531014\) ran outside delivery-host-manager\.service/);
+  assert.match(a.r.out, /replaced the host-manager session hm-old, whose Remote Control server \(pid 3531014\) ran in no unit/);
   // outside but busy, on the first read or the fresh one; or the fresh read unreadable: exit 3, nothing changed
   for (const [label, o] of [['busy', { status: 'busy' }], ['busy on the fresh read', { again: [{ sessionId: 'hm-old', pid: 3531100, status: 'busy' }] }], ['fresh read unreadable', { again: null }]]) {
     const b = setup(o);
@@ -993,6 +994,23 @@ test('run-session replaces an idle host-manager session running outside its unit
     assert.equal(c.r.code, 3, `${label}: ${c.r.out}`);
     assert.match(c.r.out, /already runs as host-manager@pc/, label);
     assert.deepEqual([c.calls.stop, c.calls.execve], [[], []], label);
+  }
+  // a server in any other .service is a unit's (one the plugin did not write, say): never stopped, exit 3.
+  // A unit the plugin did not write that serves the host manager's directory holds it too, wherever the
+  // server runs. The user manager's own user@<uid>.service above the scopes is no unit of a server's.
+  for (const [label, o] of [['in a hand-written unit', { serverCg: '0::/user.slice/user-1000.slice/user@1000.service/app.slice/claude-rc-x.service\n' }], ['in a unit, v1 lines', { serverCg: '12:pids:/user.slice/user-1000.slice/user@1000.service/claude-rc-x.service\n1:name=systemd:/user.slice/user-1000.slice/user@1000.service/claude-rc-x.service\n' }], ['a hand-written unit serves its directory', { handUnit: true }]]) {
+    const c = setup(o);
+    assert.equal(c.r.code, 3, `${label}: ${c.r.out}`);
+    assert.deepEqual([c.calls.stop, c.calls.execve], [[], []], label);
+  }
+  // a server in a scope (a role scope, a terminal's) or a login session's scope is in no unit: replaced, idle only
+  for (const cg of ['0::/user.slice/user-1000.slice/user@1000.service/app.slice/delivery-role-host-manager-123.scope\n', '0::/user.slice/user-1000.slice/session-2.scope\n']) {
+    const c = setup({ serverCg: cg });
+    assert.equal(c.r.code, 0, `${cg}: ${c.r.out}`);
+    assert.deepEqual(c.calls.stop, [[3531014, 3531100]], cg);
+    const busy = setup({ serverCg: cg, status: 'busy' });
+    assert.equal(busy.r.code, 3, busy.r.out);
+    assert.deepEqual(busy.calls.stop, [], cg);
   }
   // a server that does not stop: no session is started beside it
   const d = setup({ stopOk: false });
