@@ -96,6 +96,14 @@ function serverOf(pid, { exec = psRow, self = process.pid } = {}) {
 // Stop a Remote Control server and wait for it and its session to be gone: true when both are, false
 // after waitMs (a server that did not stop is never doubled by a second one in its directory).
 const sleep = (msec) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, msec);
+// The start of a role's own unit, one the plugin wrote (lib/team-revive.js servingUnits, written): a unit
+// its start limit failed is reset first, which only the plugin's own unit ever is. A unit someone else
+// wrote is never started, reset or changed here.
+function startOwnUnit(unit, { exec = (c, a) => require('child_process').execFileSync(c, a, { encoding: 'utf8', timeout: 20000, stdio: ['ignore', 'pipe', 'pipe'] }) } = {}) {
+  try { exec('systemctl', ['--user', 'reset-failed', unit]); } catch (err) { /* not failed: nothing to reset */ }
+  exec('systemctl', ['--user', 'start', unit]);
+}
+
 function stopServer(serverPid, sessionPid, { kill = (p, sig) => process.kill(p, sig), waitMs = 15000, stepMs = 250 } = {}) {
   const gone = (p) => { if (!p) return true; try { kill(p, 0); return false; } catch (err) { return err.code !== 'EPERM'; } };
   try { kill(serverPid, 'SIGTERM'); } catch (err) { if (err.code !== 'ESRCH') return false; }
@@ -118,7 +126,7 @@ function openPrs(team, env) {
 }
 
 // The facts the rules read, each from its own source; deps replace any of them in a test.
-function gather(root, team, { env = process.env, now, bd, live, prs, alive, hostname, home, configDir, pause, installed, server, unitOf, hostManagerUnit } = {}) {
+function gather(root, team, { env = process.env, now, bd, live, prs, alive, hostname, home, configDir, pause, installed, server, unitOf } = {}) {
   const config = configDir || R.configDirOf(env, home);
   const bin = env.DELIVERY_CLAUDE_BIN || 'claude';
   const store = bd || require('./lib/bd.js').makeBd({ cwd: root, env, timeoutMs: 15000 });
@@ -129,6 +137,7 @@ function gather(root, team, { env = process.env, now, bd, live, prs, alive, host
   let roster = {};
   try { roster = require('./lib/roster.js').readRoster(root).instances || {}; } catch (err) { roster = {}; }
   return {
+    root,
     now: now || new Date().toISOString(),
     host: R.hostOf(env, hostname !== undefined ? hostname : os.hostname()),
     team,
@@ -149,9 +158,8 @@ function gather(root, team, { env = process.env, now, bd, live, prs, alive, host
     installed: installed !== undefined ? installed : require('./lib/plugin-version.js').runningVersion(),
     serverOf: server || serverOf,
     // the user unit that serves a role directory (lib/team-revive.js remoteControlUnitFor), under home
-    unitOf: unitOf || ((dir) => R.remoteControlUnitFor(dir, { home })),
-    // the host manager's own unit when it is installed here, else null: the only way its session is restarted
-    hostManagerUnit: hostManagerUnit || (() => (fs.existsSync(path.join(R.unitDirOf(home), R.HOST_MANAGER_UNIT)) ? R.HOST_MANAGER_UNIT : null)),
+    // and whether it is the plugin's own (lib/team-revive.js unitServing)
+    unitOf: unitOf || ((dir) => R.unitServing(dir, { home })),
   };
 }
 
@@ -221,7 +229,7 @@ function revive(root, team, opts = {}) {
   if (no) throw new Error(no);
   const lock = R.startLock(root);
   if (lock.held) {
-    const { start, dryRun, env = process.env, spawn, force, restartUnit, ...deps } = opts;
+    const { start, dryRun, env = process.env, spawn, force, restartUnit, startUnit, ...deps } = opts;
     const a = { ...R.assess(gather(root, team, { env, ...deps })), go: false, locked: lock.held };
     return { a, started: {}, lines: [`Not started now: another start pass holds the start lock (pid ${lock.held.pid || 'unknown'}, ${path.relative(root, R.lockFile(root))}); it starts what is missing.`] };
   }
@@ -309,7 +317,7 @@ function tellTwice(root, team, a, { now, queue = (r, m) => require('./lib/inbox.
 // A start pass spawns every missing instance, then waits SETTLE_MS (settle) for any that exit at once: those
 // get a 'failed' row, are named Failed, and the next pass retries them (lib/team-revive.js assess). settle is
 // the real wait only with the real spawn; a test that injects spawn injects settle too, or gets none.
-function revivePass(root, team, { start = false, dryRun = false, env = process.env, spawn = spawnRemote, stop = stopServer, relist, settle, systemdRun, only = null, force = null, restartUnit = null, ...deps } = {}) {
+function revivePass(root, team, { start = false, dryRun = false, env = process.env, spawn = spawnRemote, stop = stopServer, relist, settle, systemdRun, only = null, force = null, restartUnit = null, startUnit = null, ...deps } = {}) {
   const f = gather(root, team, { env, ...deps });
   if (force) f.force = force;
   const a = R.assess(f);
@@ -324,6 +332,19 @@ function revivePass(root, team, { start = false, dryRun = false, env = process.e
   if (start && !dryRun && a.go) {
     for (const i of a.missing.filter((x) => !x.skip && !x.held && (!only || only.includes(x.instance)))) {
       const at = f.now;
+      // a role the plugin's own unit serves is started through that unit, never in a scope beside it
+      if (i.viaUnit) {
+        try { (startUnit || startOwnUnit)(i.viaUnit); } catch (err) {
+          const why = String((err && (err.stderr || err.message)) || err).trim().split('\n')[0].slice(0, 200);
+          // a start row all the same, with its error: the hourly and daily caps hold for a unit that keeps failing
+          R.record(root, { type: 'start', at, instance: i.instance, unit: i.viaUnit, via: 'unit', error: why });
+          started[i.instance] = { why: `the start of its user unit ${i.viaUnit} failed: ${why}`, unitStart: true };
+          continue;
+        }
+        R.record(root, { type: 'start', at, instance: i.instance, unit: i.viaUnit, via: 'unit' });
+        started[i.instance] = { unit: i.viaUnit, unitStart: true, at };
+        continue;
+      }
       const logPath = path.join(root, WD.REL, 'logs', `revive-${i.instance}-${at.replace(/[:.]/g, '-')}.log`);
       const cmd = require('./lib/role-scope.js').roleCommand(bin, i.args, { instance: i.instance, at, systemdRun: sdRun });
       const pid = spawn(cmd.bin, cmd.args, { cwd: i.roleDir, env: startEnv(env, i.instance), logPath });
@@ -344,7 +365,7 @@ function revivePass(root, team, { start = false, dryRun = false, env = process.e
     // a scoped start whose log shows systemd-run's own refusal (no user manager, a refused property) never
     // reached claude: it is started again at once as a plain detached child, which the next start of the
     // pass waits for in turn, so a host where systemd-run fails still starts its team
-    for (const n of failStarts(Object.keys(started)).filter((x) => started[x].unit && systemdRunRefused(path.join(root, started[x].log)))) {
+    for (const n of failStarts(Object.keys(started).filter((x) => !started[x].unitStart)).filter((x) => started[x].unit && systemdRunRefused(path.join(root, started[x].log)))) {
       const was = started[n];
       // the plain start is a second start: the sessions are listed again first, and one that is live
       // now (it came up another way meanwhile) is left alone, as a start would leave it
@@ -412,7 +433,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, ...deps } = {}) {
   return { code: 0, out: r.lines.join('\n') };
 }
 
-module.exports = { tellTwice, main, revive, gather, startEnv, refusal, callerRefusal, serverAlive, serverOf, stopServer, systemdRunOf, settleStarts, exited, systemdRunRefused };
+module.exports = { startOwnUnit, tellTwice, main, revive, gather, startEnv, refusal, callerRefusal, serverAlive, serverOf, stopServer, systemdRunOf, settleStarts, exited, systemdRunRefused };
 
 if (require.main === module) {
   let r;
