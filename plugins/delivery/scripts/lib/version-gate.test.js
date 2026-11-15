@@ -79,6 +79,11 @@ test('8l1.5: the marketplace entry must name the same version as plugin.json at 
   const behind = check(both(['0.43.121', '0.43.121'], ['0.43.120', '0.43.125']));
   assert.equal(behind.ok, false);
   assert.match(behind.why, /lists app at 0\.43\.121 at the head, not above 0\.43\.125 on main, so the merged change would never install/);
+  // the boundary: a head entry equal to main's marketplace entry is not above it, even when it clears
+  // main's plugin.json (rv-213: < 0 for <= 0 passed the suite)
+  const equal = check(both(['0.43.121', '0.43.121'], ['0.43.120', '0.43.121']));
+  assert.equal(equal.ok, false);
+  assert.match(equal.why, /not above 0\.43\.121/);
   // the other direction: both raised to one version above main passes
   assert.deepEqual(check(both(['0.43.121', '0.43.121'], ['0.43.120', '0.43.120'])), { ok: true, checked: [{ dir: 'plugins/app', base: '0.43.120', head: '0.43.121' }] });
 });
