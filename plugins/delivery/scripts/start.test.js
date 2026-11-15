@@ -21,7 +21,7 @@ function bin({ bd = true, claude = '2.1.300 (Claude Code)', git = true, units = 
   const dir = mk('start-bin-');
   // printf takes the properties as its format, so each \n in them is a line break
   const show = Object.entries(units).map(([u, props]) => `  *${u}) printf ${JSON.stringify(`${props}\\n`)} ;;`).join('\n');
-  fs.writeFileSync(path.join(dir, 'systemctl'), `#!/bin/sh\ncase "$*" in\n  *list-units*) printf "${Object.keys(units).map((u) => `${u} loaded active running x\\n`).join('')}" ;;\n${show}\n  *) : ;;\nesac\nexit 0\n`, { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, 'systemctl'), `#!/bin/sh\n[ -n "$SYSTEMCTL_LOG" ] && echo "$*" >> "$SYSTEMCTL_LOG"\ncase "$*" in\n  *list-units*) printf "${Object.keys(units).map((u) => `${u} loaded active running x\\n`).join('')}" ;;\n${show}\n  *) : ;;\nesac\nexit 0\n`, { mode: 0o755 });
   fs.symlinkSync(process.execPath, path.join(dir, 'node'));
   if (git) fs.symlinkSync(GIT, path.join(dir, 'git'));
   if (bd) fs.writeFileSync(path.join(dir, 'bd'), `#!/bin/sh\nexec "${process.execPath}" "${FAKE_BD}" "$@"\n`, { mode: 0o755 });
@@ -43,7 +43,7 @@ function claudeConfig({ installed = true, enabled = true, version = '99.0.0' } =
 function start(args, { path: binDir = bin(), config = claudeConfig(), cwd, env: extra = {} } = {}) {
   const env = {
     ...extra,
-    PATH: `${binDir}${path.delimiter}/bin`, HOME: os.tmpdir(), CLAUDE_CONFIG_DIR: config, BD_FAKE_STORE: extra.BD_FAKE_STORE || path.join(mk('start-bd-'), 'store.json'),
+    PATH: `${binDir}${path.delimiter}/bin`, HOME: extra.HOME || os.tmpdir(), CLAUDE_CONFIG_DIR: config, BD_FAKE_STORE: extra.BD_FAKE_STORE || path.join(mk('start-bd-'), 'store.json'),
     GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0',
     GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.test', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.test',
   };
@@ -898,4 +898,64 @@ test('start.js --check warns for a service whose TasksMax is under what the team
   assert.doesNotMatch(r.out, /\[fail\] service /, 'a low limit warns; it is never a missing prerequisite');
   assert.doesNotMatch(r.out, /missing: .*service /);
   assert.doesNotMatch(start(['--check', '--project', root], { path: bin(), env: { DELIVERY_HOST: 'pc' } }).out, /\] service /, 'no services: no rows');
+});
+
+// ---- a user unit that serves a role directory (hjx.1.6.10.1.2.1) ----
+
+const unitsIn = (home) => { const d = path.join(home, '.config', 'systemd', 'user'); fs.mkdirSync(d, { recursive: true }); return d; };
+const handUnit = (dir) => `[Unit]\nDescription=mine\n\n[Service]\nWorkingDirectory=${dir}\nExecStart=/opt/tools/bin/claude remote-control --name cos\nRestart=always\nTasksMax=300\n`;
+const ownUnit = (root, dir) => `[Service]\nWorkingDirectory=${dir}\nExecStart=/usr/bin/env "node" "${path.join(root, '.delivery', 'bin', 'delivery.js')}" "host-manager.js" "run-session" "--project" "${root}" "--instance" "chief-of-staff"\n`;
+
+test('--check names a role unit the plugin did not write with the exact fix, and the plugin\'s own beside it as the blocker; it never changes that unit', () => {
+  const project = path.join(mk('start-units-'), 'acme');
+  assert.equal(start(['--project', project, '--host', 'pc']).status, 0);
+  const cos = path.join(path.dirname(project), 'acme-team', 'chief-of-staff');
+  const home = mk('start-home-');
+  const d = unitsIn(home);
+  const env = { HOME: home, DELIVERY_HOST: 'pc' };
+  // the plugin's own unit alone: it is the role's start path
+  fs.writeFileSync(path.join(d, 'delivery-role-chief-of-staff-x.service'), ownUnit(project, cos));
+  assert.match(start(['--check', '--project', project], { env }).out, /\[pass\] role unit chief-of-staff: delivery-role-chief-of-staff-x\.service, the delivery plugin's own, serves /);
+  // a hand-written one beside it: two start paths
+  fs.writeFileSync(path.join(d, 'claude-rc-chief-of-staff.service'), handUnit(cos));
+  const both = start(['--check', '--project', project], { env }).out;
+  assert.match(both, /\[warn\] role unit chief-of-staff: claude-rc-chief-of-staff\.service serves \S+chief-of-staff with claude remote-control, and the delivery plugin did not write it; the plugin's own delivery-role-chief-of-staff-x\.service serves it too: two start paths for one role directory, so the plugin starts neither/, both);
+  assert.match(both, /stop and disable claude-rc-chief-of-staff\.service \(systemctl --user disable --now claude-rc-chief-of-staff\.service; the plugin never changes it\), then install the plugin's own: node \S+delivery\.js host-manager\.js install-role --project \S+\/acme/, both);
+  // the hand-written one alone: it blocks the plugin's own unit
+  fs.rmSync(path.join(d, 'delivery-role-chief-of-staff-x.service'));
+  const hand = start(['--check', '--project', project], { env }).out;
+  assert.match(hand, /\[warn\] role unit chief-of-staff: claude-rc-chief-of-staff\.service serves \S+ with claude remote-control, and the delivery plugin did not write it; the plugin's own unit is not installed while it does/, hand);
+  assert.equal(fs.readFileSync(path.join(d, 'claude-rc-chief-of-staff.service'), 'utf8'), handUnit(cos), 'left byte for byte');
+  // no unit: no row
+  assert.doesNotMatch(start(['--check', '--project', project], { env: { HOME: mk('start-home-'), DELIVERY_HOST: 'pc' } }).out, /role unit/);
+});
+
+test('--launch starts no role a user unit serves; --keep-alive installs the Chief of Staff\'s own unit first, unless a unit the plugin did not write serves it', () => {
+  const project = path.join(mk('start-units2-'), 'acme');
+  const rec = recordingClaude();
+  const home = mk('start-home-');
+  const log = path.join(mk('start-sd-'), 'calls.log');
+  const team = path.join(path.dirname(project), 'acme-team');
+  assert.equal(start(['--project', project, '--host', 'laptop']).status, 0);
+  fs.writeFileSync(path.join(unitsIn(home), 'mine-builder.service'), handUnit(path.join(team, 'builder')));
+  const r = start(['--project', project, '--host', 'laptop', '--launch', '--keep-alive'], { env: { DELIVERY_CLAUDE_BIN: rec.bin, HOME: home, SYSTEMCTL_LOG: log, DELIVERY_HOST: 'laptop' } });
+  assert.match(r.out, /builder: not started: it is served by the user unit mine-builder\.service, its start path/, r.out);
+  const own = fs.readdirSync(unitsIn(home)).find((f) => /^delivery-role-chief-of-staff-[0-9a-f]{8}\.service$/.test(f));
+  assert.ok(own, `the Chief of Staff's unit is written: ${r.out}`);
+  assert.match(fs.readFileSync(path.join(unitsIn(home), own), 'utf8'), /"host-manager\.js" "run-session" "--project" "\S+\/acme" "--instance" "chief-of-staff"/);
+  const calls = fs.readFileSync(log, 'utf8');
+  assert.match(calls, new RegExp(`^--user enable --now ${own.replace(/\./g, '\\.')}$`, 'm'), calls);
+  assert.match(r.out, new RegExp(`chief-of-staff: not started: it is served by the user unit ${own.replace(/\./g, '\\.')}`), r.out);
+  assert.ok(waitFor(['product-manager', 'delivery-lead'].map((i) => path.join(rec.dir, `${i}.json`))), r.out);
+  for (const i of ['chief-of-staff', 'builder']) assert.ok(!fs.existsSync(path.join(rec.dir, `${i}.json`)), `${i} was started beside its unit`);
+  // a hand-written unit on the Chief of Staff's directory: nothing installed, named with the fix
+  const q = path.join(mk('start-units3-'), 'acme');
+  const h2 = mk('start-home-');
+  assert.equal(start(['--project', q, '--host', 'laptop']).status, 0);
+  fs.writeFileSync(path.join(unitsIn(h2), 'claude-rc-chief-of-staff.service'), handUnit(path.join(path.dirname(q), 'acme-team', 'chief-of-staff')));
+  const log2 = path.join(mk('start-sd-'), 'calls.log');
+  const r2 = start(['--project', q, '--host', 'laptop', '--launch', '--keep-alive'], { env: { DELIVERY_CLAUDE_BIN: recordingClaude().bin, HOME: h2, SYSTEMCTL_LOG: log2, DELIVERY_HOST: 'laptop' } });
+  assert.match(r2.out, /role unit: not installed: .*claude-rc-chief-of-staff\.service serves .* stop and disable claude-rc-chief-of-staff\.service/, r2.out);
+  assert.deepEqual(fs.readdirSync(unitsIn(h2)).filter((f) => /^delivery-role-/.test(f)), []);
+  assert.doesNotMatch(fs.existsSync(log2) ? fs.readFileSync(log2, 'utf8') : '', /claude-rc-chief-of-staff|delivery-role-/, 'no systemctl call names either unit');
 });
