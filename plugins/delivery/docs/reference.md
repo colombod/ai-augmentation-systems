@@ -1593,7 +1593,10 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   assigned to the instance, a message or handoff waiting for it, a pull request from its `team/`
   branch), and per host job unit `<unit>: running` or `stopped since <time>` (`systemctl --user show`);
   each source it cannot read is a `SOURCE UNAVAILABLE: <what>` line and is never counted as running.
-  `restart [--json]` is the owner's restart of the team. It restarts every installed host job,
+  `restart [--down-only] [--json]`: without `--down-only` it is the owner's restart of the team, run
+  only on the owner's own message in the host manager's session; a request from anyone else gets
+  `restart --down-only`, which keeps the tick's rule (it starts what is down or silent and stops nothing
+  that runs). The owner's restart restarts every installed host job,
   running or not: `systemctl --user restart` of its timer and of its path unit, then one run of its
   service (`systemctl --user start --no-block`); a job whose timer does not restart gets no run, and
   the reply says why. It then runs every team's start pass (`team-revive.js`, its caps applying): the

@@ -357,7 +357,7 @@ function assess(f) {
       // it ran and ended, so it is started again at once, not after the hour that holds a start that died
       const ran = Boolean(last) && ms(e.last_seen) > ms(last.at);
       if (!f.exists(roleDir)) it.skip = `its role directory ${roleDir} is not on this host (prepare-role.js prepares it)`;
-      else if (unit) it.skip = `it is served by the user unit ${unit}, which is its start path; no scope is started for it`;
+      else if (unit) it.skip = `it is served by the user unit ${unit}, which is its start path, so no scope is started beside it; the plugin does not start a unit it did not write: start that unit, or replace it with the plugin's own`;
       else { const l = linkFor(it.remoteId, starts, e); it.remoteId = l.remoteId; if (l.staleId) it.staleId = l.staleId; if (l.endedId) it.endedId = l.endedId; }
       const m = modeOf(team);
       if (!it.skip && m.skip) it.skip = m.skip;

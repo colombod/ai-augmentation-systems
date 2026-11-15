@@ -483,7 +483,7 @@ test('a role served by a user unit that is down is never started in a scope: the
   const r = m.run(['restart']);
   assert.ok(!m.spawned.some((s) => s.cwd === m.alpha.dir('builder')), 'not spawned');
   assert.ok(m.spawned.some((s) => s.cwd === m.alpha.dir('chief-of-staff')), 'a role with no unit still starts');
-  assert.match(r.out, /^Not back: alpha builder \(not started: it is served by the user unit claude-alpha-builder\.service, which is its start path; no scope is started for it\)\.$/m, r.out);
+  assert.match(r.out, /^Not back: alpha builder \(not started: it is served by the user unit claude-alpha-builder\.service, which is its start path, so no scope is started beside it; the plugin does not start a unit it did not write: start that unit, or replace it with the plugin's own\)\.$/m, r.out);
   // a unit whose ExecStart is not claude remote-control, or whose WorkingDirectory is another directory, serves no role
   const n = machine({ beads: WORK });
   roleUnit(n, n.alpha.dir('builder'), 'other.service', '/usr/bin/node server.js');
@@ -1381,4 +1381,23 @@ test('the dry run prints what the install would run: --now for the service only 
     assert.ok(out.includes(plainLine), what);
     assert.ok(out.some((l) => /^Would not start it now:/.test(l)), `${what}: the dry run says why`);
   }
+});
+
+// the forced restart is the owner's alone; another agent's request gets the tick's rule
+test('restart --down-only follows the tick\'s rule: no running role is stopped and no host job restarted; a down role holding work is started', () => {
+  const m = machine({ beads: WORK });
+  runningRole(m, m.alpha, 'chief-of-staff', { pid: 71 });
+  // the builder holds work and is down
+  const r = m.run(['restart', '--down-only']);
+  assert.equal(r.code, 0, r.out);
+  assert.deepEqual(m.stops, [], 'a running role is never stopped');
+  assert.ok(!m.sd.calls.some((c) => /--user restart delivery-watchdog-/.test(c)), m.sd.calls.join('\n'));
+  assert.deepEqual(m.spawned.map((s) => path.basename(s.cwd)), ['builder']);
+  assert.doesNotMatch(r.out, /^Installed delivery plugin:/m, 'the forced reply is the owner restart\'s');
+  // the same machine state, the owner's restart: the running role holding work is restarted
+  const o = machine({ beads: WORK });
+  runningRole(o, o.alpha, 'chief-of-staff', { pid: 71 });
+  assert.equal(o.run(['restart']).code, 0);
+  assert.equal(o.stops.length, 1, 'the owner restart stops and starts the running role holding work');
+  assert.equal(m.run(['restart', '--everything']).code, 2, 'an unknown option is refused');
 });

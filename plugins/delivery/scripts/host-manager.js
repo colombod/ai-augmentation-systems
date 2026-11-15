@@ -6,7 +6,7 @@
 //                                       hold work; per host job unit: running, or stopped since when; a
 //                                       source that cannot be read is a SOURCE UNAVAILABLE line, never
 //                                       counted as running
-//   host-manager.js restart [--json]    the owner's restart: restarts every installed host job (its timer
+//   host-manager.js restart [--down-only] [--json]    the owner's restart: restarts every installed host job (its timer
 //                                       and path units, then one run of its service), running or not, then
 //                                       per team starts the missing role sessions that hold work and
 //                                       restarts every running one that holds work onto the installed
@@ -41,7 +41,7 @@ const HM = require('./lib/host-manager.js');
 const R = require('./lib/team-revive.js');
 const M = require('./lib/manifest.js');
 
-const USAGE = 'usage: host-manager.js status [--json] | host-manager.js restart [--json] | host-manager.js tick | host-manager.js install [--dry-run] --project <root> [--instance <id>] | host-manager.js run-session --project <root> --instance <id>';
+const USAGE = 'usage: host-manager.js status [--json] | host-manager.js restart [--down-only] [--json] | host-manager.js tick | host-manager.js install [--dry-run] --project <root> [--instance <id>] | host-manager.js run-session --project <root> --instance <id>';
 const PLUGIN_ROOT = path.resolve(__dirname, '..');
 const RESTART_SEC = 30;
 // A session that exits at once (an expired sign-in, a refused flag) must not restart every 30 seconds
@@ -67,11 +67,12 @@ const ALREADY_RUNNING = 3;
 const TASKS_MAX = 4096;
 
 function parse(argv) {
-  const o = { _: [], json: false, dryRun: false };
+  const o = { _: [], json: false, dryRun: false, downOnly: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--json') o.json = true;
     else if (a === '--dry-run') o.dryRun = true;
+    else if (a === '--down-only') o.downOnly = true;
     else if (a === '--project' || a === '--instance') { if (argv[i + 1] === undefined || argv[i + 1].startsWith('--')) throw new Error(`${a} needs a value`); o[a.slice(2)] = argv[++i]; }
     else if (a.startsWith('--')) throw new Error(`unknown option ${a}`);
     else o._.push(a);
@@ -637,7 +638,9 @@ function main(argv, { cwd = process.cwd(), env = process.env, who, ...deps } = {
     return { code: 0, out: o.json ? JSON.stringify({ teams: r.read.teams, units: r.read.units, unavailable: r.read.unavailable }, null, 2) : r.lines.join('\n') };
   }
   if (cmd === 'restart') {
-    const r = restart(d, undefined, { everyTeam: true });
+    // the owner's restart (everyTeam) restarts every running role holding work and every host job;
+    // --down-only, for a request from anyone else, keeps the tick's rule: only what is down or silent
+    const r = restart(d, undefined, { everyTeam: !o.downOnly });
     return { code: 0, out: o.json ? JSON.stringify({ plan: r.plan, lines: r.lines, teams: r.after.teams, units: r.after.units, unavailable: r.after.unavailable }, null, 2) : r.lines.join('\n') };
   }
   return tick(d);
