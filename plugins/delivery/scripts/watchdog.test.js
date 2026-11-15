@@ -2289,3 +2289,20 @@ test('hjx.1.6.17: a live session that does not take the wake is reported and lef
   assert.deepEqual(to, ['/r/cc-socks/1.sock']);
   assert.deepEqual(spawn.list, []);
 });
+
+// rv-204: a wake row is stamped at its spawn on the real clock, not at the pass start: the running-wake
+// check reads the supervisor's start against the row, and a pass's reads and earlier spawns take real
+// time. Every other case injects its clock; this one runs on the real one.
+test('a wake row is stamped at its spawn on the real clock, not at the pass start', () => {
+  const t = Date.now();
+  const h = harness({});
+  session(h, 'builder-1', { seen: iso(t - 9 * H) });
+  require('./lib/inbox.js').queue(h.root, { to: 'builder-1', from: DM, summary: 'PR 75', message: 'merge main into your branch', at: iso(t - 60e3) });
+  let spawnedAt = null;
+  // a spawn that takes a while, as a real one can: the row must not carry the time from before it
+  const spawn = (bin, args, o) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 120); spawnedAt = Date.now(); return 999999999; };
+  watchdog.main(['run'], { cwd: h.root, env: fakeEnv(h), live: [], bd: memStore(h), spawn, sweep: () => ({ removed: [], failed: [] }), revive: () => [] });
+  assert.ok(spawnedAt, 'the wake was spawned');
+  const row = WD.logRows(h.root).filter((r) => r.type === 'wake').pop();
+  assert.ok(row && Date.parse(row.at) >= spawnedAt, `the row (${row && row.at}) is stamped at or after the spawn (${new Date(spawnedAt).toISOString()})`);
+});
