@@ -96,11 +96,18 @@ function dedupeKey(e) {
 }
 // Every key an input is known by: its dedupe key and, for a delivery.confirmation/1 answer, its event_id,
 // which is stable across re-capture by any writer, so one provider event is one operator input.
+// hb1.8: a human input is also known by its transcript record uuid. Resuming a session copies its earlier
+// messages into the new session's transcript with the same uuid and timestamp but a new promptId (one per
+// file, or none), so a key on promptId alone took every copy for a new input. The uuid is the message's
+// identity; the promptId key stays so inputs stored before this still match.
 function dedupeKeys(e) {
   const a = e.asked;
   const ev = a && typeof a === 'object' && a.contract !== undefined && typeof a.event_id === 'string' && a.event_id ? `event:${a.event_id}` : null;
-  return [dedupeKey(e), ev].filter(Boolean);
+  const uid = e.source === 'human' && e.uuid ? `uuid:${e.uuid}` : null;
+  return [dedupeKey(e), uid, ev].filter(Boolean);
 }
+// the index's key scheme: an index written under another (by an older plugin) is rebuilt from the log
+const INDEX_FORMAT = 2;
 
 function loadIndex(root, host) {
   const file = path.join(opDir(root), 'cursors', `inputs-index-${host}.json`);
@@ -111,7 +118,7 @@ function loadIndex(root, host) {
     lastId = last ? last.id : null;
   }
   const idx = readJson(file);
-  if (idx && idx.last_id === lastId && idx.map && typeof idx.map === 'object') {
+  if (idx && idx.format === INDEX_FORMAT && idx.last_id === lastId && idx.map && typeof idx.map === 'object') {
     return { file, last_id: lastId, map: new Map(Object.entries(idx.map)), dirty: false };
   }
   const map = new Map();
@@ -288,7 +295,7 @@ function recordInputs({ projectRoot, host: h, inputs, instance, role, now: at })
   chain.withLock(path.join(hostDir(projectRoot, host), '.host.lock'), () => {
     const idx = loadIndex(projectRoot, host);
     added = appendLocked(projectRoot, host, ok.map((i) => ({ ...i, source: 'human', ext_id: i.ext_id || i.asked.event_id })), idx, { sessionId: null, instance, role, now, transcriptPath: null });
-    if (added || idx.dirty) writeJsonAtomic(idx.file, { last_id: idx.last_id, map: Object.fromEntries(idx.map) });
+    if (added || idx.dirty) writeJsonAtomic(idx.file, { format: INDEX_FORMAT, last_id: idx.last_id, map: Object.fromEntries(idx.map) });
   });
   return { added };
 }
@@ -327,7 +334,7 @@ function syncTranscript(opts) {
   chain.withLock(path.join(hostDir(projectRoot, host), '.host.lock'), () => {
     const idx = loadIndex(projectRoot, host);
     added = appendLocked(projectRoot, host, read.inputs, idx, { sessionId, instance, role, now, transcriptPath, roleSince: opts.roleSince });
-    if (added || idx.dirty) writeJsonAtomic(idx.file, { last_id: idx.last_id, map: Object.fromEntries(idx.map) });
+    if (added || idx.dirty) writeJsonAtomic(idx.file, { format: INDEX_FORMAT, last_id: idx.last_id, map: Object.fromEntries(idx.map) });
     // cursor advances only after the entries are on disk
     cursor = {
       line: read.lastLine,
