@@ -424,7 +424,7 @@ test('the lane refuses the drill run in every spelling and role variables naming
     `node ${S}/outage-drill.js plan --record ${REC}`,
     `cat ${S}/outage-drill.js`,
     `DELIVERY_TEST_FILES=${S}/outage-drill.test.js node ${S}/testing/run-tests.js`,
-    'git diff origin/main -- plugins/delivery/scripts/outage-drill.js',
+    `git diff origin/main -- ${S}/outage-drill.js`,
     `grep -n "networking" ${S}/lib/outage-drill.js`,
     `DELIVERY_ROLE= node ${laneDir}/x.js`,
   ];
