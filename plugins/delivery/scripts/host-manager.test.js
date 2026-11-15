@@ -1428,6 +1428,9 @@ test('install-role writes the Chief of Staff\'s own unit: run-session in its rol
   for (const re of [/^StartLimitIntervalSec=15min$/m, /^StartLimitBurst=5$/m]) assert.match(svc.split('[Service]')[0], re, svc);
   // its task limit is the one --check asks of a unit that holds one role session
   assert.match(svc, new RegExp(`^TasksMax=${SL.needOf(cosUnit(m), 0)}$`, 'm'));
+  // and start.js --check's service row passes it, whatever the team's size
+  const max = Number(/^TasksMax=(\d+)$/m.exec(svc)[1]);
+  assert.deepEqual(SL.serviceRows([{ unit: cosUnit(m), tasksMax: max, tasksCurrent: null }], 12).map((x) => x.status), ['pass']);
   assert.doesNotMatch(svc, /remote-control|--session-id/, 'the session it reattaches to is read when it starts');
   for (const c of ['systemctl --user daemon-reload', `systemctl --user enable --now ${cosUnit(m)}`]) assert.ok(m.sd.calls.includes(c), `${c}: ${m.sd.calls.join(' | ')}`);
   // the shared helper takes it as the plugin's own start path for that directory
