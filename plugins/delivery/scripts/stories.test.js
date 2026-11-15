@@ -133,6 +133,14 @@ test('the generated index shows each story and its status once it is created and
   const before = w.sha();
   assert.equal(S.setStatus(w.root, FILE, 'shipped').field, 'status');
   assert.equal(w.sha(), before);
+  // the command's own status change rewrites the index too; a size change leaves it as it was
+  const set = w.run('set', FILE, 'status', 'ready');
+  assert.equal(set.code, 0, set.out);
+  assert.match(set.out, /README\.md/);
+  assert.match(index(), /\| 1 \| ready \|/);
+  const kept = index();
+  assert.doesNotMatch(w.run('set', FILE, 'size', 'S').out, /README\.md/);
+  assert.equal(index(), kept);
   // the command itself turns away a role session that is not the Delivery Manager's
   assert.match(stories.main(['set', FILE, 'size', 'S'], { cwd: w.root, who: { root: w.root, roleId: 'builder' } }).out, /^stories\.js: role: /);
 });
