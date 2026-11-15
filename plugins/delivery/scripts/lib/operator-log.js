@@ -96,7 +96,7 @@ function dedupeKey(e) {
 }
 // Every key an input is known by: its dedupe key and, for a delivery.confirmation/1 answer, its event_id,
 // which is stable across re-capture by any writer, so one provider event is one operator input.
-// hb1.8: a human input is also known by its transcript record uuid. Resuming a session copies its earlier
+// A human input is also known by its transcript record uuid. Resuming a session copies its earlier
 // messages into the new session's transcript with the same uuid and timestamp but a new promptId (one per
 // file, or none), so a key on promptId alone took every copy for a new input. The uuid is the message's
 // identity; the promptId key stays so inputs stored before this still match.

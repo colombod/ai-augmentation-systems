@@ -1783,7 +1783,7 @@ see it (`operator.js pending`), record or acknowledge it, carry the record id wi
 Every operator input in the Chief of Staff's session (and the Product Manager's) gets a record or
 an ack. Each input is captured once, by the identity of its transcript record: resuming a session
 copies its earlier messages into the new transcript with the same record id but a new prompt id, and
-those copies are not captured again, while an input typed after the resume is (hb1.8). For an input left without one, the Stop hook reminds the Chief of Staff once per turn and blocks the first stop; it fails open if the transcript format is unrecognised. A short answer such as "yes", "B" or "No." is
+those copies are not captured again, while an input typed after the resume is. For an input left without one, the Stop hook reminds the Chief of Staff once per turn and blocks the first stop; it fails open if the transcript format is unrecognised. A short answer such as "yes", "B" or "No." is
 quoted whole and recorded with `--answers q-<instance>-N`. `verify` checks that the input came
 after the question and does not answer another question, and prints the question beside the
 answer; whether the reply really answers it is still the Chief of Staff's claim, shown for a

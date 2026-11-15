@@ -1,5 +1,5 @@
 // scripts/lib/operator-resume.test.js — run with: node scripts/testing/run-tests.js
-// delivery-plugin-planning-hb1.8: resuming a session copies its earlier messages into the new session's
+// Resuming a session copies its earlier messages into the new session's
 // transcript. Read from the chief-of-staff's real transcripts: each copy keeps its record uuid and its
 // timestamp, but carries a new promptId (one per file, shared by every copied record) or none at all. Human
 // inputs were deduped on promptId first, so every resume captured every earlier input again. The record
