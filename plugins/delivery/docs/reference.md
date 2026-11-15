@@ -1686,10 +1686,14 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   recorded one never joined or already ran (a reattach is single-session and ends after its task), a
   server that stays up after each task (`--spawn same-dir --capacity 1`); always in the team's
   permission mode. Each start is a `host-manager-session` row of the team's `revive.ndjson`, with the
-  dropped id and why, so the once-only rule holds across the unit's restarts. run-session replaces itself
-  with claude (`process.execve`), so the unit's main process is claude; on a node before 22.15, which has
-  no `process.execve`, it starts nothing and says so, since claude as its child would outlive a stop of
-  the unit and the next start would add a second host manager. Before it starts, run-session lists the
+  dropped id and why, so the once-only rule holds across the unit's restarts. The project's launcher
+  replaces itself with the script it runs (`process.execve`), and run-session replaces itself with
+  claude, so the unit's main process is the `claude remote-control` session itself, never the launcher
+  or a node waiting on it: a stop or restart of `delivery-host-manager.service` stops that session, and
+  no host-manager claude is left running outside the unit. On a node before 22.15, which has no
+  `process.execve`, the launcher runs the script as a child as before, and run-session starts nothing
+  and says so, since claude as its child would outlive a stop of the unit and the next start would add a
+  second host manager. Before it starts, run-session lists the
   open sessions: one live in the host manager's role directory or under its name `<instance>@<host>`
   means no second session (one live session per role), and so does a list that cannot be read. A live
   host manager is exit 3, a success the unit does not restart (`SuccessExitStatus=3`,

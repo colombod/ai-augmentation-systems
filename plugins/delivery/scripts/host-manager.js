@@ -536,8 +536,9 @@ function install(root, o = {}, { env = process.env, home = os.homedir(), exec, h
 }
 
 // run-session: what the host manager's unit runs. The session it reattaches to is read now, not at
-// install, and claude replaces this process (process.execve, node 22.15 and later), so the unit's main
-// process is claude and Restart= sees it exit. A node without execve starts nothing: claude as a child
+// install, and claude replaces this process (process.execve, node 22.15 and later); the project launcher
+// the unit's ExecStart goes through replaces itself with this script the same way, so the unit's main
+// process is claude and Restart= sees it exit, and a stop of the unit stops claude. A node without execve starts nothing: claude as a child
 // would outlive a stop of the unit (KillMode=process stops only the main process), and the next start
 // would be a second host manager beside it. deps: execve, resolveBin, now (in a test).
 // A live host-manager session: one in its role directory or under its name <instance>@<host>

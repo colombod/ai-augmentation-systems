@@ -707,6 +707,9 @@ test('install writes the host manager\'s session unit and its tick timer, enable
   for (const re of [/^OnBootSec=2min$/m, /^OnUnitActiveSec=5min$/m, /^WantedBy=timers\.target$/m]) assert.match(timer, re);
   assert.match(fs.readFileSync(unit(HM.TICK_SERVICE), 'utf8'), /^ExecStart=\/usr\/bin\/env "node" ".*\/alpha\/\.delivery\/bin\/delivery\.js" "host-manager\.js" "tick"$/m);
   assert.ok(fs.existsSync(path.join(m.alpha.root, '.delivery', 'bin', 'delivery.js')), 'the launcher the tick runs through');
+  // the session unit's ExecStart goes through that launcher, which replaces itself with run-session, which
+  // replaces itself with claude: the unit's main process is the session (lib/launcher.test.js runs it)
+  assert.match(fs.readFileSync(path.join(m.alpha.root, '.delivery', 'bin', 'delivery.js'), 'utf8'), /^if \(typeof process\.execve === 'function'\) process\.execve\(process\.execPath, \[process\.execPath, script, \.\.\.process\.argv\.slice\(3\)\], process\.env\);$/m);
   for (const c of ['systemctl --user daemon-reload', `systemctl --user enable --now ${HM.UNIT}`, `systemctl --user enable --now ${HM.TICK_TIMER}`]) assert.ok(m.sd.calls.includes(c), c);
   assert.match(r.out, /Lingering is off for dev: .*loginctl enable-linger dev$/m);
   assert.ok(!m.sd.calls.some((c) => /enable-linger/.test(c)), 'lingering is reported, never enabled');
