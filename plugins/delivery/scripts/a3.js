@@ -224,9 +224,10 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, who: give
     // the fix beads exist, are linked to this failure, and are merged
     const links = f ? [f.row.id, f.beadId, f.bead && String((f.bead.metadata || {}).story || '')].filter(Boolean) : [];
     for (const b of a.fix) {
-      let bead = null;
-      try { bead = store().show(b); } catch (err) { bead = null; }
-      if (!bead) return refuse(`no bead ${b}`, `Name the fix: \`bd show ${b}\``);
+      const found = require('./lib/bd.js').lookupBead(store(), b);
+      if (found.error) return refuse(require('./lib/bd.js').lookupProblem(b, found));
+      if (!found.bead) return refuse(`no bead ${b}`, `Name the fix: \`bd show ${b}\``);
+      const bead = found.bead;
       const m = bead.metadata || {};
       const fixes = String(m.fixes || '').replace(/\s+#.*$/, '').trim();
       if (!links.includes(fixes) && String(m.a3 || '') !== id) return refuse(`${b} is not linked to this failure (${links.length ? `fixes: ${[...new Set(links)].join(', ').replace(/, ([^,]*)$/, ' or $1')}, or ` : ''}a3: ${id})`, `The Delivery Manager links it: bd update ${b} --metadata '{"a3":"${id}"}'`);
