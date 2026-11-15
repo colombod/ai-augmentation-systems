@@ -58,13 +58,14 @@ function systemd(units) {
       if (u && u.ActiveState === 'active') return 'active\n';
       const e = new Error('Command failed: systemctl'); e.stdout = `${u ? u.ActiveState : 'inactive'}\n`; throw e;
     }
-    if (sub === 'start') {
-      for (const n of operands) { if (!units[n] || units[n].LoadState === 'not-found') throw new Error(`Failed to start ${n}: Unit ${n} not found.`); units[n].ActiveState = 'active'; }
+    if (sub === 'start' || sub === 'restart') {
+      for (const n of operands) { if (!units[n] || units[n].LoadState === 'not-found') throw new Error(`Failed to ${sub} ${n}: Unit ${n} not found.`); units[n].ActiveState = 'active'; if (sub === 'restart' && r.onRestart) r.onRestart(n); }
       return '';
     }
     return '';
   };
-  return { exec, calls, units };
+  const r = { exec, calls, units, onRestart: null };
+  return r;
 }
 const loaded = (active, since) => ({ LoadState: 'loaded', ActiveState: active ? 'active' : 'inactive', ...(since ? { InactiveEnterTimestamp: since } : {}) });
 
@@ -92,6 +93,7 @@ function machine({ alphaRoles, betaRoles, beads = {}, live, units, bd = {}, host
   const spawn = (bin, args, opts) => {
     const pid = 5000 + spawned.length;
     spawned.push({ args, cwd: opts.cwd });
+    m.events.push(`spawn ${path.basename(opts.cwd)}`);
     if (!machine.dies) alive.add(pid);
     if (m.join && !machine.dies) {
       const sessionId = `s-${pid}`;
@@ -113,15 +115,20 @@ function machine({ alphaRoles, betaRoles, beads = {}, live, units, bd = {}, host
     // the restart's wait: a clock that moves only when the restart sleeps
     clockMs: Date.parse(T0),
     sleeps: [],
+    // session pid -> its Remote Control server's pid (team-revive's serverOf); none by default
+    servers: {},
+    // stops and spawns in the order they happened
+    events: [],
   };
   m.deps = () => ({
     env: { DELIVERY_HOST: 'pc', PATH: '/usr/bin', USER: 'dev' },
     home, exec: sd.exec, has: () => true, live: () => m.live, spawn, cwd: base, who: { roleId: null }, now: m.now,
     sleep: (msec) => { m.sleeps.push(msec); m.clockMs += msec; }, clock: () => m.clockMs,
-    stop: (server, pid) => { stops.push({ server, pid }); return true; },
+    // a stopped server's session leaves the list, as a real one does
+    stop: (server, pid) => { stops.push({ server, pid }); m.events.push(`stop ${server}`); if (Array.isArray(m.live)) m.live = m.live.filter((x) => !(pid && x.pid === pid)); return true; },
     // each team's host job ran a pass five minutes ago unless a test says otherwise
     lastPass: () => Date.parse(m.now) - 5 * MIN,
-    teamDeps: (root) => ({ bd: bd[root] || store(m.beads[root]), prs: [], alive: (pid) => alive.has(pid), pause: () => ({ paused: false }), configDir: config, now: m.now, hostname: 'pc', installed: m.installed, server: () => null }),
+    teamDeps: (root) => ({ bd: bd[root] || store(m.beads[root]), prs: [], alive: (pid) => alive.has(pid), pause: () => ({ paused: false }), configDir: config, now: m.now, hostname: 'pc', installed: m.installed, server: (pid) => (m.servers[pid] ? { pid: m.servers[pid], self: false } : null) }),
   });
   m.run = (argv, more = {}) => HMS.main(argv, { ...m.deps(), ...more });
   return m;
@@ -158,13 +165,14 @@ test('restart: the stopped host job and the two working instances come back; the
   m.sd.units[`delivery-watchdog-${a}.timer`] = loaded(false, 'Sun 2026-11-08 09:00:00 UTC');
   const r = m.run(['restart']);
   assert.equal(r.code, 0, r.out);
-  assert.ok(m.sd.calls.includes(`systemctl --user start delivery-watchdog-${a}.timer`), m.sd.calls.join('\n'));
+  assert.ok(m.sd.calls.includes(`systemctl --user restart delivery-watchdog-${a}.timer`), m.sd.calls.join('\n'));
   assert.ok(m.sd.calls.includes(`systemctl --user start --no-block delivery-watchdog-${a}.service`), 'one run of its service at once');
-  assert.ok(!m.sd.calls.some((c) => c.includes(`start delivery-watchdog-${tag(m.beta.root)}`)), 'a running job is not started');
+  // the owner's restart restarts every installed job, a running one included
+  assert.ok(m.sd.calls.includes(`systemctl --user restart delivery-watchdog-${tag(m.beta.root)}.timer`), m.sd.calls.join('\n'));
   assert.deepEqual(m.spawned.map((s) => s.cwd).sort(), [m.alpha.dir('builder'), m.alpha.dir('chief-of-staff')].sort());
   for (const s of m.spawned) assert.deepEqual(s.args.slice(0, 2), ['remote-control', '--name']);
   const lines = r.out.split('\n');
-  for (const l of [`Back: delivery-watchdog-${a}.timer is running.`, 'Back: alpha chief-of-staff is running, listed, on the installed plugin 1.2.0.', 'Back: alpha builder is running, listed, on the installed plugin 1.2.0.', 'Left down (no work held): alpha tech-writer.']) assert.ok(lines.includes(l), `${l}\n${r.out}`);
+  for (const l of [`Restarted: alpha's host job (delivery-watchdog-${a}.timer, delivery-watchdog-${a}.path, then one run of delivery-watchdog-${a}.service): delivery-watchdog-${a}.timer is running.`, 'Back: alpha chief-of-staff is running, listed, on the installed plugin 1.2.0.', 'Back: alpha builder is running, listed, on the installed plugin 1.2.0.', 'Left down (no work held): alpha tech-writer.']) assert.ok(lines.includes(l), `${l}\n${r.out}`);
   assert.doesNotMatch(r.out, /Not back/);
   // listed at once: no wait
   assert.deepEqual(m.sleeps, []);
@@ -318,7 +326,7 @@ test('restart reads the sessions again just before stopping a session on an olde
   assert.equal(busy.reads[1], 'busy');
   assert.deepEqual(busy.m.stops, [], 'not stopped');
   assert.equal(busy.m.spawned.length, 0);
-  assert.match(r.out, /^Not restarted: alpha builder \(it ran the older plugin 1\.1\.0, installed 1\.2\.0\): it became busy just before the stop\.$/m, r.out);
+  assert.match(r.out, /^Busy, not restarted now: alpha builder \(it ran the older plugin 1\.1\.0, installed 1\.2\.0\): it became busy just before the stop\.$/m, r.out);
   // idle on both reads: stopped once and restarted, and the reply names it
   const idle = stale();
   idle.m.liveStatus = () => 'idle';
@@ -327,6 +335,199 @@ test('restart reads the sessions again just before stopping a session on an olde
   assert.equal(idle.m.spawned.length, 1);
   assert.match(r2.out, /^Restarted: alpha builder \(pid 5000\): it ran the older plugin 1\.1\.0, installed 1\.2\.0\.$/m, r2.out);
   assert.deepEqual(R.ledger(idle.m.alpha.root).filter((x) => x.type === 'restart').map((x) => [x.instance, x.from, x.to]), [['builder', '1.1.0', '1.2.0']]);
+});
+
+// ---- the owner's restart (hjx.1.6.11.5): every installed host job, and every running role that holds work ----
+
+// a role session open in its role directory on the installed plugin (or version), the roster naming that
+// very session, its Remote Control id in its session file, under the Remote Control server serverPid
+function runningRole(m, p, instance, { pid, serverPid = pid + 1000, version = '1.2.0', status = 'idle', bridge = `session_${instance}`, server = true } = {}) {
+  const dir = p.dir(instance);
+  const sessionId = `open-${instance}-${pid}`;
+  require('./lib/roster.js').registerInstance(p.root, { instance, session_id: sessionId, host: 'pc', role_dir: dir, now: ago(90), plugin_version: version });
+  if (bridge) {
+    fs.mkdirSync(path.join(m.config, 'sessions'), { recursive: true });
+    fs.writeFileSync(path.join(m.config, 'sessions', `${pid}.json`), JSON.stringify({ sessionId, cwd: dir, bridgeSessionId: bridge, pid }));
+  }
+  if (server) m.servers[pid] = serverPid;
+  m.live = [...(Array.isArray(m.live) ? m.live : []), { cwd: dir, sessionId, pid, status }];
+  return { dir, sessionId, pid, serverPid };
+}
+const allJobsRunning = (m) => Object.fromEntries([m.alpha.root, m.beta.root].flatMap((root) => [[`delivery-watchdog-${tag(root)}.timer`, loaded(true)], [`delivery-watchdog-${tag(root)}.path`, loaded(true)], [`delivery-watchdog-${tag(root)}.service`, loaded(false)]]));
+const WORK = { alpha: [{ id: 'al-1', status: 'in_progress', assignee: 'dev@pc/builder', updated_at: ago(10) }, { id: 'al-2', status: 'in_progress', assignee: 'dev@pc/chief-of-staff', updated_at: ago(10) }] };
+// only the builder holds work
+const WORK_B = { alpha: [WORK.alpha[0]] };
+// a user unit that serves a role: its WorkingDirectory the role directory, its ExecStart claude remote-control
+function roleUnit(m, dir, name, execStart = `/home/dev/.local/bin/claude remote-control --name builder@alpha --spawn same-dir --capacity 1`) {
+  fs.writeFileSync(path.join(HM.unitDir(m.home), name), `[Unit]\nDescription=a role\n\n[Service]\nWorkingDirectory=${dir.replace(/%/g, '%%')}\nExecStart=${execStart}\nRestart=always\n`);
+}
+
+test('the owner\'s restart with nothing down: every running role holding work is stopped and started again with --session-id, one at a time, and every installed host job is restarted', () => {
+  const m = machine({ beads: WORK });
+  const cos = runningRole(m, m.alpha, 'chief-of-staff', { pid: 71 });
+  const b = runningRole(m, m.alpha, 'builder', { pid: 72 });
+  runningRole(m, m.alpha, 'tech-writer', { pid: 73 });
+  const bc = runningRole(m, m.beta, 'chief-of-staff', { pid: 81 });
+  const bb = runningRole(m, m.beta, 'builder', { pid: 82 });
+  const r = m.run(['restart']);
+  assert.equal(r.code, 0, r.out);
+  // the two holding work, stopped then started, one at a time, each only after the second read
+  assert.deepEqual(m.stops, [{ server: cos.serverPid, pid: 71 }, { server: b.serverPid, pid: 72 }]);
+  assert.deepEqual(m.events, [`stop ${cos.serverPid}`, 'spawn chief-of-staff', `stop ${b.serverPid}`, 'spawn builder']);
+  assert.deepEqual(m.spawned.map((s) => [path.basename(s.cwd), s.args.slice(s.args.indexOf('--session-id'), s.args.indexOf('--session-id') + 2)]), [['chief-of-staff', ['--session-id', 'session_chief-of-staff']], ['builder', ['--session-id', 'session_builder']]]);
+  // an idle role in a team with no work, and one with no work in a team with work, are not restarted
+  for (const x of [bc, bb]) assert.ok(!m.stops.some((s) => s.pid === x.pid));
+  assert.ok(!m.stops.some((s) => s.pid === 73));
+  // every action a ledger row, counted by the caps
+  assert.deepEqual(R.ledger(m.alpha.root).filter((x) => x.type === 'restart').map((x) => [x.instance, x.forced, x.from, x.to, x.session_id]), [['chief-of-staff', true, '1.2.0', '1.2.0', 'session_chief-of-staff'], ['builder', true, '1.2.0', '1.2.0', 'session_builder']]);
+  assert.deepEqual(R.ledger(m.beta.root).filter((x) => x.type === 'restart'), []);
+  // every installed host job: its timer and path restarted, then one run of its service
+  for (const root of [m.alpha.root, m.beta.root]) {
+    const t = tag(root);
+    for (const c of [`systemctl --user restart delivery-watchdog-${t}.timer`, `systemctl --user restart delivery-watchdog-${t}.path`, `systemctl --user start --no-block delivery-watchdog-${t}.service`]) assert.ok(m.sd.calls.includes(c), `${c}\n${m.sd.calls.join('\n')}`);
+    assert.ok(m.sd.calls.indexOf(`systemctl --user restart delivery-watchdog-${t}.timer`) < m.sd.calls.indexOf(`systemctl --user start --no-block delivery-watchdog-${t}.service`));
+  }
+  const lines = r.out.split('\n');
+  assert.equal(lines[0], 'Installed delivery plugin: 1.2.0.', r.out);
+  for (const l of [
+    `Restarted: alpha's host job (delivery-watchdog-${tag(m.alpha.root)}.timer, delivery-watchdog-${tag(m.alpha.root)}.path, then one run of delivery-watchdog-${tag(m.alpha.root)}.service): delivery-watchdog-${tag(m.alpha.root)}.timer is running.`,
+    `Restarted: beta's host job (delivery-watchdog-${tag(m.beta.root)}.timer, delivery-watchdog-${tag(m.beta.root)}.path, then one run of delivery-watchdog-${tag(m.beta.root)}.service): delivery-watchdog-${tag(m.beta.root)}.timer is running.`,
+    'Back: alpha chief-of-staff is back on 1.2.0: restarted (pid 5000), listed in its role directory.',
+    'Back: alpha builder is back on 1.2.0: restarted (pid 5001), listed in its role directory.',
+    'Not restarted (no work held): alpha tech-writer.',
+    'Not restarted (no work held): beta chief-of-staff, builder.',
+  ]) assert.ok(lines.includes(l), `${l}\n${r.out}`);
+  assert.doesNotMatch(r.out, /nothing was restarted|Nothing to restart/i);
+});
+
+test('the owner\'s restart reads after the restart: a restarted role whose new session is not listed is not back, and the stopped session is never taken for it', () => {
+  const m = machine({ beads: WORK_B });
+  runningRole(m, m.alpha, 'builder', { pid: 72 });
+  m.join = null;
+  // the stop does not take the old session out of the list here: it must still not count as back
+  const r = m.run(['restart'], { stop: (server, pid) => { m.stops.push({ server, pid }); return true; } });
+  assert.equal(m.stops.length, 1);
+  assert.match(r.out, /^Not back: alpha builder: restarted \(pid 5000\) but its new session is not listed after 5 min\.$/m, r.out);
+  assert.doesNotMatch(r.out, /^Back: alpha builder/m);
+  assert.equal(m.sleeps.reduce((x, y) => x + y, 0), 5 * MIN, 'it waited the whole window, no more');
+});
+
+test('the owner\'s restart does not stop a busy role: on the first read, or on the second just before the stop; it names it busy, not restarted now, with the reason', () => {
+  const m = machine({ beads: WORK_B });
+  runningRole(m, m.alpha, 'builder', { pid: 72, status: 'busy' });
+  const r = m.run(['restart']);
+  assert.deepEqual(m.stops, []);
+  assert.equal(m.spawned.length, 0);
+  assert.match(r.out, /^Busy, not restarted now: alpha builder \(it is busy; it is restarted only when idle between turns\)\.$/m, r.out);
+  // idle on the first read, busy on the second
+  const n = machine({ beads: WORK_B });
+  runningRole(n, n.alpha, 'builder', { pid: 72 });
+  let reads = 0;
+  const r2 = n.run(['restart'], { live: () => { reads += 1; return n.live.map((x) => ({ ...x, status: reads >= 2 ? 'busy' : 'idle' })); } });
+  assert.ok(reads >= 2);
+  assert.deepEqual(n.stops, []);
+  assert.equal(n.spawned.length, 0);
+  assert.match(r2.out, /^Busy, not restarted now: alpha builder: it became busy just before the stop\.$/m, r2.out);
+});
+
+test('the owner\'s restart skips a role with no recorded Remote Control session id, or with no Remote Control server, and says why', () => {
+  const m = machine({ beads: WORK });
+  runningRole(m, m.alpha, 'builder', { pid: 72, bridge: null });
+  runningRole(m, m.alpha, 'chief-of-staff', { pid: 71, server: false });
+  const r = m.run(['restart']);
+  assert.deepEqual(m.stops, []);
+  assert.equal(m.spawned.length, 0);
+  assert.match(r.out, /^Not restarted: alpha builder: no Remote Control session id is recorded for it, so a restart would give the owner a new link\.$/m, r.out);
+  assert.match(r.out, /^Not restarted: alpha chief-of-staff: it does not run under a Remote Control server this host started, so it is not stopped here; it runs the installed plugin from its next start\.$/m, r.out);
+});
+
+test('the start caps hold the owner\'s restart of a running role and say when it can run', () => {
+  const m = machine({ beads: WORK_B });
+  runningRole(m, m.alpha, 'builder', { pid: 72 });
+  R.record(m.alpha.root, { type: 'restart', at: ago(10), instance: 'builder', pid: 4, args: [], to: '1.2.0' });
+  const r = m.run(['restart']);
+  assert.deepEqual(m.stops, []);
+  assert.equal(m.spawned.length, 0);
+  assert.match(r.out, /^Not restarted now: alpha builder \(held: started .*; the next start is after .* \(one start an hour\)\)\.$/m, r.out);
+});
+
+test('a role served by a user unit is restarted through systemctl --user restart <unit> when idle, never stopped or spawned in a scope; busy, it is not restarted', () => {
+  const m = machine({ beads: WORK_B });
+  const b = runningRole(m, m.alpha, 'builder', { pid: 72, server: false, bridge: null });
+  roleUnit(m, b.dir, 'claude-alpha-builder.service');
+  // the unit's restart brings a new session up in the role directory on the installed plugin
+  m.sd.onRestart = (unit) => {
+    if (unit !== 'claude-alpha-builder.service') return;
+    m.live = m.live.filter((x) => x.pid !== 72).concat([{ cwd: b.dir, sessionId: 'new-b', pid: 7200, status: 'idle' }]);
+    require('./lib/roster.js').registerInstance(m.alpha.root, { instance: 'builder', session_id: 'new-b', host: 'pc', role_dir: b.dir, now: T0, plugin_version: '1.2.0' });
+  };
+  m.sd.units['claude-alpha-builder.service'] = loaded(true);
+  const r = m.run(['restart']);
+  assert.ok(m.sd.calls.includes('systemctl --user restart claude-alpha-builder.service'), m.sd.calls.join('\n'));
+  assert.deepEqual(m.stops, []);
+  assert.equal(m.spawned.length, 0, 'never in a scope');
+  assert.deepEqual(R.ledger(m.alpha.root).filter((x) => x.type === 'restart').map((x) => [x.instance, x.unit, x.forced]), [['builder', 'claude-alpha-builder.service', true]]);
+  assert.match(r.out, /^Back: alpha builder is back on 1\.2\.0: restarted through its user unit claude-alpha-builder\.service, listed in its role directory\.$/m, r.out);
+  // busy: no restart of its unit
+  const n = machine({ beads: WORK_B });
+  const nb = runningRole(n, n.alpha, 'builder', { pid: 72, server: false, bridge: null, status: 'busy' });
+  roleUnit(n, nb.dir, 'claude-alpha-builder.service');
+  const r2 = n.run(['restart']);
+  assert.ok(!n.sd.calls.some((c) => c.includes('claude-alpha-builder.service')), n.sd.calls.join('\n'));
+  assert.match(r2.out, /^Busy, not restarted now: alpha builder \(it is busy; it is restarted only when idle between turns\)\.$/m, r2.out);
+});
+
+test('a role served by a user unit that is down is never started in a scope: the reply names its unit', () => {
+  const m = machine({ beads: WORK });
+  roleUnit(m, m.alpha.dir('builder'), 'claude-alpha-builder.service');
+  const r = m.run(['restart']);
+  assert.ok(!m.spawned.some((s) => s.cwd === m.alpha.dir('builder')), 'not spawned');
+  assert.ok(m.spawned.some((s) => s.cwd === m.alpha.dir('chief-of-staff')), 'a role with no unit still starts');
+  assert.match(r.out, /^Not back: alpha builder \(not started: it is served by the user unit claude-alpha-builder\.service, which is its start path; no scope is started for it\)\.$/m, r.out);
+  // a unit whose ExecStart is not claude remote-control, or whose WorkingDirectory is another directory, serves no role
+  const n = machine({ beads: WORK });
+  roleUnit(n, n.alpha.dir('builder'), 'other.service', '/usr/bin/node server.js');
+  roleUnit(n, n.alpha.dir('tech-writer'), 'tw.service');
+  n.run(['restart']);
+  assert.ok(n.spawned.some((s) => s.cwd === n.alpha.dir('builder')));
+});
+
+test('the owner\'s restart with nothing to restart (no host job installed, no role holding work) says so, with the version', () => {
+  const m = machine({ units: {} });
+  runningRole(m, m.alpha, 'builder', { pid: 72 });
+  const r = m.run(['restart']);
+  const lines = r.out.split('\n');
+  assert.equal(lines[0], 'Installed delivery plugin: 1.2.0.', r.out);
+  assert.ok(lines.includes('Nothing to restart: no watchdog host job is installed and no role session holds work.'), r.out);
+  assert.deepEqual(m.stops, []);
+  assert.doesNotMatch(r.out, /Nothing was down that holds work/);
+});
+
+test('a host job restart that fails is named with why', () => {
+  const m = machine({ beads: {} });
+  const a = tag(m.alpha.root);
+  const r = m.run(['restart'], { exec: (cmd, args) => { if (args[1] === 'restart' && args[2] === `delivery-watchdog-${a}.timer`) throw new Error('Failed to restart: Unit is masked.'); return m.sd.exec(cmd, args); } });
+  assert.match(r.out, new RegExp(`^Not restarted: alpha's host job: restarting delivery-watchdog-${a}\\.timer failed \\(Failed to restart: Unit is masked\\.\\)\\.$`, 'm'), r.out);
+  assert.ok(!m.sd.calls.includes(`systemctl --user start --no-block delivery-watchdog-${a}.service`), 'no run of a job whose timer did not restart');
+});
+
+test('tick with every role running keeps its rule: it restarts no running session, current or holding work, and restarts no running host job', () => {
+  const roles = [{ id: 'chief-of-staff', host: 'pc' }, { id: 'builder', host: 'pc' }, { id: 'host-manager', host: 'pc' }];
+  const m = machine({ alphaRoles: roles, beads: { alpha: [{ id: 'al-1', status: 'in_progress', assignee: 'builder', updated_at: ago(45) }, { id: 'al-2', status: 'in_progress', assignee: 'chief-of-staff', updated_at: ago(5) }] } });
+  runningRole(m, m.alpha, 'chief-of-staff', { pid: 71 });
+  const b = runningRole(m, m.alpha, 'builder', { pid: 72 });
+  roleUnit(m, b.dir, 'claude-alpha-builder.service');
+  runningRole(m, m.beta, 'chief-of-staff', { pid: 81 });
+  runningRole(m, m.beta, 'builder', { pid: 82 });
+  const r = m.run(['tick']);
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /silent: alpha builder is running but silent/, 'the tick ran its restart');
+  assert.deepEqual(m.stops, []);
+  assert.equal(m.spawned.length, 0);
+  assert.ok(!m.sd.calls.some((c) => / restart /.test(c)), m.sd.calls.join('\n'));
+  assert.ok(!m.sd.calls.some((c) => / start /.test(c)), m.sd.calls.join('\n'));
+  assert.deepEqual(R.ledger(m.alpha.root).filter((x) => /restart/.test(x.type)), []);
+  assert.doesNotMatch(r.out, /^Installed delivery plugin/m);
 });
 
 test('tick: 30 minutes silent with work in flight is a restart and one alert; a second tick in the same outage sends none; a new outage alerts again', () => {

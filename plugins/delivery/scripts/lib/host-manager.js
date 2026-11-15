@@ -153,8 +153,26 @@ function statusLines(read) {
 // but which is silent (its service keeps failing or never runs: one run of its service is started), and
 // per team the instances down that hold work. An idle instance that is down stays down: it is listed,
 // never started. silent: what silences() found, or none.
-function restartPlan(read, silent = []) {
-  const jobs = read.units.filter((u) => u.job && u.loaded && !u.running && !u.unavailable).map((u) => u.unit);
+// everyTeam (the owner's restart): every installed host job is restarted, running or not (restartJobs:
+// per team its timer, its path unit when installed, and its service, which runs once after), and every
+// running instance holding work is a restart target (force, per team): the owner asked for the team to
+// come back on the installed plugin. The unattended tick never passes it.
+function restartPlan(read, silent = [], { everyTeam = false } = {}) {
+  const restartJobs = [];
+  const force = {};
+  if (everyTeam) {
+    for (const timer of read.units.filter((u) => u.job && u.service)) {
+      const p = read.units.find((u) => u.job && !u.service && u.root === timer.root);
+      if (timer.unavailable) restartJobs.push({ root: timer.root, team: timer.team, timer: timer.unit, service: timer.service, unavailable: timer.unavailable });
+      else if (timer.loaded) restartJobs.push({ root: timer.root, team: timer.team, timer: timer.unit, path: p && p.loaded && !p.unavailable ? p.unit : null, service: timer.service });
+    }
+    for (const t of read.teams) {
+      if (t.manifestUnavailable) continue;
+      const want = (t.running || []).filter((i) => (t.holding || []).includes(i));
+      if (want.length) force[t.root] = want;
+    }
+  }
+  const jobs = everyTeam ? [] : read.units.filter((u) => u.job && u.loaded && !u.running && !u.unavailable).map((u) => u.unit);
   const kick = [];
   for (const s of silent.filter((x) => x.kind === 'job')) {
     const timer = read.units.find((u) => u.root === s.root && u.service);
@@ -166,7 +184,7 @@ function restartPlan(read, silent = []) {
     const want = t.down.filter((i) => t.holding.includes(i));
     if (want.length) instances[t.root] = want;
   }
-  return { jobs, kick, instances };
+  return { jobs, kick, instances, restartJobs, force };
 }
 
 // A minute and second count, for how long a restart waited for a session to be listed.
@@ -182,10 +200,13 @@ function duration(msec) {
 // session started under (the version the stale-session restart reads), and it is the installed one. A
 // server whose pid is alive is not enough: it may never have joined, or joined on an older plugin.
 // live: the session list ([{ cwd, sessionId }] or null); entry: the instance's roster entry.
+// old: the session a restart stopped ({ sessionId, pid }): still listed, it is not the one that came back
+// (by its pid when known, else by its id), so a restart is never confirmed by the session it replaced.
 // -> { state: 'back' | 'unlisted' | 'unrecorded' | 'older' | 'unread' | 'noinstalled', version, installed }
-function confirmation({ live, entry, roleDir, installed }) {
+function confirmation({ live, entry, roleDir, installed, old = null }) {
   if (!Array.isArray(live)) return { state: 'unread', installed };
-  const row = live.find((x) => x && x.cwd && path.resolve(x.cwd) === path.resolve(roleDir));
+  const isOld = (x) => Boolean(old) && (old.pid ? x.pid === old.pid : Boolean(old.sessionId) && x.sessionId === old.sessionId);
+  const row = live.find((x) => x && x.cwd && path.resolve(x.cwd) === path.resolve(roleDir) && !isOld(x));
   if (!row) return { state: 'unlisted', installed };
   const e = entry || {};
   const version = e.plugin_version && e.session_id && row.sessionId && e.session_id === row.sessionId ? e.plugin_version : null;
@@ -204,11 +225,24 @@ const waiting = (c) => c.state === 'unlisted' || c.state === 'unrecorded';
 // restarted { root: { instance: { pid } | { why }, from, to } } (the stale-session restarts revive made),
 // passes { root: ms of its last host job pass, read after the restart }, kickErrors { service: why },
 // silent (what silences() found)
+// The owner's restart adds: version (the installed plugin, the reply's first line), restartJobErrors
+// { timer unit: why }, held { root: { instance: { why, busy, held } } } (a forced or stale restart not made
+// now), unforced { root: { instance: why } } (a forced instance with no restart to make), restartConfirmed
+// { root: { instance: confirmation() } } (each restarted one, from the read after), everyTeam.
 function restartLines(before, after, plan, o = {}) {
-  const { refused = {}, jobErrors = {}, started = {}, confirmed = {}, waited = 0, restarted = {}, passes = {}, kickErrors = {}, silent = [] } = o;
+  const { refused = {}, jobErrors = {}, started = {}, confirmed = {}, waited = 0, restarted = {}, passes = {}, kickErrors = {}, silent = [], version, restartJobErrors = {}, held = {}, unforced = {}, restartConfirmed = {}, everyTeam = false } = o;
   const out = [];
   const unit = (read, name) => read.units.find((u) => u.unit === name);
   const at = (t) => (Number.isFinite(t) ? new Date(t).toISOString() : 'an unknown time');
+  const nameOf = (root) => { const t = after.teams.find((x) => x.root === root) || before.teams.find((x) => x.root === root); return (t && t.name) || root; };
+  for (const j of plan.restartJobs || []) {
+    const parts = [j.timer, ...(j.path ? [j.path] : []), `then one run of ${j.service}`].join(', ');
+    if (j.unavailable) { out.push(`Not restarted: ${j.team}'s host job: its state could not be read (${j.unavailable}).`); continue; }
+    if (restartJobErrors[j.timer]) { out.push(`Not restarted: ${j.team}'s host job: ${restartJobErrors[j.timer]}.`); continue; }
+    const u = unit(after, j.timer);
+    if (u && u.running) out.push(`Restarted: ${j.team}'s host job (${parts}): ${j.timer} is running.`);
+    else out.push(`Not back: ${j.team}'s host job: restarted (${parts}), but ${u ? unitLine(u) : `the state of ${j.timer} could not be read`}.`);
+  }
   for (const j of plan.jobs) {
     const u = unit(after, j);
     if (u && u.running) out.push(`Back: ${j} is running.`);
@@ -237,14 +271,35 @@ function restartLines(before, after, plan, o = {}) {
     }
   }
   for (const [root, byInstance] of Object.entries(restarted)) {
-    const t = after.teams.find((x) => x.root === root) || before.teams.find((x) => x.root === root);
-    const name = (t && t.name) || root;
+    const name = nameOf(root);
     for (const [i, r] of Object.entries(byInstance)) {
-      const was = `it ran the older plugin ${r.from || 'unknown'}, installed ${r.to || 'unknown'}`;
-      if (r.pid) out.push(`Restarted: ${name} ${i} (pid ${r.pid}): ${was}.`);
-      else out.push(`Not restarted: ${name} ${i} (${was}): ${r.why}.`);
+      // a session on an older plugin is named with both versions, as before; a forced restart of one on
+      // the installed plugin is what the owner asked, and its Back line says the version
+      const older = Boolean(r.from && r.to && PV.compare(r.from, r.to) === -1);
+      const was = older || !r.forced ? `it ran the older plugin ${r.from || 'unknown'}, installed ${r.to || 'unknown'}` : null;
+      const how = r.unit ? `restarted through its user unit ${r.unit}` : `restarted (pid ${r.pid})`;
+      if (r.pid || r.unit) {
+        if (was) out.push(`Restarted: ${name} ${i} (${r.unit ? `through its user unit ${r.unit}` : `pid ${r.pid}`}): ${was}.`);
+        const c = (restartConfirmed[root] || {})[i] || { state: 'unread' };
+        if (c.state === 'back') out.push(`Back: ${name} ${i} is back on ${c.version}: ${how}, listed in its role directory.`);
+        else if (c.state === 'unlisted') out.push(`Not back: ${name} ${i}: ${how} but its new session is not listed after ${duration(waited)}.`);
+        else if (c.state === 'older') out.push(`Not back: ${name} ${i}: ${how}, and it runs an older plugin (${c.version}, installed ${c.installed}).`);
+        else if (c.state === 'unrecorded') out.push(`Not back: ${name} ${i}: ${how} and listed, but its session recorded no plugin version after ${duration(waited)}, so it is not known to run the installed ${c.installed || 'plugin'}.`);
+        else if (c.state === 'noinstalled') out.push(`Not back: ${name} ${i}: ${how} and listed on ${c.version}, but the installed plugin version could not be read.`);
+        else out.push(`Not back: ${name} ${i}: ${how}, but the session list could not be read after the restart.`);
+      } else if (/^it became .* just before the stop$/.test(r.why || '')) out.push(`Busy, not restarted now: ${name} ${i}${was ? ` (${was})` : ''}: ${r.why}.`);
+      else out.push(`Not restarted: ${name} ${i}${was ? ` (${was})` : ''}: ${r.why}.`);
     }
   }
+  for (const [root, byInstance] of Object.entries(held)) {
+    const name = nameOf(root);
+    for (const [i, h] of Object.entries(byInstance)) {
+      if (h.busy) out.push(`Busy, not restarted now: ${name} ${i} (${h.why}).`);
+      else if (h.held) out.push(`Not restarted now: ${name} ${i} (held: ${h.why}).`);
+      else out.push(`Not restarted: ${name} ${i}: ${h.why}.`);
+    }
+  }
+  for (const [root, byInstance] of Object.entries(unforced)) for (const [i, why] of Object.entries(byInstance)) out.push(`Not restarted: ${nameOf(root)} ${i}: ${why}.`);
   for (const s of silent) {
     if (s.kind === 'running') out.push(`Silent while running: ${s.what}. Not stopped: a session that may be in the middle of a turn is not stopped here; it is restarted only when it runs an older plugin and is idle between turns.`);
   }
@@ -252,9 +307,19 @@ function restartLines(before, after, plan, o = {}) {
     const idle = (t.down || []).filter((i) => !(t.holding || []).includes(i));
     if (idle.length) out.push(`Left down (no work held): ${t.name} ${idle.join(', ')}.`);
   }
-  if (!out.length) out.push('Nothing was down that holds work and nothing is silent: nothing was restarted.');
+  if (everyTeam) {
+    for (const t of before.teams) {
+      const idle = (t.running || []).filter((i) => !(t.holding || []).includes(i));
+      if (idle.length) out.push(`Not restarted (no work held): ${t.name} ${idle.join(', ')}.`);
+    }
+    // the owner asked: the reply says what was done to each job and role; only when there was truly
+    // nothing to act on does it say so
+    const acted = (plan.restartJobs || []).length || Object.keys(plan.force || {}).length || Object.keys(plan.instances || {}).length;
+    if (!acted) out.push('Nothing to restart: no watchdog host job is installed and no role session holds work.');
+  } else if (!out.length) out.push('Nothing was down that holds work and nothing is silent: nothing was restarted.');
   for (const u of after.unavailable || []) out.push(`SOURCE UNAVAILABLE: ${u}`);
   for (const t of after.teams) for (const u of t.unavailable || []) out.push(`SOURCE UNAVAILABLE: ${t.name}: ${u}`);
+  if (version !== undefined) out.unshift(version ? `Installed delivery plugin: ${version}.` : 'Installed delivery plugin: its version could not be read.');
   return out;
 }
 

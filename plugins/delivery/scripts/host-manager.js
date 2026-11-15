@@ -6,16 +6,18 @@
 //                                       hold work; per host job unit: running, or stopped since when; a
 //                                       source that cannot be read is a SOURCE UNAVAILABLE line, never
 //                                       counted as running
-//   host-manager.js restart [--json]    starts each stopped host job (its timer and path units, and one run
-//                                       of its service), one run of the service of a job whose timer runs
-//                                       but which has run no pass for 30 minutes, then each team's missing
-//                                       role sessions that hold work (team-revive.js, its caps applying, and
-//                                       its restart of a session on an older plugin, with a fresh read of the
-//                                       sessions just before any stop). It then reads the sessions every 10 s,
-//                                       for up to 5 minutes, until each session it started is listed, and
-//                                       replies from that read: Back only for a session listed in its role
-//                                       directory whose roster entry records the installed plugin; what did
-//                                       not come back, and why
+//   host-manager.js restart [--json]    the owner's restart: restarts every installed host job (its timer
+//                                       and path units, then one run of its service), running or not, then
+//                                       per team starts the missing role sessions that hold work and
+//                                       restarts every running one that holds work onto the installed
+//                                       plugin (team-revive.js: its caps, its restart of an idle session
+//                                       only after a fresh read of the sessions just before any stop; a
+//                                       busy one is named, never stopped; a role a user unit serves through
+//                                       that unit). It then reads the sessions every 10 s, for up to 5
+//                                       minutes, until each session it started or restarted is listed, and
+//                                       replies from that read, starting with the installed plugin version:
+//                                       Back only for a session listed in its role directory whose roster
+//                                       entry records the installed plugin; what did not come back, and why
 //   host-manager.js tick                the unattended pass its timer runs every 5 minutes. A silence of 30
 //                                       minutes (an instance holding work with no bead note and no wake, a
 //                                       host job with no pass) is one outage per team and instance, or team
@@ -116,7 +118,7 @@ function read({ env = process.env, home = os.homedir(), exec, has, live, teamDep
     try { team = M.loadManifest(root).team; } catch (err) { teams.push({ root, name: path.basename(root), manifestUnavailable: firstLine(err) }); continue; }
     let f;
     let a;
-    try { f = TR.gather(root, team, { env, live: sessions, ...(teamDeps ? teamDeps(root) : {}) }); a = R.assess(f); } catch (err) { teams.push({ root, name: (team && team.project) || path.basename(root), manifestUnavailable: `its records could not be read: ${firstLine(err)}` }); continue; }
+    try { f = TR.gather(root, team, { env, home, live: sessions, ...(teamDeps ? teamDeps(root) : {}) }); a = R.assess(f); } catch (err) { teams.push({ root, name: (team && team.project) || path.basename(root), manifestUnavailable: `its records could not be read: ${firstLine(err)}` }); continue; }
     const t = HM.teamState(root, a, f);
     Object.defineProperty(t, 'facts', { value: f, enumerable: false });
     Object.defineProperty(t, 'team', { value: team, enumerable: false });
@@ -188,8 +190,9 @@ function factsOf(read, deps = {}) {
   return facts;
 }
 
-// Each started instance's confirmation (lib/host-manager.js confirmation) from a read.
-function confirmAll(read, want) {
+// Each started instance's confirmation (lib/host-manager.js confirmation) from a read. old: { root:
+// { instance: the session a restart stopped } }, never taken for the one that came back.
+function confirmAll(read, want, old = {}) {
   const out = {};
   for (const [root, instances] of Object.entries(want)) {
     const t = read.teams.find((x) => x.root === root);
@@ -197,17 +200,19 @@ function confirmAll(read, want) {
     for (const i of instances) {
       if (!t || !t.facts) { out[root][i] = { state: 'unread' }; continue; }
       const entry = (t.facts.roster || {})[i] || {};
-      out[root][i] = HM.confirmation({ live: t.facts.live, entry, roleDir: entry.role_dir || t.facts.defaultDir(i), installed: t.facts.installed });
+      out[root][i] = HM.confirmation({ live: t.facts.live, entry, roleDir: entry.role_dir || t.facts.defaultDir(i), installed: t.facts.installed, old: (old[root] || {})[i] || null });
     }
   }
   return out;
 }
 
 // The restart, from a read already made (the tick's) or a new one.
-// o.facts, o.silent: the tick's, else read here. o.everyTeam (the owner's restart): every team's start
-// pass runs, so a session on an older plugin is restarted by team-revive's stale-session path, with a
-// fresh read of the sessions just before any stop; the tick runs the start pass only where an instance
-// holding work is down.
+// o.facts, o.silent: the tick's, else read here. o.everyTeam (the owner's restart): every installed host
+// job is restarted, and every team's start pass runs with force: each running instance holding work,
+// restarted by team-revive's stale-session path (its safeties all hold: idle on a fresh read just before
+// any stop, its server and recorded link, the caps, a ledger row, one at a time), and a role a user unit
+// serves through that unit. The tick runs the start pass only where an instance holding work is down,
+// with no force, and restarts no running job.
 function restart(deps = {}, before, o = {}) {
   const no = guard('restart', deps);
   if (no) throw new Error(no);
@@ -217,7 +222,7 @@ function restart(deps = {}, before, o = {}) {
   const silent = o.silent || HM.silences(before, facts, now);
   const TR = require('./team-revive.js');
   const run = runner(deps.exec);
-  const plan = HM.restartPlan(before, silent);
+  const plan = HM.restartPlan(before, silent, { everyTeam: Boolean(o.everyTeam) });
   // one window for the whole restart, from here: every team's start pass (and the settle each one waits
   // for a start that exits at once) comes out of it, and so does the wait for what it started
   const sleep = deps.sleep || sleepMs;
@@ -226,25 +231,47 @@ function restart(deps = {}, before, o = {}) {
   const max = deps.pollMaxMs !== undefined ? deps.pollMaxMs : POLL_MAX_MS;
   const t0 = clock();
   const jobErrors = {};
+  // the owner's restart: every installed job, running or not; its service runs once only after its timer
+  // (and path unit) restarted
+  const restartJobErrors = {};
+  const ranService = {};
+  for (const j of plan.restartJobs.filter((x) => !x.unavailable)) {
+    let failed = null;
+    for (const u of [j.timer, ...(j.path ? [j.path] : [])]) { try { run('systemctl', ['--user', 'restart', u]); } catch (err) { failed = `restarting ${u} failed (${firstLine(err)})`; break; } }
+    if (!failed) { try { run('systemctl', ['--user', 'start', '--no-block', j.service]); ranService[j.service] = true; } catch (err) { failed = `its timer restarted, but one run of ${j.service} did not start (${firstLine(err)})`; ranService[j.service] = firstLine(err); } }
+    if (failed) restartJobErrors[j.timer] = failed;
+  }
   for (const unit of plan.jobs) { try { run('systemctl', ['--user', 'start', unit]); } catch (err) { jobErrors[unit] = firstLine(err); } }
   // one pass of each restarted job at once, not at its next timer tick; --no-block: a run takes minutes
   for (const u of before.units.filter((x) => x.service && plan.jobs.includes(x.unit))) { try { run('systemctl', ['--user', 'start', '--no-block', u.service]); } catch (err) { jobErrors[u.unit] = jobErrors[u.unit] || `its service did not start: ${firstLine(err)}`; } }
   // a job whose timer runs but which has run no pass: one run of its service, once
   const kickErrors = {};
-  for (const k of plan.kick) { try { run('systemctl', ['--user', 'start', '--no-block', k.service]); } catch (err) { kickErrors[k.service] = firstLine(err); } }
+  for (const k of plan.kick) {
+    // a service the owner's restart already ran once is not run twice; its outcome is the kick's
+    if (ranService[k.service] === true) continue;
+    if (ranService[k.service]) { kickErrors[k.service] = ranService[k.service]; continue; }
+    if (plan.restartJobs.some((j) => j.service === k.service)) { kickErrors[k.service] = restartJobErrors[k.timer] || 'its timer did not restart'; continue; }
+    try { run('systemctl', ['--user', 'start', '--no-block', k.service]); } catch (err) { kickErrors[k.service] = firstLine(err); }
+  }
   const refused = {};
   const started = {};
   const restarted = {};
+  const held = {};
+  const unforced = {};
+  const oldSessions = {};
+  // a role a user unit serves is restarted through that unit (lib/team-revive.js remoteControlUnitFor)
+  const restartUnit = (unit) => run('systemctl', ['--user', 'restart', unit]);
   for (const t of before.teams) {
     if (t.manifestUnavailable || !t.team) continue;
     const root = t.root;
     const want = plan.instances[root] || [];
+    const force = plan.force[root] || [];
     if (!want.length && !o.everyTeam) continue;
     refused[root] = {};
     let r;
     try {
-      r = TR.revive(root, t.team, { start: true, cwd: deps.cwd, env: deps.env || process.env, live: before.live, relist: () => sessionsNow(deps), only: want, ...(deps.spawn ? { spawn: deps.spawn } : {}), ...(deps.stop ? { stop: deps.stop } : {}), ...(deps.teamDeps ? deps.teamDeps(root) : {}) });
-    } catch (err) { for (const i of want) refused[root][i] = `the start failed: ${firstLine(err)}`; continue; }
+      r = TR.revive(root, t.team, { start: true, cwd: deps.cwd, env: deps.env || process.env, home: deps.home, live: before.live, relist: () => sessionsNow(deps), only: want, ...(force.length ? { force } : {}), restartUnit, ...(deps.spawn ? { spawn: deps.spawn } : {}), ...(deps.stop ? { stop: deps.stop } : {}), ...(deps.teamDeps ? deps.teamDeps(root) : {}) });
+    } catch (err) { for (const i of want) refused[root][i] = `the start failed: ${firstLine(err)}`; for (const i of force) (unforced[root] = unforced[root] || {})[i] = `the restart pass failed: ${firstLine(err)}`; continue; }
     started[root] = {};
     // a start that exited within its settle is recorded failed by the start pass: named, not waited for
     for (const [i, x] of Object.entries(r.started || {})) {
@@ -253,28 +280,51 @@ function restart(deps = {}, before, o = {}) {
     }
     for (const i of r.a.missing) if (want.includes(i.instance) && !(r.started || {})[i.instance]) refused[root][i.instance] = whyNot(r.a, i);
     const byStale = Object.fromEntries((r.a.stale || []).map((i) => [i.instance, i.stale]));
-    for (const [i, x] of Object.entries(r.restarted || {})) (restarted[root] = restarted[root] || {})[i] = { ...x, from: byStale[i] && byStale[i].version, to: byStale[i] && byStale[i].installed };
+    for (const [i, x] of Object.entries(r.restarted || {})) {
+      const st = byStale[i] || {};
+      (restarted[root] = restarted[root] || {})[i] = { ...x, from: st.version, to: st.installed, ...(st.forced ? { forced: true } : {}) };
+      if (x.pid || x.unit) (oldSessions[root] = oldSessions[root] || {})[i] = { sessionId: st.session || null, pid: st.pid || null };
+    }
+    // a restart not made now (busy, a cap, no server or link, running twice) is named with why
+    for (const [i, st] of Object.entries(byStale)) {
+      if ((r.restarted || {})[i]) continue;
+      if (st.skip) (held[root] = held[root] || {})[i] = { why: st.skip };
+      else if (st.held) (held[root] = held[root] || {})[i] = { why: st.held, busy: st.busy || null, held: true };
+      else if (!r.a.restart) (held[root] = held[root] || {})[i] = { why: r.a.paused ? 'paused by the owner' : 'the open sessions could not be read', held: true };
+    }
+    // a running instance the owner asked for that had no restart to make: why
+    for (const i of force) {
+      if (byStale[i] || (r.restarted || {})[i]) continue;
+      const it = r.a.instances.find((x) => x.instance === i);
+      (unforced[root] = unforced[root] || {})[i] = r.a.locked ? 'another start pass holds the start lock; it is not restarted now' : it && it.running ? `${it.running}, and no open session of it is listed to restart` : 'whether it runs could not be read';
+    }
   }
   // the reply comes from a read made after the restart; while a started session is not listed (or has
   // not recorded its plugin version yet), or a host job whose service it ran has written no new pass,
   // the read is made again, until the window closes
   const startedNames = Object.fromEntries(Object.entries(started).map(([root, x]) => [root, Object.keys(x)]).filter(([, l]) => l.length));
+  const restartedNames = Object.fromEntries(Object.entries(oldSessions).map(([root, x]) => [root, Object.keys(x)]));
   const passOf = deps.lastPass || lastPassOf;
   const readPasses = () => Object.fromEntries(plan.kick.map((k) => [k.root, passOf(k.root)]));
   let after = read(deps);
   let confirmed = confirmAll(after, startedNames);
+  let restartConfirmed = confirmAll(after, restartedNames, oldSessions);
   let passes = readPasses();
   const newPass = (k) => Number.isFinite(passes[k.root]) && (!Number.isFinite(k.lastPass) || passes[k.root] > k.lastPass);
-  const pending = () => Object.values(confirmed).some((byI) => Object.values(byI).some(HM.waiting)) || plan.kick.some((k) => !kickErrors[k.service] && !newPass(k));
+  const pending = () => [confirmed, restartConfirmed].some((c) => Object.values(c).some((byI) => Object.values(byI).some(HM.waiting))) || plan.kick.some((k) => !kickErrors[k.service] && !newPass(k));
   while (pending() && clock() - t0 < max) {
     sleep(Math.min(every, max - (clock() - t0)));
     after = read(deps);
     confirmed = confirmAll(after, startedNames);
+    restartConfirmed = confirmAll(after, restartedNames, oldSessions);
     passes = readPasses();
   }
   const waited = clock() - t0;
   confirmed = { ...confirmAll(after, plan.instances), ...confirmed };
-  return { plan, before, after, silent, lines: HM.restartLines(before, after, plan, { refused, jobErrors, started, confirmed, waited, restarted, passes, kickErrors, silent }) };
+  // the installed plugin, as the teams read it (the reply's first line on the owner's restart)
+  const installedOf = (r) => { const t = r.teams.find((x) => x.facts && x.facts.installed); return t ? t.facts.installed : null; };
+  const version = o.everyTeam ? (installedOf(after) || installedOf(before) || (() => { try { return require('./lib/plugin-version.js').runningVersion() || null; } catch (err) { return null; } })()) : undefined;
+  return { plan, before, after, silent, lines: HM.restartLines(before, after, plan, { refused, jobErrors, started, confirmed, waited, restarted, passes, kickErrors, silent, version, restartJobErrors, held, unforced, restartConfirmed, everyTeam: Boolean(o.everyTeam) }) };
 }
 
 // The alert goes to the host manager's own session: a message kept in its team's inbox (lib/inbox.js),
