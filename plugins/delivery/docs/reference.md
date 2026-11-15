@@ -1682,9 +1682,16 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   by the user unit <unit>`) and nothing is started; with both units on one directory, it is named as two
   start paths and the plugin starts neither. A watchdog wake for such a role starts no session (`Not
   woken: ... served by the user unit <unit>`); a live session of it still gets the wake as a message.
-  One on an older plugin is left to the owner's restart, which restarts it with `systemctl --user
-  restart <unit>`, only when its session is idle on the read just before, a `restart` row with the
-  unit; busy, it is named busy and not restarted. The plugin never edits, stops, disables or removes a
+  One on an older plugin, or one the owner's restart asks for, is restarted only through the plugin's
+  own unit (`systemctl --user restart <unit>`, only when its session is idle on the read just before, a
+  `restart` row with the unit; busy, it is named busy and not restarted). A role served by a unit the
+  plugin did not write is never restarted: the reply names it (`served by <unit>, which the plugin did
+  not write; not restarted: <the fix>`), and with both units on one directory neither is restarted. The
+  unit file is read as systemd reads it: `%h` and `~` are the home, `%%` one `%`, and a quoted word one
+  word (`--name "Chief of Staff"`). A unit the plugin did not write that `systemctl --user is-enabled`
+  and `is-active` say is neither enabled nor active (stopped and disabled, as the fix says) no longer
+  serves its directory, though its file stays; a state that cannot be read counts as serving. The
+  plugin's own unit stays its role's start path while it rests inactive. The plugin never edits, stops, disables or removes a
   unit it did not write: `start.js --check` names it, one `role unit <instance>` row per role directory
   a unit serves on this host, a warning with the fix: stop and disable that unit (`systemctl --user
   disable --now <unit>`), then, for the Chief of Staff, install the plugin's own (`host-manager.js

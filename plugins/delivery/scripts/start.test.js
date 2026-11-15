@@ -21,7 +21,7 @@ function bin({ bd = true, claude = '2.1.300 (Claude Code)', git = true, units = 
   const dir = mk('start-bin-');
   // printf takes the properties as its format, so each \n in them is a line break
   const show = Object.entries(units).map(([u, props]) => `  *${u}) printf ${JSON.stringify(`${props}\\n`)} ;;`).join('\n');
-  fs.writeFileSync(path.join(dir, 'systemctl'), `#!/bin/sh\n[ -n "$SYSTEMCTL_LOG" ] && echo "$*" >> "$SYSTEMCTL_LOG"\ncase "$*" in\n  *list-units*) printf "${Object.keys(units).map((u) => `${u} loaded active running x\\n`).join('')}" ;;\n${show}\n  *) : ;;\nesac\nexit 0\n`, { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, 'systemctl'), `#!/bin/sh\n[ -n "$SYSTEMCTL_LOG" ] && echo "$*" >> "$SYSTEMCTL_LOG"\ncase "$*" in\n  *is-enabled*) [ -n "$SD_DORMANT" ] && { echo disabled; exit 1; } ;;\n  *is-active*) [ -n "$SD_DORMANT" ] && { echo inactive; exit 3; } ;;\n  *list-units*) printf "${Object.keys(units).map((u) => `${u} loaded active running x\\n`).join('')}" ;;\n${show}\n  *) : ;;\nesac\nexit 0\n`, { mode: 0o755 });
   fs.symlinkSync(process.execPath, path.join(dir, 'node'));
   if (git) fs.symlinkSync(GIT, path.join(dir, 'git'));
   if (bd) fs.writeFileSync(path.join(dir, 'bd'), `#!/bin/sh\nexec "${process.execPath}" "${FAKE_BD}" "$@"\n`, { mode: 0o755 });
@@ -970,6 +970,8 @@ test('--check names a role unit the plugin did not write with the exact fix, and
   const hand = start(['--check', '--project', project], { env }).out;
   assert.match(hand, /\[warn\] role unit chief-of-staff: claude-rc-chief-of-staff\.service serves \S+ with claude remote-control, and the delivery plugin did not write it; the plugin's own unit is not installed while it does/, hand);
   assert.equal(fs.readFileSync(path.join(d, 'claude-rc-chief-of-staff.service'), 'utf8'), handUnit(cos), 'left byte for byte');
+  // after the fix (stopped and disabled, its file still there) the warning goes
+  assert.doesNotMatch(start(['--check', '--project', project], { env: { ...env, SD_DORMANT: '1' } }).out, /role unit chief-of-staff/);
   // no unit: no row
   assert.doesNotMatch(start(['--check', '--project', project], { env: { HOME: mk('start-home-'), DELIVERY_HOST: 'pc' } }).out, /role unit/);
 });
@@ -1001,5 +1003,6 @@ test('--launch starts no role a user unit serves; --keep-alive installs the Chie
   const r2 = start(['--project', q, '--host', 'laptop', '--launch', '--keep-alive'], { env: { DELIVERY_CLAUDE_BIN: recordingClaude().bin, HOME: h2, SYSTEMCTL_LOG: log2, DELIVERY_HOST: 'laptop' } });
   assert.match(r2.out, /role unit: not installed: .*claude-rc-chief-of-staff\.service serves .* stop and disable claude-rc-chief-of-staff\.service/, r2.out);
   assert.deepEqual(fs.readdirSync(unitsIn(h2)).filter((f) => /^delivery-role-/.test(f)), []);
-  assert.doesNotMatch(fs.existsSync(log2) ? fs.readFileSync(log2, 'utf8') : '', /claude-rc-chief-of-staff|delivery-role-/, 'no systemctl call names either unit');
+  const named = (fs.existsSync(log2) ? fs.readFileSync(log2, 'utf8') : '').split('\n').filter((l) => /claude-rc-chief-of-staff|delivery-role-/.test(l));
+  assert.deepEqual(named.filter((l) => !/^--user is-(enabled|active) claude-rc-chief-of-staff\.service$/.test(l)), [], 'only reads of its state name either unit');
 });

@@ -990,7 +990,7 @@ test('the unattended start pass never starts or restarts a unit-served role in a
   const r = TR.main(['start'], { cwd: p.root, env: { DELIVERY_HOST: 'pc' }, now: T0, bd: store(BUSY), live: live.filter((s) => s.cwd !== p.dir('builder')), prs: [], alive: () => false, configDir: p.config, spawn: spawner().fn, installed: '0.43.74', server: RC_OF_CHIEF, stop: () => { throw new Error('stopped'); }, home, who: { root: p.root, team: p.team, roleId: null } });
   assert.equal(r.code, 0, r.out);
   assert.match(r.out, /^Missing: builder \(no session in .*\); not started: it is served by the user unit tw\.service, which is its start path, so no scope is started beside it; the plugin does not start a unit it did not write: start that unit, or replace it with the plugin's own\.$/m, r.out);
-  assert.match(r.out, /^Stale: chief-of-staff runs the delivery plugin 0\.43\.55 and 0\.43\.74 is installed; not restarted: it is served by the user unit cos\.service, so it is not restarted in a scope here; the owner's restart restarts it through that unit\.$/m, r.out);
+  assert.match(r.out, /^Stale: chief-of-staff runs the delivery plugin 0\.43\.55 and 0\.43\.74 is installed; not restarted: served by cos\.service, which the plugin did not write; not restarted: stop and disable cos\.service \(systemctl --user disable --now cos\.service; the plugin never changes it\), then install the plugin's own: node \S+delivery\.js host-manager\.js install-role --project \S+\.$/m, r.out);
   assert.deepEqual(R.ledger(p.root).filter((x) => /start|restart/.test(x.type)), []);
 });
 

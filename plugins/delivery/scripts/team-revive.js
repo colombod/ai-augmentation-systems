@@ -137,6 +137,7 @@ function gather(root, team, { env = process.env, now, bd, live, prs, alive, host
   let roster = {};
   try { roster = require('./lib/roster.js').readRoster(root).instances || {}; } catch (err) { roster = {}; }
   return {
+    root,
     now: now || new Date().toISOString(),
     host: R.hostOf(env, hostname !== undefined ? hostname : os.hostname()),
     team,

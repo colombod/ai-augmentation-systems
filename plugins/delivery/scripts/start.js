@@ -234,7 +234,6 @@ function roleUnitRows({ project, env = process.env, team, host, home } = {}) {
   const h = home || env.HOME || os.homedir();
   let roster = {};
   try { roster = require('./lib/roster.js').readRoster(root).instances || {}; } catch (err) { roster = {}; }
-  const launcher = path.join(root, '.delivery', 'bin', 'delivery.js');
   const rows = [];
   for (const { instance, role } of expandInstances(team).filter((i) => !(i.role && i.role.retired) && i.role.host === here)) {
     const roleDir = (roster[instance] && roster[instance].role_dir) || path.join(root, '..', `${team.project}-team`, instance);
@@ -247,9 +246,9 @@ function roleUnitRows({ project, env = process.env, team, host, home } = {}) {
     const why = own.length
       ? `the plugin's own ${own.join(', ')} serves it too: two start paths for one role directory, so the plugin starts neither`
       : role.id === 'chief-of-staff' ? 'the plugin\'s own unit is not installed while it does' : 'the plugin starts that role only through it';
-    const then = role.id === 'chief-of-staff' ? `then install the plugin's own: node ${launcher} host-manager.js install-role --project ${root}` : 'then the team\'s start pass starts the role in a scope of its own';
+
     rows.push({ name, status: 'warn', detail: `${hand.join(', ')} serves ${roleDir} with claude remote-control, and the delivery plugin did not write it; ${why}`,
-      fix: `${hand.map((u) => `stop and disable ${u} (systemctl --user disable --now ${u}; the plugin never changes it)`).join(', and ')}, ${then}`, hard: false });
+      fix: R.unitFix(hand, { role: role.id, root }), hard: false });
   }
   return rows;
 }

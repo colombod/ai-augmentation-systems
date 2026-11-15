@@ -177,6 +177,15 @@ function servingUnits(roleDir, { home, dir = unitDirOf(home), readdir = fs.readd
   }
   return out;
 }
+// The fix for a unit the plugin did not write, the same in start.js --check and in every reply that names
+// it: the owner stops and disables it (its file may stay: a unit neither enabled nor active no longer
+// serves), then the plugin's own start path takes over. The plugin never does either step itself.
+function unitFix(units, { role, root } = {}) {
+  const stop = units.map((u) => `stop and disable ${u} (systemctl --user disable --now ${u}; the plugin never changes it)`).join(', and ');
+  const then = role === 'chief-of-staff' && root ? `then install the plugin's own: node ${path.join(root, '.delivery', 'bin', 'delivery.js')} host-manager.js install-role --project ${root}` : 'then the team\'s start pass starts the role in a scope of its own';
+  return `${stop}, ${then}`;
+}
+
 // The unit that serves a role directory, or null: one the plugin did not write first (it is what a start
 // here would collide with), else the plugin's own.
 function remoteControlUnitFor(roleDir, opts = {}) {
@@ -304,18 +313,26 @@ function modeOf(team) {
 // user unit that serves its role directory (remoteControlUnitFor); such a session is restarted only
 // through that unit, and only on the owner's restart: never stopped and started again in a scope here.
 // st.busy: the status that holds it (not idle between turns).
-function staleOf(f, { e, open, starts, last, t, team, name, same, forced = false, unit = null }) {
+// served: unitServing's { hand, own } (or a unit's name, taken as one the plugin did not write). The plugin
+// restarts only a unit it wrote: one it did not write is named with its fix and never restarted, stopped
+// or started, and with both on one directory neither is restarted.
+function staleOf(f, { e, open, starts, last, t, team, name, same, forced = false, unit = null, served = null, role = null }) {
   const older = Boolean(f.installed && e.session_id && e.session_id === open.sessionId && PV.compare(e.plugin_version, f.installed) === -1);
   if (!older && !forced) return null;
   const version = e.session_id && e.session_id === open.sessionId ? e.plugin_version || null : null;
-  const st = { version, installed: f.installed || null, session: open.sessionId, pid: open.pid || null, server: null, remoteId: null, skip: null, held: null, ...(forced ? { forced: true } : {}), ...(unit ? { unit } : {}) };
+  const hand = served && typeof served === 'object' ? served.hand || [] : unit ? [unit] : [];
+  const own = served && typeof served === 'object' ? served.own || [] : [];
+  const st = { version, installed: f.installed || null, session: open.sessionId, pid: open.pid || null, server: null, remoteId: null, skip: null, held: null, ...(forced ? { forced: true } : {}), ...(!hand.length && own.length ? { unit: own[0] } : {}) };
   const bridge = (f.bridges || []).find((s) => same(s.cwd) && (!s.sessionId || s.sessionId === open.sessionId));
   st.remoteId = bridge ? bridge.bridgeSessionId : null;
   const m = modeOf(team);
   st.mode = m.mode || null;
-  if (unit) {
-    // the unit has its own command and its own link: no server to stop, no argv to build
-    if (!forced) st.skip = `it is served by the user unit ${unit}, so it is not restarted in a scope here; the owner's restart restarts it through that unit`;
+  if (hand.length) {
+    const both = own.length ? `; the plugin's own ${own.join(', ')} serves it too: two start paths for one role directory, so neither is restarted` : '';
+    st.skip = `served by ${hand.join(', ')}, which the plugin did not write; not restarted: ${unitFix(hand, { role, root: f.root })}${both}`;
+  } else if (own.length) {
+    // the plugin's own unit has its own command and its own link: no server to stop, no argv to build
+    if (!forced) st.skip = `it is served by the plugin's own unit ${own[0]}, so it is not restarted in a scope here; the owner's restart restarts it through that unit`;
   } else {
     const server = f.serverOf ? f.serverOf(open.pid) : null;
     if (server && server.unreadable) st.held = `the process list could not be read, so its Remote Control server is not known (${server.unreadable})`;
@@ -385,7 +402,7 @@ function assess(f) {
   if (f.live === null) out.unreadable.push('the open sessions (`claude agents --json` failed), so which role sessions run is not known');
   const t = ms(f.now);
   const rows = f.rows || [];
-  for (const { instance } of mine) {
+  for (const { instance, role } of mine) {
     const e = roster[instance] || {};
     const roleDir = e.role_dir || f.defaultDir(instance);
     const same = (d) => Boolean(d) && path.resolve(d) === path.resolve(roleDir);
@@ -417,7 +434,7 @@ function assess(f) {
     const alive = open || !last || failed ? false : f.alive(last.pid);
     if (open) {
       it.running = `session ${open.name || open.sessionId || 'open'} in ${roleDir}`;
-      it.stale = staleOf(f, { e, open, roleDir, starts, last, t, team, name: it.name, same, forced: Array.isArray(f.force) && f.force.includes(instance), unit });
+      it.stale = staleOf(f, { e, open, roleDir, starts, last, t, team, name: it.name, same, forced: Array.isArray(f.force) && f.force.includes(instance), unit, served, role: role && role.id });
       // a restart stops one session and starts another: with two running it would still leave two
       if (it.stale && it.twice && !it.stale.skip) it.stale.skip = `it runs twice (${it.twice}); one must end first`;
     }
@@ -522,4 +539,4 @@ function lines(a, { bin = 'claude', started = null, restarted = null, dryRun = f
   return out;
 }
 
-module.exports = { unitActivity, servingUnits, unitServing, runsRoleSession, remoteControlUnitFor, unitDirOf, STAY_UP, linkFor, LEDGER, ledgerFile, SETTLE_MS, SCOPE_LIMITS, scopedCommand, LOCK, lockFile, LOCK_STALE_MS, startLock, START_EVERY_MS, DAILY_CAP, RC_MODES, hostOf, configDirOf, projectKey, pointerOf, bridgeSessions, remoteSessionOf, ledger, record, modeOf, staleOf, assess, lines, shown };
+module.exports = { unitFix, unitActivity, servingUnits, unitServing, runsRoleSession, remoteControlUnitFor, unitDirOf, STAY_UP, linkFor, LEDGER, ledgerFile, SETTLE_MS, SCOPE_LIMITS, scopedCommand, LOCK, lockFile, LOCK_STALE_MS, startLock, START_EVERY_MS, DAILY_CAP, RC_MODES, hostOf, configDirOf, projectKey, pointerOf, bridgeSessions, remoteSessionOf, ledger, record, modeOf, staleOf, assess, lines, shown };
