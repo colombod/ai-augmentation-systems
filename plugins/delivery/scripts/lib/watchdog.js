@@ -974,8 +974,14 @@ const FRESH_ABOVE = 120000;
 // prefix: the team's bead prefix; the fresh session is named <instance>@<team> (lib/session-name.js)
 function wakeCommand(s, prompt, live, mode = 'auto', { freshAbove = FRESH_ABOVE, installed = null, prefix = null } = {}) {
   const m = mode && mode !== 'default' ? ['--permission-mode', mode] : [];
-  const r = wakeArgs(s, prompt, live, { prefix });
   const older = Boolean(installed) && require('./plugin-version.js').compare(s && s.pluginVersion, installed) === -1;
+  // the host manager's session is its unit's (delivery-host-manager.service): on an older plugin it is
+  // moved onto the installed one only by a restart of that unit when idle (team-revive's stale-session
+  // restart), never woken in place, as a message, a resume or a fresh session beside the unit
+  if (older && s && require('./manifest.js').canonicalRoleId(s.role || s.instance) === 'host-manager') {
+    return { skip: `it runs the delivery plugin ${s.pluginVersion} and ${installed} is installed: the host manager is moved onto it only by a restart of its unit ${require('./host-manager.js').UNIT} (when idle), never woken in place` };
+  }
+  const r = wakeArgs(s, prompt, live, { prefix });
   if (r.mode === 'resume' && (older || (freshAbove > 0 && Number.isFinite(s.context) && s.context > freshAbove))) {
     // named like every role session (start.js --name), so peers reach it by name (team rule 13)
     const name = require('./session-name.js').sessionName(s.instance, prefix);
