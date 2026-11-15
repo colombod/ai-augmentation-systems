@@ -1672,13 +1672,52 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   not as a line in the open Remote Control conversation; with no such instance the ledger row is the
   only record.
 - **A role a user unit serves.** A role whose role directory is the `WorkingDirectory=` of a service
-  in `~/.config/systemd/user` whose `ExecStart=` runs `claude remote-control` is served by that unit
-  (`lib/team-revive.js` `remoteControlUnitFor`). No start pass starts it, and none restarts it in a
-  scope of its own, which would put a second session beside the unit's: a missing one is named with
-  its unit (`not started: it is served by the user unit <unit>`), and one on an older plugin is left
-  to the owner's restart. The owner's restart restarts it with `systemctl --user restart <unit>`,
-  only when its session is idle on the read just before, a `restart` row with the unit; busy, it is
-  named busy and not restarted.
+  in `~/.config/systemd/user` is served by that unit (`lib/team-revive.js` `servingUnits`): the
+  plugin's own when its `ExecStart=` runs `host-manager.js run-session`, one the plugin did not write
+  when its `ExecStart=` runs `claude remote-control` itself. Such a role has one start path, its unit:
+  no start pass, stale-session restart, watchdog wake, `start.js --launch` or host manager restart
+  starts it in a scope of its own or in a wake beside the unit, which would put a second session in
+  one directory (on a real host, a hand-written Chief of Staff unit beside a scoped start failed with
+  "This folder is already served" and restarted over 5,000 times). A missing role the plugin's own
+  unit serves is started with `systemctl --user reset-failed` and `systemctl --user start <unit>`, a
+  `start` row with the unit and `via: unit` under the same caps (one start an hour, the daily cap); a
+  missing one a unit the plugin did not write serves is named with its unit (`not started: it is served
+  by the user unit <unit>`) and nothing is started; with both units on one directory, it is named as two
+  start paths and the plugin starts neither. A watchdog wake for such a role starts no session (`Not
+  woken: ... served by the user unit <unit>`); a live session of it still gets the wake as a message.
+  One on an older plugin, or one the owner's restart asks for, is restarted only through the plugin's
+  own unit (`systemctl --user restart <unit>`, only when its session is idle on the read just before, a
+  `restart` row with the unit; busy, it is named busy and not restarted). A role served by a unit the
+  plugin did not write is never restarted: the reply names it (`served by <unit>, which the plugin did
+  not write; not restarted: <the fix>`), and with both units on one directory neither is restarted. The
+  unit file is read as systemd reads it: `%h` and `~` are the home, `%%` one `%`, and a quoted word one
+  word (`--name "Chief of Staff"`). A unit the plugin did not write that `systemctl --user is-enabled`
+  and `is-active` say is neither enabled nor active (stopped and disabled, as the fix says) no longer
+  serves its directory, though its file stays; a state that cannot be read counts as serving. The
+  plugin's own unit stays its role's start path while it rests inactive. The plugin never edits, stops, disables or removes a
+  unit it did not write: `start.js --check` names it, one `role unit <instance>` row per role directory
+  a unit serves on this host, a warning with the fix: stop and disable that unit (`systemctl --user
+  disable --now <unit>`), then, for the Chief of Staff, install the plugin's own (`host-manager.js
+  install-role --project <root>` through the project's launcher). The plugin's own unit alone is a pass
+  row.
+- **The Chief of Staff's own unit.** `host-manager.js install-role [--dry-run] --project <root>
+  [--instance <id>]` writes `delivery-role-<instance>-<team tag>.service` (the tag is the watchdog's,
+  from the project root, so two teams' units on one machine never share a name) for the team's Chief
+  of Staff on this host, whose role directory must hold its role marker. It runs `host-manager.js
+  run-session --project <root> --instance <id>` in that directory through the project's launcher, so
+  it starts by the host manager's rules below (the recorded session reattached once, otherwise a server
+  that stays up, never beside a live session, exit 3 when one is live), named `<instance>@<team>` and
+  recorded as `role-unit-session` rows of `revive.ndjson`. It has the same bounded restarts
+  (`Restart=always`, `RestartSec=30`, `RestartSteps=5`, `RestartMaxDelaySec=30min`,
+  `StartLimitIntervalSec=15min`, `StartLimitBurst=5`), `KillMode=process`, and `TasksMax=1000`, the
+  limit `lib/service-limits.js` asks of a unit that holds one role session; claude replaces run-session
+  (`process.execve`), so it runs in the unit's own cgroup. It reloads systemd and enables the unit,
+  starting it at once only when no session of the Chief of Staff is live (otherwise the start pass
+  starts it through the unit once that session is gone). While a unit the plugin did not write serves
+  the same directory it installs nothing and names that unit with the fix. `start.js --launch
+  --keep-alive` runs it before the launch on a host with systemctl, so the launch leaves the Chief of
+  Staff to its unit. Install-role is refused in every role session, and run-session runs for the Chief
+  of Staff only in its own role (or outside any role session, as its unit runs it).
 - **The host manager's units.** `host-manager.js install [--dry-run] --project <root> [--instance <id>]`
   takes the role directory of that team's `host-manager` instance (the roster's, else the team layout's)
   and writes three systemd user units: `delivery-host-manager.service` runs `host-manager.js
