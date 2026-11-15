@@ -477,6 +477,88 @@ test('a role served by a user unit is restarted through systemctl --user restart
   assert.match(r2.out, /^Busy, not restarted now: alpha builder \(it is busy; it is restarted only when idle between turns\)\.$/m, r2.out);
 });
 
+// The host manager's session is its own unit's (delivery-host-manager.service). On an older plugin it is
+// moved onto the installed one by team-revive's stale-session restart (the watchdog's start pass and the
+// owner's restart) only through that unit, only when idle on a fresh read; never stopped and spawned in a
+// scope, and never started by a start pass when it is down.
+const HM_ROLES = [{ id: 'chief-of-staff', host: 'pc' }, { id: 'host-manager', host: 'pc' }];
+function hostManagerUnit(m) { fs.writeFileSync(path.join(HM.unitDir(m.home), HM.UNIT), `[Unit]\nDescription=x\n\n[Service]\nWorkingDirectory=${m.alpha.dir('host-manager')}\nExecStart=/usr/bin/env node /x/delivery.js host-manager.js run-session\n`); m.sd.units[HM.UNIT] = loaded(true); }
+test('a host manager on an older plugin is restarted through its own unit by the owner\'s restart when idle, never stopped or spawned in a scope; busy, it is named and left', () => {
+  const m = machine({ alphaRoles: HM_ROLES });
+  hostManagerUnit(m);
+  const hm = runningRole(m, m.alpha, 'host-manager', { pid: 90, version: '1.1.0' });
+  m.sd.onRestart = (unit) => {
+    if (unit !== HM.UNIT) return;
+    m.live = m.live.filter((x) => x.pid !== 90).concat([{ cwd: hm.dir, sessionId: 'new-hm', pid: 9000, status: 'idle' }]);
+    require('./lib/roster.js').registerInstance(m.alpha.root, { instance: 'host-manager', session_id: 'new-hm', host: 'pc', role_dir: hm.dir, now: T0, plugin_version: '1.2.0' });
+  };
+  const r = m.run(['restart']);
+  assert.equal(r.code, 0, r.out);
+  assert.equal(m.sd.calls.filter((c) => c === `systemctl --user restart ${HM.UNIT}`).length, 1, m.sd.calls.join('\n'));
+  assert.deepEqual(m.stops, [], 'its server is never stopped here');
+  assert.ok(!m.spawned.some((s) => s.cwd === hm.dir), 'never spawned in a scope');
+  assert.deepEqual(R.ledger(m.alpha.root).filter((x) => x.type === 'restart').map((x) => [x.instance, x.unit, x.via, x.from, x.to]), [['host-manager', HM.UNIT, 'unit', '1.1.0', '1.2.0']]);
+  assert.match(r.out, /^Back: alpha host-manager is back on 1\.2\.0: restarted through its user unit delivery-host-manager\.service, listed in its role directory\.$/m, r.out);
+  // busy: its unit is not restarted, and the reply names it
+  const n = machine({ alphaRoles: HM_ROLES });
+  hostManagerUnit(n);
+  runningRole(n, n.alpha, 'host-manager', { pid: 90, version: '1.1.0', status: 'busy' });
+  const r2 = n.run(['restart']);
+  assert.ok(!n.sd.calls.includes(`systemctl --user restart ${HM.UNIT}`), n.sd.calls.join('\n'));
+  assert.deepEqual(n.stops, []);
+  assert.equal(n.spawned.length, 0);
+  assert.match(r2.out, /^Busy, not restarted now: alpha host-manager \(it is busy; it is restarted only when idle between turns\)\.$/m, r2.out);
+});
+
+test('the start pass (the watchdog\'s) restarts an older, idle host manager through its unit only after a fresh read; busy on that read, current, or with no unit installed, nothing is restarted', () => {
+  const TR = require('./team-revive.js');
+  const pass = (m, { relist, version = '1.1.0', status = 'idle' } = {}) => {
+    const hm = runningRole(m, m.alpha, 'host-manager', { pid: 90, version, status });
+    const units = [];
+    const spawned = [];
+    const stopped = [];
+    const r = TR.revive(m.alpha.root, m.alpha.team, { start: true, cwd: m.base, env: { DELIVERY_HOST: 'pc', PATH: '/usr/bin', DELIVERY_CLAUDE_BIN: NO_CLAUDE }, home: m.home, live: m.live, relist: relist ? () => relist(hm) : () => m.live, restartUnit: (u) => units.push(u), spawn: (...a) => { spawned.push(a); return 1; }, stop: (...a) => { stopped.push(a); return true; }, systemdRun: null, ...m.deps().teamDeps(m.alpha.root) });
+    return { r, units, spawned, stopped, hm };
+  };
+  // older and idle on the fresh read: one restart of its unit, a row, no stop and no spawn
+  const m = machine({ alphaRoles: HM_ROLES });
+  hostManagerUnit(m);
+  const a = pass(m);
+  assert.deepEqual(a.units, [HM.UNIT]);
+  assert.deepEqual([a.spawned, a.stopped], [[], []]);
+  assert.deepEqual(R.ledger(m.alpha.root).filter((x) => x.type === 'restart').map((x) => [x.instance, x.unit, x.from, x.to]), [['host-manager', HM.UNIT, '1.1.0', '1.2.0']]);
+  assert.ok(a.r.lines.includes(`Restarted: host-manager on 1.2.0: systemctl --user restart ${HM.UNIT}, the user unit that serves ${a.hm.dir}.`), a.r.lines.join('\n'));
+  // idle on the first read, busy on the fresh one: named, left
+  const b = machine({ alphaRoles: HM_ROLES });
+  hostManagerUnit(b);
+  const bb = pass(b, { relist: (hm) => b.live.map((x) => (x.pid === hm.pid ? { ...x, status: 'busy' } : x)) });
+  assert.deepEqual([bb.units, bb.spawned, bb.stopped], [[], [], []]);
+  assert.ok(bb.r.lines.some((l) => /^Stale: host-manager runs the delivery plugin 1\.1\.0 and 1\.2\.0 is installed; not restarted: it became busy just before the stop\.$/.test(l)), bb.r.lines.join('\n'));
+  // busy on the first read: held, named
+  const c = machine({ alphaRoles: HM_ROLES });
+  hostManagerUnit(c);
+  const cc = pass(c, { status: 'busy' });
+  assert.deepEqual([cc.units, cc.spawned, cc.stopped], [[], [], []]);
+  assert.ok(cc.r.lines.some((l) => /^Stale: host-manager .*; held: it is busy; it is restarted only when idle between turns\.$/.test(l)), cc.r.lines.join('\n'));
+  // on the installed plugin: not a restart target at all
+  const d = machine({ alphaRoles: HM_ROLES });
+  hostManagerUnit(d);
+  const dd = pass(d, { version: '1.2.0' });
+  assert.deepEqual([dd.units, dd.spawned, dd.stopped], [[], [], []]);
+  assert.ok(!dd.r.lines.some((l) => /host-manager/.test(l)), dd.r.lines.join('\n'));
+  // no unit installed: named, nothing stopped or spawned in its place
+  const e = machine({ alphaRoles: HM_ROLES });
+  const ee = pass(e);
+  assert.deepEqual([ee.units, ee.spawned, ee.stopped], [[], [], []]);
+  assert.ok(ee.r.lines.some((l) => /^Stale: host-manager .*; not restarted: its unit delivery-host-manager\.service is not installed on this host/.test(l)), ee.r.lines.join('\n'));
+  // a host manager that is down is never started by a start pass: its unit is its start path
+  const f = machine({ alphaRoles: HM_ROLES, beads: WORK });
+  hostManagerUnit(f);
+  const spawned = [];
+  TR.revive(f.alpha.root, f.alpha.team, { start: true, cwd: f.base, env: { DELIVERY_HOST: 'pc', PATH: '/usr/bin', DELIVERY_CLAUDE_BIN: NO_CLAUDE }, home: f.home, live: [], relist: () => [], restartUnit: () => { throw new Error('no unit restart'); }, spawn: (bin, args, o) => { spawned.push(o.cwd); return 1; }, systemdRun: null, ...f.deps().teamDeps(f.alpha.root) });
+  assert.ok(!spawned.includes(f.alpha.dir('host-manager')), spawned.join('\n'));
+});
+
 test('a role served by a user unit that is down is never started in a scope: the reply names its unit', () => {
   const m = machine({ beads: WORK });
   roleUnit(m, m.alpha.dir('builder'), 'claude-alpha-builder.service');

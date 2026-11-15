@@ -118,7 +118,7 @@ function openPrs(team, env) {
 }
 
 // The facts the rules read, each from its own source; deps replace any of them in a test.
-function gather(root, team, { env = process.env, now, bd, live, prs, alive, hostname, home, configDir, pause, installed, server, unitOf } = {}) {
+function gather(root, team, { env = process.env, now, bd, live, prs, alive, hostname, home, configDir, pause, installed, server, unitOf, hostManagerUnit } = {}) {
   const config = configDir || R.configDirOf(env, home);
   const bin = env.DELIVERY_CLAUDE_BIN || 'claude';
   const store = bd || require('./lib/bd.js').makeBd({ cwd: root, env, timeoutMs: 15000 });
@@ -150,6 +150,8 @@ function gather(root, team, { env = process.env, now, bd, live, prs, alive, host
     serverOf: server || serverOf,
     // the user unit that serves a role directory (lib/team-revive.js remoteControlUnitFor), under home
     unitOf: unitOf || ((dir) => R.remoteControlUnitFor(dir, { home })),
+    // the host manager's own unit when it is installed here, else null: the only way its session is restarted
+    hostManagerUnit: hostManagerUnit || (() => (fs.existsSync(path.join(R.unitDirOf(home), R.HOST_MANAGER_UNIT)) ? R.HOST_MANAGER_UNIT : null)),
   };
 }
 

@@ -65,6 +65,8 @@ const RC_DEFAULT_MODES = ['default', 'manual'];
 // is gone after one task. Capacity 1: one session in a role directory at a time, never a second link.
 const STAY_UP = ['--spawn', 'same-dir', '--capacity', '1'];
 const ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+// the host manager's own session unit (host-manager.js install; lib/host-manager.js UNIT)
+const HOST_MANAGER_UNIT = 'delivery-host-manager.service';
 const ms = (x) => { const t = Date.parse(x); return Number.isNaN(t) ? -Infinity : t; };
 
 // this host's name as team.json names hosts: DELIVERY_HOST (a role session and the macOS job carry it),
@@ -230,7 +232,9 @@ function modeOf(team) {
 // user unit that serves its role directory (remoteControlUnitFor); such a session is restarted only
 // through that unit, and only on the owner's restart: never stopped and started again in a scope here.
 // st.busy: the status that holds it (not idle between turns).
-function staleOf(f, { e, open, starts, last, t, team, name, same, forced = false, unit = null }) {
+// ownUnit: the unit is the plugin's own (the host manager's delivery-host-manager.service), which every
+// pass may restart: an older session is restarted through it on any start pass, not only the owner's.
+function staleOf(f, { e, open, starts, last, t, team, name, same, forced = false, unit = null, ownUnit = false }) {
   const older = Boolean(f.installed && e.session_id && e.session_id === open.sessionId && PV.compare(e.plugin_version, f.installed) === -1);
   if (!older && !forced) return null;
   const version = e.session_id && e.session_id === open.sessionId ? e.plugin_version || null : null;
@@ -241,7 +245,7 @@ function staleOf(f, { e, open, starts, last, t, team, name, same, forced = false
   st.mode = m.mode || null;
   if (unit) {
     // the unit has its own command and its own link: no server to stop, no argv to build
-    if (!forced) st.skip = `it is served by the user unit ${unit}, so it is not restarted in a scope here; the owner's restart restarts it through that unit`;
+    if (!forced && !ownUnit) st.skip = `it is served by the user unit ${unit}, so it is not restarted in a scope here; the owner's restart restarts it through that unit`;
   } else {
     const server = f.serverOf ? f.serverOf(open.pid) : null;
     if (server && server.unreadable) st.held = `the process list could not be read, so its Remote Control server is not known (${server.unreadable})`;
@@ -371,9 +375,31 @@ function assess(f) {
     }
     out.instances.push(it);
   }
+  // The host manager is not one of the instances above: its unit, never a start pass, starts it. But a
+  // host manager on an older plugin must still be moved onto the installed one, and its unit is the one
+  // way: restarted through that unit (restartStale's unit path, idle on a fresh read, the caps), never
+  // stopped and spawned in a scope. Only an older one: a current one is left as it is, even when forced.
+  const hostManagers = [];
+  for (const { instance } of M.expandInstances(team).filter((i) => !(i.role && i.role.retired) && i.role.host === f.host && M.canonicalRoleId(i.role.id) === 'host-manager')) {
+    if (!Array.isArray(f.live)) break;
+    const e = roster[instance] || {};
+    const roleDir = e.role_dir || f.defaultDir(instance);
+    const same = (d) => Boolean(d) && path.resolve(d) === path.resolve(roleDir);
+    // its sessions: in its role directory, or under its own name <instance>@<host> (host-manager.js run-session)
+    const lives = f.live.filter((s) => s && (OS.inside(s.cwd, roleDir) || s.name === `${instance}@${f.host}`));
+    const open = lives.find((s) => e.session_id && s.sessionId === e.session_id) || lives[0] || null;
+    if (!open) continue;
+    const starts = rows.filter((r) => (r.type === 'start' || r.type === 'restart' || (r.type === 'restart-failed' && r.stopped)) && r.instance === instance);
+    const unit = f.hostManagerUnit ? f.hostManagerUnit() : null;
+    const st = staleOf(f, { e, open, starts, last: starts[starts.length - 1] || null, t, team, name: `${instance}@${f.host}`, same, unit: unit || HOST_MANAGER_UNIT, ownUnit: true });
+    if (!st) continue;
+    if (!unit) { st.skip = `its unit ${HOST_MANAGER_UNIT} is not installed on this host, and only that unit restarts it (host-manager.js install writes it)`; st.held = null; }
+    if (lives.length > 1 && !st.skip) st.skip = `it runs twice (${OS.described(lives)}); one must end first`;
+    hostManagers.push({ instance, roleDir, name: `${instance}@${f.host}`, hostManager: true, stale: st });
+  }
   if (!mine.length) out.none = `no role of this team runs on host "${f.host}" (team.json names ${[...new Set(team.roles.map((r) => r.host))].join(', ')}); set DELIVERY_HOST to the name team.json gives this host`;
   out.missing = out.instances.filter((i) => !i.running);
-  out.stale = out.instances.filter((i) => i.stale);
+  out.stale = [...out.instances.filter((i) => i.stale), ...hostManagers];
   // a restart needs a full read of the sessions (it checked the session is idle) and no owner pause; it
   // does not wait for work in flight: a lane older than the installed plugin is a defect on its own
   out.restart = f.live !== null && !out.paused && !(f.paused && f.paused.unreadable);
@@ -434,4 +460,4 @@ function lines(a, { bin = 'claude', started = null, restarted = null, dryRun = f
   return out;
 }
 
-module.exports = { remoteControlUnitFor, unitDirOf, STAY_UP, linkFor, LEDGER, ledgerFile, SETTLE_MS, SCOPE_LIMITS, scopedCommand, LOCK, lockFile, LOCK_STALE_MS, startLock, START_EVERY_MS, DAILY_CAP, RC_MODES, hostOf, configDirOf, projectKey, pointerOf, bridgeSessions, remoteSessionOf, ledger, record, modeOf, staleOf, assess, lines, shown };
+module.exports = { HOST_MANAGER_UNIT, remoteControlUnitFor, unitDirOf, STAY_UP, linkFor, LEDGER, ledgerFile, SETTLE_MS, SCOPE_LIMITS, scopedCommand, LOCK, lockFile, LOCK_STALE_MS, startLock, START_EVERY_MS, DAILY_CAP, RC_MODES, hostOf, configDirOf, projectKey, pointerOf, bridgeSessions, remoteSessionOf, ledger, record, modeOf, staleOf, assess, lines, shown };

@@ -1413,7 +1413,12 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   that, the last plugin path its own commands named). A session not open whose last version is older
   than the one the watchdog runs (the installed one) is woken fresh instead of resumed, told which
   version it ran and which is installed. A running wake is never stopped, and an open idle session is
-  handed the wake as a message, as above, never forked or started fresh beside it. A conversation resumed any other way is told at its start that the plugin moved
+  handed the wake as a message, as above, never forked or started fresh beside it. The host manager is
+  the exception: its session belongs to its unit, so while its recorded version trails the installed
+  plugin it gets no wake of any kind, open or not (`Not woken: ... the host manager is moved onto it
+  only by a restart of its unit delivery-host-manager.service (when idle), never woken in place`), and
+  the start pass's stale-session restart moves it through that unit. A host manager on the installed
+  plugin gets its wake as a message, as every role does. A conversation resumed any other way is told at its start that the plugin moved
   and where its scripts are now; and when the lane refuses a path to another installed version of
   this plugin, its reason says so and gives the same command at the current plugin root (or says
   that the lane would refuse it there too) (delivery-plugin-planning-8wz).
@@ -1675,7 +1680,14 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   its unit (`not started: it is served by the user unit <unit>`), and one on an older plugin is left
   to the owner's restart. The owner's restart restarts it with `systemctl --user restart <unit>`,
   only when its session is idle on the read just before, a `restart` row with the unit; busy, it is
-  named busy and not restarted.
+  named busy and not restarted. The host manager is moved the same way, by its own
+  `delivery-host-manager.service`, on every start pass (the watchdog's each run, and the owner's
+  restart): a host-manager session whose roster entry records a plugin version below the installed one
+  is restarted with `systemctl --user restart delivery-host-manager.service` only when a fresh read of
+  the sessions, made just before, finds it idle (a `restart` row with the unit, from and to; the same
+  caps as every restart). Busy on either read, it is named and left; with that unit not installed it is
+  named and left, since nothing else restarts it. Its server is never stopped and no session is spawned
+  in a scope for it, and a start pass never starts a host manager that is down: its unit does.
 - **The host manager's units.** `host-manager.js install [--dry-run] --project <root> [--instance <id>]`
   takes the role directory of that team's `host-manager` instance (the roster's, else the team layout's)
   and writes three systemd user units: `delivery-host-manager.service` runs `host-manager.js
