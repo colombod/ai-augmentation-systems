@@ -14,7 +14,10 @@ const RESTART_AFTER = 1;
 const COMMANDS = {
   cut: ['nmcli', 'networking', 'off'],
   restore: ['nmcli', 'networking', 'on'],
-  reboot: ['systemctl', 'reboot'],
+  // NetworkManager keeps its networking state across a reboot, so a restore that failed would leave the
+  // host offline after it: the restart unit turns networking on itself first. The reboot runs whatever
+  // that step returns, since the consent is one restart and the host is no better off without it.
+  reboot: ['/bin/sh', '-c', 'nmcli networking on; systemctl reboot'],
 };
 // The system manager and NetworkManager's off switch need root: sudo -n fails at once instead of waiting
 // on a password nobody can type in a role session. DELIVERY_DRILL_PRIVILEGE replaces it (`pkexec`, or

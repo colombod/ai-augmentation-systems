@@ -1575,10 +1575,18 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   line naming any leftover `claude` child with both `--print` and `--sdk-url` (a process-group kill can
   leave one, and it must be gone before a reattach). `outage-drill.js run --record <id> --cut-minutes <n>
   --restart` is the Reality Checker's only: its lane group `outage-drill` runs it, and every other lane,
-  the open ones and the host manager's included, refuses it per command in any spelling (through the
-  launcher, `sh -c`, a word the shell builds at run time, or `node -e` code that loads the script), while
-  `plan` and a mere mention of the run stay open. The script itself refuses the run in any role session
-  but the Reality Checker's, read from its own process, whatever role a caller passes it. It refuses a record that is not the owner's
+  the open ones and the host manager's included, refuses it per command: under the script's name with or
+  without a `.js`, `.cjs` or `.mjs` extension or through a glob that could expand to it, through the
+  launcher, `sh -c`, a word the shell builds at run time, or `node -e` code that names the script. Those
+  lanes are also refused a role variable (`DELIVERY_ROLE`, `DELIVERY_ROLE_ID`, `DELIVERY_ROLE_DIR`) naming
+  the Reality Checker, set before a command, through `env` or by `export`. `plan` and a mere mention of
+  the run stay open. A copy of the script under another name, or code that loads it some other way, is not
+  seen by the lane; the script refuses those itself. It takes the role from the role marker found from its
+  own working directory upwards, never from `DELIVERY_ROLE_DIR` or a role a caller passes, and the role
+  variables must agree with that marker (`DELIVERY_ROLE` its instance, `DELIVERY_ROLE_DIR`, when set, its
+  directory). Any role but the Reality Checker's, variables that disagree, or no role session at all are
+  refused. `DELIVERY_HOST`, when set, must name this machine (its short hostname), and `plan` says so when
+  it does not. It refuses a record that is not the owner's
   verified word, a cut outside 1 to 30 minutes, a run without `--restart`, and a second drill on the same
   record. The record must be consent to this drill: its scope carries the label `outage-drill:<host>`
   for the host the drill would cut, and the owner's own words name the network cut and the restart
@@ -1592,8 +1600,9 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   run that fails before its row is written gives the claim back, and one killed between the two leaves
   it, for `plan` to show. The cut drops the session that runs it, so in this order it schedules the restore
   (`systemd-run --on-active=<n*60>s --unit=delivery-drill-restore-<id> nmcli networking on`), schedules
-  the restart (`--on-active=<(n+1)*60>s --unit=delivery-drill-restart-<id> systemctl reboot`, a minute
-  after the network is back), writes the drill's row to the watchdog directory's `drills.ndjson`, and only then runs
+  the restart (`--on-active=<(n+1)*60>s --unit=delivery-drill-restart-<id>`, a minute after the network
+  is back; that unit turns networking on itself before it reboots, since NetworkManager keeps its
+  networking state across a reboot and a restore that failed would otherwise leave the host offline), writes the drill's row to the watchdog directory's `drills.ndjson`, and only then runs
   `nmcli networking off`. The timers are transient system units owned by PID 1, so they outlive the
   session; they and the cut need root, through `sudo -n` by default (`DELIVERY_DRILL_PRIVILEGE` replaces
   it, for example with `pkexec`, or empty under root). A schedule that fails cuts nothing and stops the

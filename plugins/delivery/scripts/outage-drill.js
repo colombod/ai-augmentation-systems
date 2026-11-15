@@ -19,7 +19,13 @@
 const L = require('./lib/outage-drill.js');
 const { whoAmI, ownerRecord } = require('./lib/gate-context.js');
 // the host this drill would cut: the one the consent must name
-const hostOf = (env) => require('./lib/team-revive.js').hostOf(env);
+const hostOf = (env, hostname) => require('./lib/team-revive.js').hostOf(env, hostname);
+// The consent names a host, and DELIVERY_HOST says which host this is; it must be this machine, so a
+// variable cannot turn one host's consent into a drill on another. null when they agree.
+function hostMismatch(env, hostname) {
+  const here = String(hostname || '').split('.')[0];
+  return env.DELIVERY_HOST && here && env.DELIVERY_HOST !== here ? `DELIVERY_HOST is ${env.DELIVERY_HOST}, but this machine is ${here}` : null;
+}
 
 const USAGE = 'usage: outage-drill.js plan [--cut-minutes <n>] [--record <id>] | outage-drill.js run --record <id> --cut-minutes <n> --restart   (each takes --project <root>)';
 const ROLE = 'reality-checker';
@@ -105,7 +111,7 @@ function claimLines(root, now) {
   return out;
 }
 
-function plan(who, o, { env = process.env, now, verifyRecord, ps }) {
+function plan(who, o, { env = process.env, now, verifyRecord, ps, hostname }) {
   const cut = o.cut === undefined ? String(L.MAX_CUT_MINUTES) : o.cut;
   const after = L.RESTART_AFTER;
   const bad = L.checkMinutes(cut);
@@ -118,7 +124,7 @@ function plan(who, o, { env = process.env, now, verifyRecord, ps }) {
     '  not covered: an offline gap longer than the cut (the consent is one cut of up to 30 minutes and one restart)'];
   if (!o.record) lines.push('  consent: no record named (pass --record <id>)');
   else {
-    const v = consent(who.root, o.record, verifyRecord, hostOf(env));
+    const v = consent(who.root, o.record, verifyRecord, hostOf(env, hostname));
     lines.push(v.ok ? `  consent: ${o.record} verifies as the owner's word` : `  consent: ${o.record} refused: ${v.why}`);
     const used = L.drillOf(who.root, o.record);
     lines.push(used ? `  used: yes, a drill on it started ${used.started_at}; run is refused` : '  used: no drill on it yet');
@@ -137,9 +143,9 @@ function plan(who, o, { env = process.env, now, verifyRecord, ps }) {
 // Order: the record verifies, no drill spent it, the restore is scheduled, the restart is scheduled, the
 // row is written, the cut runs. A schedule or row that fails stops there and stops the timers, so nothing
 // is cut; a cut that fails never restarts the host and still brings the network back.
-function run(who, o, { env, now, verifyRecord, exec, fs = require('fs') }) {
+function run(who, o, { env, now, verifyRecord, exec, fs = require('fs'), hostname }) {
   const refuse = (why) => ({ code: 1, out: `outage-drill.js: ${why}` });
-  const v = consent(who.root, o.record, verifyRecord, hostOf(env));
+  const v = consent(who.root, o.record, verifyRecord, hostOf(env, hostname));
   if (!v.ok) return refuse(`refused: ${v.why}; nothing scheduled or cut`);
   const used = L.drillOf(who.root, o.record);
   if (used) return refuse(`refused: ${o.record} was already used for a drill started ${used.started_at}; one drill per consent, nothing scheduled or cut`);
@@ -192,20 +198,34 @@ function run(who, o, { env, now, verifyRecord, exec, fs = require('fs') }) {
   return { code: 0, out: `Network cut at ${t.started_at} for ${cut} minutes: it comes back at ${t.restore_at} (${row.units[0]}) and the host restarts at ${t.restart_at} (${row.units[1]}). The drill's row is in ${require('path').relative(who.root, L.ledgerFile(who.root))}.` };
 }
 
-// The role of the session this process runs in, read from the process's own environment and role marker,
-// never from what a caller passes: main takes an injected who for its tests, so `node -e` or a script of
-// its own could otherwise name itself the Reality Checker. null outside a role session (no DELIVERY_ROLE);
-// a role session whose marker cannot be read is no Reality Checker.
+// The role of the session this process runs in, read from this process alone: the role marker found from
+// its own working directory upwards, never from DELIVERY_ROLE_DIR or what a caller passes (main takes an
+// injected who for its tests, and `node -e` or a script of its own could name itself the Reality Checker).
+// The role variables must agree with that marker: DELIVERY_ROLE names its instance, and DELIVERY_ROLE_DIR,
+// when set, is its directory. null outside any role session; 'unknown' when the marker cannot be read or
+// the variables disagree. Run needs 'reality-checker' (main), so neither of those runs it.
 function ownRole() {
-  if (!process.env.DELIVERY_ROLE) return null;
+  const nodePath = require('path');
+  const nodeFs = require('fs');
+  let file = null;
+  for (let dir = nodePath.resolve(process.cwd()); ; dir = nodePath.dirname(dir)) {
+    const f = nodePath.join(dir, '.delivery-role.json');
+    if (nodeFs.existsSync(f)) { file = f; break; }
+    if (nodePath.dirname(dir) === dir) break;
+  }
+  if (!file) return null;
+  let marker;
+  try { marker = JSON.parse(nodeFs.readFileSync(file, 'utf8')); } catch (err) { return 'unknown'; }
+  const envDir = process.env.DELIVERY_ROLE_DIR;
+  if (envDir && nodePath.resolve(envDir) !== nodePath.dirname(file)) return 'unknown';
+  if (!marker || process.env.DELIVERY_ROLE !== marker.instance) return 'unknown';
   try {
-    const { findRoleMarker, validMarker } = require('../hooks/scripts/role-context.js');
-    const valid = validMarker(findRoleMarker(process.cwd()));
+    const valid = require('../hooks/scripts/role-context.js').validMarker({ marker, markerFile: file });
     return (valid && valid.role && valid.role.id) || 'unknown';
   } catch (err) { return 'unknown'; }
 }
 
-function main(argv, { cwd = process.cwd(), env = process.env, now, verifyRecord, who: given, exec = spawnExec, ps = psList, fs } = {}) {
+function main(argv, { cwd = process.cwd(), env = process.env, now, verifyRecord, who: given, exec = spawnExec, ps = psList, fs, hostname = require('os').hostname() } = {}) {
   let o;
   try { o = parse(argv); } catch (err) { return { code: 2, out: `outage-drill.js: ${err.message}\n${USAGE}` }; }
   const [cmd] = o._;
@@ -220,11 +240,18 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, verifyRecord,
     // the lane gives run to the Reality Checker only and refuses it per command to every other role; a
     // run that gets past the lane some other way meets this, on both the given role and the process's own
     const own = ownRole();
-    if (own !== null && own !== ROLE) return { code: 1, out: `outage-drill.js: run is the Reality Checker's (this process runs in a role ${own} session); outage-drill.js plan shows what it would do` };
+    if (own !== ROLE) return { code: 1, out: `outage-drill.js: run is the Reality Checker's (this process runs in ${own === null ? 'no role session' : `a role ${own} session`}); outage-drill.js plan shows what it would do` };
+    const wrongHost = hostMismatch(env, hostname);
+    if (wrongHost) return { code: 1, out: `outage-drill.js: refused: ${wrongHost}; the consent is for one host, nothing scheduled or cut` };
     if (who.roleId !== ROLE) return { code: 1, out: `outage-drill.js: run is the Reality Checker's (${who.roleId ? `role ${who.roleId}` : 'no role session here'}); outage-drill.js plan shows what it would do` };
   }
   if (!who.root) return { code: 2, out: 'outage-drill.js: no project found; pass --project <root>' };
-  return cmd === 'plan' ? plan(who, o, { env, now: at, verifyRecord, ps }) : run(who, o, { env, now: at, verifyRecord, exec, fs });
+  if (cmd === 'plan') {
+    const r = plan(who, o, { env, now: at, verifyRecord, ps, hostname });
+    const wrongHost = hostMismatch(env, hostname);
+    return wrongHost ? { ...r, out: `${r.out}\n  host: ${wrongHost}; run is refused` } : r;
+  }
+  return run(who, o, { env, now: at, verifyRecord, exec, fs, hostname });
 }
 
 // Exports come first so a module that requires this file sees them even while main runs.

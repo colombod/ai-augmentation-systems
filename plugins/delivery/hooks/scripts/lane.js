@@ -1580,6 +1580,31 @@ const HOST_SCRIPT = /(?:team-revive|host-manager)/;
 // at run time could become run, so it is refused too.
 const DRILL_ROLE = 'reality-checker';
 const DRILL_SCRIPT = /outage-drill/;
+// The drill's script under any of its names: with or without an extension, or a glob that could expand
+// to it. A copy under another name is not seen here; the script's own role check (its working
+// directory's marker) refuses that one.
+const DRILL_FILE = /^outage-drill(?:\.[cm]?js)?$/;
+function drillFile(file) {
+  const base = baseOf(file);
+  if (DRILL_FILE.test(base)) return true;
+  if (!/[*?[]/.test(base)) return false;
+  try {
+    const re = new RegExp(`^${base.replace(/[.+^${}()|\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.').replace(/\[!/g, '[^')}$`);
+    return re.test('outage-drill.js') || re.test('outage-drill');
+  } catch (err) { return true; }
+}
+// A role variable naming the Reality Checker, set in command position (before the command word, after
+// env, or by export and its kin): the variables a role check reads, so another lane may not set them.
+const ROLE_ASSIGN = /^DELIVERY_ROLE(?:_ID|_DIR)?=.*reality-checker/i;
+const ASSIGNERS = new Set(['env', 'export', 'declare', 'typeset', 'readonly', 'local']);
+function roleAssignment(words) {
+  for (const w of words) {
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) { if (ROLE_ASSIGN.test(w)) return true; continue; }
+    if (ASSIGNERS.has(baseOf(w)) || /^-/.test(w)) continue;
+    return false;
+  }
+  return false;
+}
 const DRILL_REASON = 'the outage drill\'s run cuts this host\'s network and restarts it: it is the Reality Checker\'s, on a bead that names the owner\'s consent.\nRun outage-drill.js plan to see what it would do, and message the Delivery Manager';
 // 'units' | 'start' | 'manager' | 'code' | 'drill' | null for one command line, depth-limited. The host
 // manager is spared every refusal here but the drill's.
@@ -1588,7 +1613,9 @@ function hostRefusal(text, roleId, depth = 0) {
   const hm = roleId === HOST_MANAGER;
   for (const sub of substitutions(text)) { const r = hostRefusal(sub, roleId, depth + 1); if (r) return r; }
   for (const seg of splitWithOps(text)) {
-    const t = commandWords(stripGrammar(argWords(seg.text)));
+    const raw = stripGrammar(argWords(seg.text));
+    if (roleId !== DRILL_ROLE && roleAssignment(raw)) return 'drill';
+    const t = commandWords(raw);
     if (!t.length) continue;
     const name = baseOf(t[0]);
     const args = t.slice(1);
@@ -1632,7 +1659,7 @@ function hostRefusal(text, roleId, depth = 0) {
     // the project's launcher runs its first argument as the plugin script
     if (isLauncher(file)) { file = rest[0]; rest = rest.slice(1); }
     const base = baseOf(file);
-    if (base === 'outage-drill.js' && roleId !== DRILL_ROLE && rest.some((x) => x === 'run' || /[$`]/.test(x))) return 'drill';
+    if (drillFile(file) && roleId !== DRILL_ROLE && rest.some((x) => x === 'run' || /[$`]/.test(x))) return 'drill';
     if (hm) continue;
     if (base === 'team-revive.js' && rest.includes('start') && roleId !== 'chief-of-staff') return 'start';
     if (base === 'host-manager.js' && rest.some((x) => ['restart', 'tick', 'install', 'run-session'].includes(x))) return 'manager';

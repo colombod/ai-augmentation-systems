@@ -21,6 +21,20 @@ const drillRecord = ({ labels = ['outage-drill:pc'], quote = QUOTE, text, asked 
 const verifyRecord = drillRecord();
 const scratchDir = (prefix) => fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 
+// run is the Reality Checker's, read from this process's own working directory and role variables, never
+// from what a caller passes. The tests that call main in this process therefore run from the Reality
+// Checker's directory of a role harness, with its variables, and put the process back afterwards.
+const SAVED = { cwd: process.cwd(), DELIVERY_ROLE: process.env.DELIVERY_ROLE, DELIVERY_ROLE_DIR: process.env.DELIVERY_ROLE_DIR, DELIVERY_ROLE_ID: process.env.DELIVERY_ROLE_ID };
+const RC_HARNESS = require('./testing/role-harness.js').harness();
+process.chdir(RC_HARNESS.roleDir('reality-checker'));
+process.env.DELIVERY_ROLE = 'reality-checker';
+process.env.DELIVERY_ROLE_DIR = RC_HARNESS.roleDir('reality-checker');
+delete process.env.DELIVERY_ROLE_ID;
+test.after(() => {
+  process.chdir(SAVED.cwd);
+  for (const k of ['DELIVERY_ROLE', 'DELIVERY_ROLE_DIR', 'DELIVERY_ROLE_ID']) { if (SAVED[k] === undefined) delete process.env[k]; else process.env[k] = SAVED[k]; }
+});
+
 function setup() {
   const dir = scratchDir('drill-');
   const events = [];
@@ -29,7 +43,7 @@ function setup() {
     events.push({ kind, args, rowWritten: L.drillOf(dir, REC) !== null });
     return { status: 0, stdout: '', stderr: '' };
   };
-  const run = (argv, extra = {}) => D.main(argv, { cwd: dir, env: { DELIVERY_HOST: 'pc' }, now: NOW, exec, ps: () => '', verifyRecord: (r, id, opts) => { events.push({ kind: 'verify', id, opts }); return verifyRecord(r, id); }, who: { root: dir, roleId: 'reality-checker', actor: 'dev@pc/reality-checker' }, ...extra });
+  const run = (argv, extra = {}) => D.main(argv, { cwd: dir, env: { DELIVERY_HOST: 'pc' }, hostname: 'pc', now: NOW, exec, ps: () => '', verifyRecord: (r, id, opts) => { events.push({ kind: 'verify', id, opts }); return verifyRecord(r, id); }, who: { root: dir, roleId: 'reality-checker', actor: 'dev@pc/reality-checker' }, ...extra });
   return { root: dir, events, run };
 }
 const RUN = ['run', '--record', REC, '--cut-minutes', '30', '--restart'];
@@ -43,7 +57,7 @@ test('run verifies the record, then schedules the restore, then the restart, the
   const [, restore, restart, cut] = t.events;
   // system timers (no --user): they belong to PID 1 and outlive the session the cut drops
   assert.deepEqual(restore.args, ['sudo', '-n', 'systemd-run', '--on-active=1800s', '--timer-property=AccuracySec=1s', `--unit=delivery-drill-restore-${REC}`, `--description=delivery outage drill restore (${REC})`, 'nmcli', 'networking', 'on']);
-  assert.deepEqual(restart.args, ['sudo', '-n', 'systemd-run', '--on-active=1860s', '--timer-property=AccuracySec=1s', `--unit=delivery-drill-restart-${REC}`, `--description=delivery outage drill restart (${REC})`, 'systemctl', 'reboot']);
+  assert.deepEqual(restart.args, ['sudo', '-n', 'systemd-run', '--on-active=1860s', '--timer-property=AccuracySec=1s', `--unit=delivery-drill-restart-${REC}`, `--description=delivery outage drill restart (${REC})`, '/bin/sh', '-c', 'nmcli networking on; systemctl reboot']);
   assert.ok(!restore.args.includes('--user') && !restart.args.includes('--user'));
   assert.deepEqual(cut.args, ['sudo', '-n', 'nmcli', 'networking', 'off']);
   assert.equal(restore.rowWritten, false);
@@ -147,7 +161,8 @@ test('a record that does not verify, or is not the owner\'s word, is refused and
 test('only a record scoped to a drill on this host, whose owner words name the cut and the restart with no negation, is consent', () => {
   const refused = (vr, why, env) => {
     const t = setup();
-    const r = t.run(RUN, { verifyRecord: vr, ...(env ? { env } : {}) });
+    // a DELIVERY_HOST of another host is that machine here: the host check passes and the label decides
+    const r = t.run(RUN, { verifyRecord: vr, ...(env ? { env, hostname: env.DELIVERY_HOST } : {}) });
     assert.equal(r.code, 1, why);
     assert.match(r.out, why);
     assert.deepEqual(t.events.filter((e) => e.kind !== 'verify'), [], 'nothing scheduled or cut');
@@ -362,7 +377,7 @@ test('the script refuses run in any role session but the Reality Checker\'s, wha
     `const root = ${JSON.stringify(dir)};`,
     'const cmds = [];',
     `const verifyRecord = (r, id) => ({ ok: true, chain: [{ kind: 'decision', scope: { beads: [], labels: ['outage-drill:pc'] }, quote: ${JSON.stringify(QUOTE)} }, { kind: 'input', source: 'human', text: ${JSON.stringify(QUOTE)} }], notes: [] });`,
-    `const r = D.main(['run', '--record', ${JSON.stringify(REC)}, '--cut-minutes', '30', '--restart'], { env: { DELIVERY_HOST: 'pc' }, now: ${JSON.stringify(NOW)}, verifyRecord, exec: (a) => { cmds.push(a.join(' ')); return { status: 0 }; }, ps: () => '', who: { root, roleId: 'reality-checker', actor: 'x' } });`,
+    `const r = D.main(['run', '--record', ${JSON.stringify(REC)}, '--cut-minutes', '30', '--restart'], { env: { DELIVERY_HOST: 'pc' }, hostname: 'pc', now: ${JSON.stringify(NOW)}, verifyRecord, exec: (a) => { cmds.push(a.join(' ')); return { status: 0 }; }, ps: () => '', who: { root, roleId: 'reality-checker', actor: 'x' } });`,
     'process.stdout.write(JSON.stringify({ code: r.code, out: r.out, cmds }));',
   ].join('\n'));
   const { spawnSync } = require('child_process');
@@ -381,4 +396,105 @@ test('the script refuses run in any role session but the Reality Checker\'s, wha
   const rc = asRole('reality-checker');
   assert.equal(rc.code, 0, rc.out);
   assert.equal(rc.cmds.length, 3, 'the stubs saw the two schedules and the cut');
+});
+
+// rv-206: the drill is run in every spelling only by the Reality Checker's lane; a role variable set in
+// front of a script cannot make it one; plain mentions (a diff, a cat, a test run of its file) stay open
+test('the lane refuses the drill run in every spelling and role variables naming the Reality Checker in front of a command; plan and mentions stay open', () => {
+  const { loadPolicy, decideLane } = require('../hooks/scripts/lane.js');
+  const PLUGIN_ROOT = path.join(__dirname, '..');
+  const groups = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'hooks', 'lane-groups.json'), 'utf8'));
+  const laneDir = scratchDir('drill-lane2-');
+  const S = `${PLUGIN_ROOT}/scripts`;
+  const R = `run --record ${REC} --cut-minutes 30 --restart`;
+  const decide = (role, command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: `delivery/${role}` }), roleDir: laneDir, groups, pluginRoot: PLUGIN_ROOT, hostHeadless: false });
+  const refused = [
+    `node ${S}/outage-drill ${R}`,
+    `node ${S}/outage-drill.cjs ${R}`,
+    `node ${S}/outage-dri*.js ${R}`,
+    `node ${S}/outage-?rill.js ${R}`,
+    `node ${S}/out[a]ge-drill.js ${R}`,
+    `node ${S}/o*.js ${R}`,
+    `DELIVERY_ROLE=reality-checker node ${laneDir}/x.js ${R}`,
+    `env DELIVERY_ROLE=reality-checker DELIVERY_ROLE_DIR=/r node ${laneDir}/x.js run`,
+    `DELIVERY_ROLE_DIR=/elsewhere/reality-checker node ${laneDir}/x.js`,
+    `export DELIVERY_ROLE=reality-checker; node ${laneDir}/x.js run`,
+  ];
+  const allowed = [
+    `node ${S}/outage-drill.js plan --record ${REC}`,
+    `cat ${S}/outage-drill.js`,
+    `DELIVERY_TEST_FILES=${S}/outage-drill.test.js node ${S}/testing/run-tests.js`,
+    'git diff origin/main -- plugins/delivery/scripts/outage-drill.js',
+    `grep -n "networking" ${S}/lib/outage-drill.js`,
+    `DELIVERY_ROLE= node ${laneDir}/x.js`,
+  ];
+  for (const role of ['builder', 'spike-researcher']) {
+    for (const c of refused) {
+      const d = decide(role, c);
+      assert.equal(d.allow, false, `${role}: ${c}`);
+      assert.match(String(d.reason), /outage drill's run/, `${role}: ${c}`);
+    }
+    for (const c of allowed) assert.equal(decide(role, c).allow, true, `${role}: ${c}`);
+  }
+});
+
+// rv-206: the script takes its role from the role marker found from its own working directory, never
+// from DELIVERY_ROLE_DIR, the variables must agree with that marker, and outside a role session it runs
+// nothing. Each run is a child process, so the process's own directory and variables are the ones read.
+test('the script reads its role from its own working directory\'s marker: a spoofed role directory, disagreeing variables or no role session run nothing', () => {
+  const { harness } = require('./testing/role-harness.js');
+  const h = harness();
+  const dir = scratchDir('drill-own2-');
+  const child = path.join(dir, 'call-main.js');
+  fs.writeFileSync(child, [
+    `const D = require(${JSON.stringify(path.join(__dirname, 'outage-drill.js'))});`,
+    `const root = ${JSON.stringify(dir)};`,
+    'const cmds = [];',
+    `const verifyRecord = (r, id) => ({ ok: true, chain: [{ kind: 'decision', scope: { beads: [], labels: ['outage-drill:pc'] }, quote: ${JSON.stringify(QUOTE)} }, { kind: 'input', source: 'human', text: ${JSON.stringify(QUOTE)} }] });`,
+    `const r = D.main(['run', '--record', ${JSON.stringify(REC)}, '--cut-minutes', '30', '--restart'], { env: { DELIVERY_HOST: 'pc' }, hostname: 'pc', now: ${JSON.stringify(NOW)}, verifyRecord, exec: (a) => { cmds.push(a); return { status: 0, stdout: '', stderr: '' }; }, ps: () => '', who: { root, roleId: 'reality-checker', actor: 'x' } });`,
+    'process.stdout.write(JSON.stringify({ code: r.code, out: r.out, cmds }));',
+  ].join('\n'));
+  const { spawnSync } = require('child_process');
+  const base = { ...process.env };
+  for (const k of ['DELIVERY_ROLE', 'DELIVERY_ROLE_DIR', 'DELIVERY_ROLE_ID']) delete base[k];
+  const call = (cwd, env) => JSON.parse(spawnSync(process.execPath, [child], { cwd, env, encoding: 'utf8', timeout: 30000 }).stdout || '{}');
+  const rcDir = h.roleDir('reality-checker');
+  const cases = [
+    ['a builder naming the Reality Checker and its directory', h.roleDir('builder-1'), { ...base, DELIVERY_ROLE: 'reality-checker', DELIVERY_ROLE_DIR: rcDir }],
+    ['outside any role session', scratchDir('drill-nowhere-'), base],
+    ['the Reality Checker directory with a builder variable', rcDir, { ...base, DELIVERY_ROLE: 'builder-1' }],
+    ['the Reality Checker directory with no role variable', rcDir, base],
+    ['the Reality Checker directory with another role directory named', rcDir, { ...base, DELIVERY_ROLE: 'reality-checker', DELIVERY_ROLE_DIR: h.roleDir('builder-1') }],
+  ];
+  for (const [what, cwd, env] of cases) {
+    const r = call(cwd, env);
+    assert.equal(r.code, 1, `${what}: ${r.out}`);
+    assert.match(String(r.out), /run is the Reality Checker's/, what);
+    assert.deepEqual(r.cmds, [], `${what}: nothing scheduled or cut`);
+  }
+  const rc = call(rcDir, { ...base, DELIVERY_ROLE: 'reality-checker', DELIVERY_ROLE_DIR: rcDir });
+  assert.equal(rc.code, 0, rc.out);
+  assert.equal(rc.cmds.length, 3, 'the two schedules and the cut');
+});
+
+// rv-206: NetworkManager keeps its networking state across a reboot, so a restore that failed would leave
+// the host offline after it. The restart unit brings the network back itself, then reboots.
+test('the restart unit turns networking on itself before it reboots', () => {
+  const t = setup();
+  assert.equal(t.run(RUN).code, 0);
+  const restart = t.events.find((e) => e.kind === 'schedule restart');
+  const tail = restart.args.slice(restart.args.indexOf(`--description=delivery outage drill restart (${REC})`) + 1);
+  assert.deepEqual(tail, ['/bin/sh', '-c', 'nmcli networking on; systemctl reboot']);
+});
+
+// rv-206: DELIVERY_HOST names the host the consent is for; it must be this machine
+test('a DELIVERY_HOST that is not this machine is refused by run and named by plan', () => {
+  const t = setup();
+  const r = t.run(RUN, { hostname: 'other-box' });
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /DELIVERY_HOST is pc, but this machine is other-box/);
+  assert.deepEqual(t.events.filter((e) => e.kind !== 'verify'), [], 'nothing scheduled or cut');
+  const p = t.run(['plan', '--record', REC], { hostname: 'other-box' });
+  assert.match(p.out, /DELIVERY_HOST is pc, but this machine is other-box/);
+  assert.equal(t.run(RUN, { hostname: 'pc.example.lan' }).code, 0, 'the short name is compared');
 });
