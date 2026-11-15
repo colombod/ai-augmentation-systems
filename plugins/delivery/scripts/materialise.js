@@ -116,8 +116,10 @@ function namesStory(b, initiative, planned) {
 // only. Its title, parent, type and labels stay its own, so a bug is never moved under a phase epic or
 // renamed after a story. It is not marked materialised_by either, so materialise never strips a
 // dependency someone else gave it.
-function asMapped(planned, existing) {
-  const { materialised_by: _m, ...metadata } = planned.metadata || {};
+function asMapped(planned, existing, initiative) {
+  const { materialised_by: _m, ...rest } = planned.metadata || {};
+  // marked as mapped for this initiative (rv-205), so a dependency toward it stays removable after it stops being mapped
+  const metadata = { ...rest, materialise_mapped: initiative };
   // its own labels, with the managed size and wave labels the story gives (rv-205: a size-L story is costed
   // as L and gets the stronger model); a stale size or wave label of its own goes, as on any story bead
   const MANAGED = /^(size-[SML]|wave-\d+)$/;
@@ -147,7 +149,7 @@ function mapToExisting(plan, beads, initiative) {
   if (!alias.size) return { plan, mapped, warnings };
   const to = (id) => (alias.has(id) ? alias.get(id).id : id);
   return {
-    plan: { ...plan, beads: plan.beads.map((b) => (alias.has(b.id) ? asMapped(b, alias.get(b.id)) : b)), deps: plan.deps.map((d) => ({ ...d, id: to(d.id), blockedBy: to(d.blockedBy) })) },
+    plan: { ...plan, beads: plan.beads.map((b) => (alias.has(b.id) ? asMapped(b, alias.get(b.id), initiative) : b)), deps: plan.deps.map((d) => ({ ...d, id: to(d.id), blockedBy: to(d.blockedBy) })) },
     mapped,
     warnings,
   };
@@ -205,7 +207,17 @@ function applyPlanSteps({ plan: planned0, bd, dryRun, initiative, result }) {
     const unsetMetadata = ['model', 'wave'].filter((k) => (b.labels.includes('story') || b.mappedFrom) && (existing.metadata || {})[k] !== undefined && b.metadata[k] === undefined);
     if (!missingLabels.length && !staleLabels.length && !metaDrift && !titleChanged && !parentChanged && !unsetMetadata.length) continue;
     result.commands.push(`update ${b.id}`);
-    if (!dryRun) bd.update(b.id, { title: titleChanged ? b.title : undefined, parent: parentChanged ? b.parent : undefined, addLabels: missingLabels, removeLabels: staleLabels, metadata: metaDrift ? b.metadata : undefined, unsetMetadata });
+    // rv-205: --metadata replaces what the bead holds, so the bead's own metadata is copied in first, as
+    // every other writer does; a mapped bead carries merged_pr, deployed_sha, evidence_head and the like
+    const merged = metaDrift ? { ...(existing.metadata || {}), ...b.metadata } : undefined;
+    if (merged) for (const k of unsetMetadata) delete merged[k];
+    if (!dryRun) bd.update(b.id, { title: titleChanged ? b.title : undefined, parent: parentChanged ? b.parent : undefined, addLabels: missingLabels, removeLabels: staleLabels, metadata: merged, unsetMetadata });
+    // later writes in this run (the dependency record below) start from what the bead now holds
+    if (merged || unsetMetadata.length) {
+      const now = { ...(merged || existing.metadata || {}) };
+      for (const k of unsetMetadata) delete now[k];
+      known.set(b.id, { ...existing, metadata: now });
+    }
     result.updated.push(b.id);
   }
   const closed = new Set(result.skippedClosed);
@@ -243,7 +255,8 @@ function applyPlanSteps({ plan: planned0, bd, dryRun, initiative, result }) {
   // the record of which deps on a mapped bead are materialise's own, so the next run removes only those
   for (const id of ownChanged) {
     result.commands.push(`record ${id} materialise_deps`);
-    if (!dryRun) bd.update(id, { metadata: { materialise_deps: [...own.get(id)].sort() } });
+    // the bead's metadata as it now stands, with the record changed: --metadata replaces (rv-205)
+    if (!dryRun) bd.update(id, { metadata: { ...((known.get(id) || {}).metadata || {}), materialise_deps: [...own.get(id)].sort() } });
   }
   return result;
 }
@@ -259,7 +272,10 @@ function ownDeps(b) {
 // someone else's bead.
 function removableDep(b, blocker, { known, own, initiative }) {
   if (b.mappedFrom) return own.has(b.id) && own.get(b.id).has(blocker);
-  return isMaterialised(known.get(blocker), initiative) || [...own.keys()].includes(blocker);
+  // a bead materialise once mapped for this initiative keeps the mark after it stops being mapped, so a
+  // dependency the plan put toward it can still go when the plan drops it (rv-205)
+  const m = ((known.get(blocker) || {}).metadata) || {};
+  return isMaterialised(known.get(blocker), initiative) || [...own.keys()].includes(blocker) || m.materialise_mapped === initiative;
 }
 
 function refSha(ref) { const m = /@(\S+) phase /.exec(ref || ''); return m ? m[1] : 'none'; }

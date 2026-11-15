@@ -199,7 +199,13 @@ session its role and keep it:
   parent). It is not marked as materialise's own bead: materialise records on it, in
   `materialise_deps`, the dependencies it gave it, and removes only those when the plan drops them,
   so a dependency someone else gave it stays. A dependency the plan put on one of materialise's own
-  beads toward a mapped bead goes when the plan drops it, and `--check` reports the same. The plan's dependencies and the story's reality-check script go to it, and each
+  beads toward a mapped bead goes when the plan drops it, and `--check` reports the same. A mapped bead
+  is marked `materialise_mapped: <initiative>`, and keeps the mark, its `materialise_deps` and the
+  dependencies they name if it stops being mapped (its story leaves the plan, or another bead takes it):
+  materialise no longer changes that bead, so those dependencies stay until someone removes them, the
+  record saying which they are; a dependency from materialise's own beads toward it still goes when the
+  plan drops it. materialise writes a bead's metadata by copying in what the bead holds, since `bd`
+  replaces a bead's metadata on `--metadata`. Both keys are gate fields only materialise may set. The plan's dependencies and the story's reality-check script go to it, and each
   mapping is printed (`map <planned> -> <bead>` in a dry run). Two beads naming one story is a
   warning, and the open one is used; so is a bead naming a story whose planned bead already exists.
 - **Runners.** A builder's manifest entry names its runner: `superpowers`, `attractor` or `plain`.

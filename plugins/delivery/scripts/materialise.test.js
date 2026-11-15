@@ -659,3 +659,43 @@ test('dha: a mapped bead gets the managed size and wave labels, a resize swaps t
   assert.deepEqual(fwa.labels.slice().sort(), ['plugin', 'size-M'], 'size and wave swapped, its own label kept');
   assert.equal(fwa.metadata.model, undefined, 'the model override went with the story\'s');
 });
+
+// rv-205: bd replaces a bead's metadata on --metadata (the test bd does too), so materialise copies the
+// bead's own metadata in before it writes; a mapped bead carries keys only other roles write
+test('dha: a mapped bead keeps every metadata key of its own across runs, and the second run creates no duplicate', () => {
+  const bd = makeBd({ env: fakeEnv() });
+  const inputs = loadInputs({ projectRoot: scratchProject(), initiative: 'demo' });
+  const own = { roadmap_ref: 'demo/demo-01', merged_pr: '180', deployed_sha: 'd'.repeat(40), evidence_head: { seq: 2, hash: 'abc' }, fixes: 'ex-other' };
+  tracked(bd, 'ex-fwa', own);
+  const first = applyPlan({ plan: planOf(inputs), bd, initiative: 'demo' });
+  assert.ok(!first.created.includes('ex-demo-01'));
+  const m = bd.show('ex-fwa').metadata;
+  for (const k of ['merged_pr', 'deployed_sha', 'evidence_head', 'fixes']) assert.deepEqual(m[k], own[k], k);
+  assert.equal(m.story, 'demo-01');
+  assert.ok(Array.isArray(m.materialise_deps), 'the dependency record is written beside them, not over them');
+  const second = applyPlan({ plan: planOf(inputs), bd, initiative: 'demo' });
+  assert.ok(!second.created.includes('ex-demo-01'), JSON.stringify(second.created));
+  assert.ok(!bd.list({ all: true }).some((b) => b.id === 'ex-demo-01'), 'no duplicate bead');
+  for (const k of ['merged_pr', 'deployed_sha', 'evidence_head', 'fixes', 'story']) assert.ok(bd.show('ex-fwa').metadata[k] !== undefined, `${k} after run 2`);
+});
+
+test('dha: a dependency the plan put toward a bead that stops being mapped goes when the plan drops it, and --check shows it', () => {
+  const bd = makeBd({ env: fakeEnv() });
+  const inputs = loadInputs({ projectRoot: scratchProject(), initiative: 'demo' });
+  tracked(bd, 'ex-fwa', { roadmap_ref: 'demo/demo-01' });
+  applyPlan({ plan: planOf(inputs), bd, initiative: 'demo' });
+  assert.ok(bd.depsOf('ex-demo-02').includes('ex-fwa'));
+  assert.equal(bd.show('ex-fwa').metadata.materialise_mapped, 'demo', 'marked as mapped for this initiative');
+  // demo-01 leaves the plan, so ex-fwa is no longer mapped, and demo-02 no longer depends on it
+  const without = withDeps(inputs.stories.filter((s) => s.id !== 'demo-01'), 'demo-02', []);
+  const d = reconcile({ plan: planOf(inputs, null, without), bd, roadmap: inputs.roadmap, initiative: 'demo' });
+  assert.ok(d.depDrift.some((x) => x.id === 'ex-demo-02' && x.extra.includes('ex-fwa')), JSON.stringify(d.depDrift));
+  const r = applyPlan({ plan: planOf(inputs, null, without), bd, initiative: 'demo' });
+  assert.ok(r.depsRemoved.some((x) => x.id === 'ex-demo-02' && x.blockedBy === 'ex-fwa'), JSON.stringify(r.depsRemoved));
+  assert.ok(!bd.depsOf('ex-demo-02').includes('ex-fwa'));
+  // a bead marked for another initiative is not this one's to clean up
+  tracked(bd, 'ex-else', { materialise_mapped: 'other' });
+  bd.depAdd('ex-demo-02', 'ex-else');
+  applyPlan({ plan: planOf(inputs, null, without), bd, initiative: 'demo' });
+  assert.ok(bd.depsOf('ex-demo-02').includes('ex-else'));
+});
