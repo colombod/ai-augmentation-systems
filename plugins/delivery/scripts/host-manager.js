@@ -25,6 +25,13 @@
 //                                       pass that first sees it alerts the owner once. A down instance or a
 //                                       silent job is restarted; an instance still listed as running is only
 //                                       named in the alert, never stopped: it may be in the middle of a turn
+//   host-manager.js install-role [--dry-run] --project <root> [--instance <id>]
+//                                       the Chief of Staff's own session unit,
+//                                       delivery-role-<instance>-<team tag>.service: run-session in its
+//                                       role directory, as the host manager's unit runs (start.js --launch
+//                                       --keep-alive runs it). Nothing is installed while a user unit the
+//                                       plugin did not write serves that directory: that unit is named,
+//                                       never changed
 //   host-manager.js install [--dry-run] --project <root> [--instance <id>]
 //                                       the systemd user units: delivery-host-manager.service (the Remote
 //                                       Control session, restarted always) and the tick's service and timer
@@ -41,7 +48,7 @@ const HM = require('./lib/host-manager.js');
 const R = require('./lib/team-revive.js');
 const M = require('./lib/manifest.js');
 
-const USAGE = 'usage: host-manager.js status [--json] | host-manager.js restart [--down-only] [--json] | host-manager.js tick | host-manager.js install [--dry-run] --project <root> [--instance <id>] | host-manager.js run-session --project <root> --instance <id>';
+const USAGE = 'usage: host-manager.js status [--json] | host-manager.js restart [--down-only] [--json] | host-manager.js tick | host-manager.js install [--dry-run] --project <root> [--instance <id>] | host-manager.js install-role [--dry-run] --project <root> [--instance <id>] | host-manager.js run-session --project <root> --instance <id>';
 const PLUGIN_ROOT = path.resolve(__dirname, '..');
 const RESTART_SEC = 30;
 // A session that exits at once (an expired sign-in, a refused flag) must not restart every 30 seconds
@@ -374,6 +381,24 @@ function tick(deps = {}) {
 
 // ---- install: the systemd user units ----
 
+// The roles whose session a unit the plugin writes serves: the host manager (one per machine) and each
+// team's Chief of Staff (the session the owner talks to). Both run run-session, so both start by the same
+// rules: the recorded session reattached once, otherwise a server that stays up.
+const UNIT_ROLES = [HM.ROLE, 'chief-of-staff'];
+function unitRoleOf(root, team, host, instance) {
+  const all = M.expandInstances(team).filter((x) => !(x.role && x.role.retired) && UNIT_ROLES.includes(M.canonicalRoleId(x.role.id)));
+  if (instance) return all.find((x) => x.instance === instance) || null;
+  return all.find((x) => x.role.host === host && M.canonicalRoleId(x.role.id) === HM.ROLE) || null;
+}
+// the session name run-session gives a role: the host manager's is per machine (<instance>@<host>), every
+// other role's per team, as team-revive names it (<instance>@<team>)
+function unitSessionName(team, x, host) {
+  return M.canonicalRoleId(x.role.id) === HM.ROLE ? `${x.instance}@${host}` : require('./lib/session-name.js').sessionName(x.instance, team.prefix);
+}
+// a role's own unit: delivery-role-<instance>-<team tag>, so two teams' Chief of Staff units on one
+// machine never share a name, and lib/service-limits.js reads it as a unit that holds one session
+const roleUnitName = (root, instance) => `delivery-role-${instance}-${WD().tagOf(root)}.service`;
+
 function hostManagerOf(root, team, host, instance) {
   const all = M.expandInstances(team).filter((x) => !(x.role && x.role.retired) && M.canonicalRoleId(x.role.id) === HM.ROLE);
   if (instance) return all.find((x) => x.instance === instance) || null;
@@ -394,16 +419,17 @@ function roleDirOf(root, team, instance) {
 // task. Its starts are rows of the team's revive ledger (SESSION_ROW), so the once-only rule holds across
 // the unit's restarts. -> { args, roleDir, sessionId, dropped, why, modeSkip }
 const SESSION_ROW = 'host-manager-session';
-function sessionArgs(root, team, instance, { env, home, host }) {
+const ROLE_SESSION_ROW = 'role-unit-session';
+function sessionArgs(root, team, instance, { env, home, host, name = `${instance}@${host}`, row = SESSION_ROW }) {
   const { roleDir, remote } = roleDirOf(root, team, instance);
   const pointer = R.pointerOf(R.configDirOf(env, home), roleDir);
   const recorded = (pointer && pointer.sessionId) || (/^[A-Za-z0-9_-]{1,128}$/.test(String(remote || '')) ? remote : null);
   let entry = {};
   try { entry = require('./lib/roster.js').readRoster(root).instances[instance] || {}; } catch (err) { entry = {}; }
-  const starts = R.ledger(root).filter((r) => r.type === SESSION_ROW && r.instance === instance);
+  const starts = R.ledger(root).filter((r) => r.type === row && r.instance === instance);
   const l = R.linkFor(recorded, starts, entry);
   const m = R.modeOf(team);
-  const args = ['remote-control', '--name', `${instance}@${host}`, ...(l.remoteId ? ['--session-id', l.remoteId] : R.STAY_UP), ...(m.mode ? ['--permission-mode', m.mode] : [])];
+  const args = ['remote-control', '--name', name, ...(l.remoteId ? ['--session-id', l.remoteId] : R.STAY_UP), ...(m.mode ? ['--permission-mode', m.mode] : [])];
   const dropped = l.staleId || l.endedId || null;
   return { args, roleDir, sessionId: l.remoteId, dropped, why: l.staleId ? 'never joined' : l.endedId ? 'already ran' : null, modeSkip: m.skip || null };
 }
@@ -535,6 +561,89 @@ function install(root, o = {}, { env = process.env, home = os.homedir(), exec, h
   return { code: 0, out: lines.join('\n'), wrote, kept, attempted: true };
 }
 
+// The Chief of Staff's own unit (installRole): the host manager's session unit, for one team's role. It
+// runs run-session, so the session is read when the unit starts (the recorded one reattached once, else a
+// server that stays up), its restarts are bounded the same way, KillMode=process keeps what the session
+// started through a restart of the unit, and TasksMax is what lib/service-limits.js asks of a unit that
+// holds one role session: claude is the unit's own main process (process.execve), so it runs in the
+// unit's cgroup and nowhere else.
+function roleUnitFiles(root, team, instance, { env, home, host, roleDir }) {
+  const W = WD();
+  const SL = require('./lib/service-limits.js');
+  const unit = roleUnitName(root, instance);
+  const config = env.CLAUDE_CONFIG_DIR || null;
+  const xdg = ['XDG_STATE_HOME', 'XDG_CONFIG_HOME'].filter((k) => env[k]).map((k) => `${k}=${env[k]}`);
+  const vars = [`PATH=${W.jobPath(env, home)}`, `DELIVERY_ROLE=${instance}`, `DELIVERY_HOST=${host}`, ...(config ? [`CLAUDE_CONFIG_DIR=${config}`] : []), ...xdg];
+  const launcher = require('./lib/launcher.js').launcherPath(root);
+  const name = require('./lib/session-name.js').sessionName(instance, team.prefix).replace(/%/g, '%%');
+  const body = `[Unit]\nDescription=delivery role session ${name}: the Remote Control session of ${team.project}'s ${instance}\nAfter=network-online.target\nWants=network-online.target\nStartLimitIntervalSec=${START_LIMIT_INTERVAL}\nStartLimitBurst=${START_LIMIT_BURST}\n\n[Service]\nType=simple\nWorkingDirectory=${W.sdPct(roleDir)}\n${vars.map((v) => `Environment=${W.sdq(v)}\n`).join('')}ExecStart=/usr/bin/env ${['node', launcher, 'host-manager.js', 'run-session', '--project', root, '--instance', instance].map(W.sdq).join(' ')}\nKillMode=process\nRestart=always\nSuccessExitStatus=${ALREADY_RUNNING}\nRestartPreventExitStatus=${ALREADY_RUNNING}\nRestartSec=${RESTART_SEC}\nRestartSteps=${RESTART_STEPS}\nRestartMaxDelaySec=${RESTART_MAX_DELAY}\nTasksMax=${SL.needOf(unit, 0)}\n\n[Install]\nWantedBy=default.target\n`;
+  return { unit, file: path.join(HM.unitDir(home), unit), body, modeSkip: R.modeOf(team).skip || null };
+}
+
+// The Chief of Staff instance this host would serve with its own unit: the one named, else the team's
+// Chief of Staff on this host, with its role directory prepared (its marker names it). -> { team, host, x,
+// roleDir } or { why }.
+function roleTarget(root, o, { env, hostname }) {
+  let team;
+  try { team = M.loadManifest(root).team; } catch (err) { return { why: `host-manager.js: the team at ${root} could not be read (${firstLine(err)}); nothing was installed.` }; }
+  if (!team || !Array.isArray(team.roles)) return { why: `host-manager.js: the team at ${root} has no roles list; nothing was installed.` };
+  const host = R.hostOf(env, hostname !== undefined ? hostname : os.hostname());
+  const x = M.expandInstances(team).find((i) => !(i.role && i.role.retired) && M.canonicalRoleId(i.role.id) === 'chief-of-staff' && (o.instance ? i.instance === o.instance : i.role.host === host));
+  if (!x) return { why: `host-manager.js: team.json of ${root} has no Chief of Staff${o.instance ? ` instance ${o.instance}` : ` on host "${host}"`}; nothing was installed.` };
+  const { roleDir } = roleDirOf(root, team, x.instance);
+  let marker = null;
+  try { marker = JSON.parse(fs.readFileSync(path.join(roleDir, '.delivery-role.json'), 'utf8')); } catch (err) { marker = null; }
+  if (!marker || marker.instance !== x.instance) return { why: `host-manager.js: the role directory ${roleDir} is not prepared for ${x.instance} (no role marker naming it; prepare-role.js --instance ${x.instance} prepares it); nothing was installed.` };
+  return { team, host, x, roleDir };
+}
+
+// installRole(root, o, deps) -> { code, out, wrote }. Writes the Chief of Staff's own unit, reloads and
+// enables it; it is started at once only when no session of it is live (one read of the open sessions):
+// started beside a live one it would be a second, and the start pass starts it through this unit once
+// that session is gone. A user unit someone else wrote that serves the same directory (a hand-written
+// Remote Control service) refuses the install: two start paths would serve one directory. That unit is
+// the owner's, so it is named with the fix and never edited, stopped or disabled here.
+function installRole(root, o = {}, { env = process.env, home = os.homedir(), exec, has, hostname, cwd, who, live, writeFile = fs.writeFileSync } = {}) {
+  const no = guard('install-role', { cwd, env, who });
+  if (no) return { code: 1, out: no, wrote: [] };
+  if (!whichOf(has)('systemctl')) return { code: 1, out: 'host-manager.js: this host has no systemctl, so the Chief of Staff\'s unit cannot be installed here; nothing was installed.', wrote: [] };
+  const t = roleTarget(root, o, { env, hostname });
+  if (t.why) return { code: 1, out: t.why, wrote: [] };
+  const u = roleUnitFiles(root, t.team, t.x.instance, { env, home, host: t.host, roleDir: t.roleDir });
+  if (u.modeSkip) return { code: 1, out: `host-manager.js: ${u.modeSkip}; nothing was installed.`, wrote: [] };
+  const hand = R.servingUnits(t.roleDir, { home }).filter((s) => !s.written && s.unit !== u.unit);
+  if (hand.length) return { code: 1, out: hand.map((s) => `host-manager.js: ${s.unit} serves ${t.roleDir} with claude remote-control, and the delivery plugin did not write it, so ${u.unit} is not installed beside it (two start paths would serve one role directory). The plugin never changes that unit: stop and disable ${s.unit} (systemctl --user disable --now ${s.unit}), then run install-role again.`).join('\n'), wrote: [] };
+  const run = runner(exec);
+  const name = unitSessionName(t.team, t.x, t.host);
+  const listed = sessionsNow({ env, live });
+  const OS = require('./lib/one-session.js');
+  const lives = Array.isArray(listed) ? listed.filter(hostManagerMatch([t.roleDir], [name])) : null;
+  const startNow = Array.isArray(lives) && !lives.length;
+  const commands = [['systemctl', ['--user', 'daemon-reload']], ['systemctl', ['--user', 'enable', ...(startNow ? ['--now'] : []), u.unit]]];
+  const notNow = startNow ? null : lives ? `${t.x.instance} already runs as ${OS.described(lives)}, so ${u.unit} is enabled and starts it once that session is gone (the start pass starts it through the unit)` : `the open sessions could not be listed, so ${u.unit} is enabled and the start pass starts it`;
+  const head = `${t.x.instance} runs as ${u.unit} in ${t.roleDir} (run-session, Restart=always with bounded restarts, started at boot).`;
+  if (o.dryRun) {
+    const lines = [`Dry run. ${head}`, `Would write ${u.file}:`, u.body.trimEnd(), ...commands.map(([c, a]) => `Would run: ${c} ${a.join(' ')}`)];
+    if (notNow) lines.push(`Would not start it now: ${notNow}.`);
+    lines.push('Nothing was written.');
+    return { code: 0, out: lines.join('\n'), wrote: [] };
+  }
+  const lines = [];
+  const wrote = [];
+  try {
+    const lp = require('./lib/launcher.js').ensureLauncher(root, PLUGIN_ROOT, env.CLAUDE_CONFIG_DIR);
+    if (lp) throw new Error(lp);
+    fs.mkdirSync(path.dirname(u.file), { recursive: true });
+    writeFile(u.file, u.body); wrote.push(u.file); lines.push(`Wrote ${u.file}`);
+    for (const [c, a] of commands) { run(c, a); lines.push(`Ran: ${c} ${a.join(' ')}`); }
+    if (notNow) lines.push(`Not started now: ${notNow}.`);
+  } catch (err) { return { code: 1, out: `${lines.join('\n')}\nhost-manager.js: not installed (${firstLine(err)})`.trim(), wrote }; }
+  lines.push(`Installed. ${head}`);
+  const l = lingerLine(run, env);
+  if (l) lines.push(l);
+  return { code: 0, out: lines.join('\n'), wrote };
+}
+
 // run-session: what the host manager's unit runs. The session it reattaches to is read now, not at
 // install, and claude replaces this process (process.execve, node 22.15 and later), so the unit's main
 // process is claude and Restart= sees it exit. A node without execve starts nothing: claude as a child
@@ -576,9 +685,11 @@ function runSession(root, o, { env = process.env, home = os.homedir(), hostname,
   let team;
   try { team = M.loadManifest(root).team; } catch (err) { return { code: 1, out: `host-manager.js: the team at ${root} could not be read (${firstLine(err)}); no session started.` }; }
   const host = R.hostOf(env, hostname !== undefined ? hostname : os.hostname());
-  const hm = hostManagerOf(root, team, host, o.instance);
-  if (!hm) return { code: 1, out: `host-manager.js: team.json of ${root} has no host manager${o.instance ? ` instance ${o.instance}` : ` on host "${host}"`}; no session started.` };
-  const a = sessionArgs(root, team, hm.instance, { env, home, host });
+  const hm = unitRoleOf(root, team, host, o.instance);
+  if (!hm) return { code: 1, out: `host-manager.js: team.json of ${root} has no ${o.instance ? `instance ${o.instance} whose session a plugin unit serves (${UNIT_ROLES.join(', ')})` : `host manager on host "${host}"`}; no session started.` };
+  const name = unitSessionName(team, hm, host);
+  const row = M.canonicalRoleId(hm.role.id) === HM.ROLE ? SESSION_ROW : ROLE_SESSION_ROW;
+  const a = sessionArgs(root, team, hm.instance, { env, home, host, name, row });
   if (a.modeSkip) return { code: 1, out: `host-manager.js: ${a.modeSkip}; no session started.` };
   // One live session per role (lib/one-session.js, hjx.1.6.17): a host-manager session already live in its
   // role directory or under its own name <instance>@<host> is never given a second one beside it, and
@@ -587,7 +698,7 @@ function runSession(root, o, { env = process.env, home = os.homedir(), hostname,
   const OS = require('./lib/one-session.js');
   const listed = sessionsNow({ env, live });
   if (!Array.isArray(listed)) return { code: 1, out: 'host-manager.js: the open sessions could not be listed (claude agents --json), so a start could put a second host manager beside a live one; no session started.' };
-  const running = listed.filter(hostManagerMatch([a.roleDir], [`${hm.instance}@${host}`]));
+  const running = listed.filter(hostManagerMatch([a.roleDir], [name]));
   if (running.length) return { code: ALREADY_RUNNING, out: `host-manager.js: ${hm.instance} already runs as ${OS.described(running)}; no second session started.` };
   const ex = execve !== undefined ? execve : (typeof process.execve === 'function' ? process.execve.bind(process) : null);
   if (!ex) return { code: 1, out: `host-manager.js: run-session needs node 22.15 or later (process.execve), so that claude is the unit's own process; this is node ${process.version}. No session started.` };
@@ -596,7 +707,7 @@ function runSession(root, o, { env = process.env, home = os.homedir(), hostname,
   if (!file) return { code: 1, out: `host-manager.js: ${bin} is not on PATH (${env.PATH || 'unset'}); no session started.` };
   const note = a.dropped ? `host-manager.js: the recorded session ${a.dropped} ${a.why}, so it is not reattached again: a new server that stays up.` : '';
   // recorded before the exec, which does not return: the pid is claude's from here on
-  R.record(root, { type: SESSION_ROW, at: now || new Date().toISOString(), instance: hm.instance, pid: process.pid, session_id: a.sessionId, args: a.args, ...(a.dropped ? { dropped: a.dropped, why: a.why } : {}) });
+  R.record(root, { type: row, at: now || new Date().toISOString(), instance: hm.instance, pid: process.pid, session_id: a.sessionId, args: a.args, ...(a.dropped ? { dropped: a.dropped, why: a.why } : {}) });
   if (note) process.stderr.write(`${note}\n`);
   // the unit's WorkingDirectory is the role directory, which execve keeps
   ex(file, [path.basename(bin), ...a.args], env);
@@ -605,12 +716,15 @@ function runSession(root, o, { env = process.env, home = os.homedir(), hostname,
 
 // restart and tick start sessions and host jobs: in a role session they are the host manager's alone.
 // install changes the machine's own units: never from a role session.
-function refusal(cmd, cwd, env, who) {
+function refusal(cmd, cwd, env, who, instance) {
   const role = WD().roleContext(cwd, env);
   if (!role) return null;
+  if (cmd === 'install-role') return `host-manager.js: install-role writes this machine's user units and runs from a shell outside any role session (${role}); start.js --launch --keep-alive runs it.`;
   if (cmd === 'install') return `host-manager.js: install writes this machine's user units and runs from a shell outside any role session (${role}); watchdog.js install --apply runs it too, and so does each run of the watchdog's host job when the units are missing.`;
   const id = (who && who.roleId) || env.DELIVERY_ROLE_ID || M.canonicalRoleId(env.DELIVERY_ROLE) || null;
   if (id === HM.ROLE) return null;
+  // the Chief of Staff's own unit runs run-session in its role directory, for that role alone
+  if (cmd === 'run-session' && id && id !== HM.ROLE && UNIT_ROLES.includes(id) && instance && M.canonicalRoleId(instance) === id) return null;
   return `host-manager.js: ${cmd} is the host manager's (${role}${id ? `, role ${id}` : ''}); message the host manager with what is down.`;
 }
 
@@ -618,16 +732,20 @@ function main(argv, { cwd = process.cwd(), env = process.env, who, ...deps } = {
   let o;
   try { o = parse(argv); } catch (err) { return { code: 2, out: `host-manager.js: ${err.message}\n${USAGE}` }; }
   const [cmd] = o._;
-  if (!['status', 'restart', 'tick', 'install', 'run-session'].includes(cmd) || o._.length > 1) return { code: 2, out: USAGE };
+  if (!['status', 'restart', 'tick', 'install', 'install-role', 'run-session'].includes(cmd) || o._.length > 1) return { code: 2, out: USAGE };
   if (cmd !== 'status') {
     const me = who || (() => { try { return require('./lib/gate-context.js').whoAmI({ cwd, env }); } catch (err) { return {}; } })();
-    const no = refusal(cmd, cwd, env, me);
+    const no = refusal(cmd, cwd, env, me, o.instance);
     if (no) return { code: 1, out: no };
   }
   const d = { env, cwd, who, ...deps };
   if (cmd === 'run-session') {
     if (!o.project || !o.instance) return { code: 2, out: `host-manager.js: run-session needs --project <root> and --instance <id>\n${USAGE}` };
     return runSession(path.resolve(o.project), o, d);
+  }
+  if (cmd === 'install-role') {
+    if (!o.project) return { code: 2, out: `host-manager.js: install-role needs --project <root> (the team whose Chief of Staff it serves)\n${USAGE}` };
+    return installRole(path.resolve(o.project), o, d);
   }
   if (cmd === 'install') {
     if (!o.project) return { code: 2, out: `host-manager.js: install needs --project <root> (the team whose manifest holds the host manager)\n${USAGE}` };
@@ -646,7 +764,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, who, ...deps } = {
   return tick(d);
 }
 
-module.exports = { liveHostManager, main, read, status, restart, tick, install, installTarget, runSession, sessionArgs, unitFiles, refusal, deliverAlert, lastPassOf, factsOf, sessionsNow, POLL_EVERY_MS, POLL_MAX_MS };
+module.exports = { UNIT_ROLES, roleUnitName, roleUnitFiles, installRole, liveHostManager, main, read, status, restart, tick, install, installTarget, runSession, sessionArgs, unitFiles, refusal, deliverAlert, lastPassOf, factsOf, sessionsNow, POLL_EVERY_MS, POLL_MAX_MS };
 
 if (require.main === module) {
   let r;
