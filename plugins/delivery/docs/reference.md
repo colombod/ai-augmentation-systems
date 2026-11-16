@@ -1932,15 +1932,23 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   registers is kept on a local list, `directory-names.json` beside the host manager's state
   (`$XDG_STATE_HOME/delivery/host-manager/`, else `~/.local/state/delivery/host-manager/`), with the time
   of its last registration or heartbeat; the plugin takes a name off the list when it removes the entry
-  itself. Each watchdog `run` registers a plugin unit file or active role scope that has no entry (so one
+  itself, and an ended scope's name whose ttl ran out is dropped as the list is written. Each watchdog `run` registers a plugin unit file or active role scope that has no entry (so one
   written while the directory was down is registered once it is back), sends a heartbeat for each one
   that is active (the directory's health then reads the heartbeat, not a TCP probe), and removes an entry
   it owns whose unit is gone, only for a name on its local list (an entry another host or user wrote is
   left alone); a scope that ended simply expires. An entry the plugin registered that is missing while
   its ttl has not yet run out since the last registration or heartbeat was removed by someone else: the
-  owner may have taken the unit out of the plugin's hands, so it is not registered again, the pass line
-  says so, and the unit is not started, stopped or restarted (an entry that merely expired with its ttl
-  is registered again). A unit that is not active (a oneshot service between runs, a timer's service)
+  owner may have taken the unit out of the plugin's hands, so it is not registered again by anything
+  (the watchdog pass, `host-manager.js install` and `install-role`, `watchdog.js install --apply`: no
+  POST, and the reply or pass line names it), and the unit is not started, stopped or restarted, so an
+  install's start of it is refused and the unit is enabled only (an entry that merely expired with its
+  ttl is registered again). A directory that lost every entry (its registry reset, or empty after a host
+  restart) does not lock the plugin's units out: the directory reports no start time or uptime, so a read
+  in which every name on the plugin's list that is still within its ttl is missing, and no entry of the
+  plugin's is listed, is taken as that loss. Its time is kept on the list; a name last seen before it is
+  lost, not removed, and is registered again, so the changes go ahead, while a name seen again after it
+  and then missing is refused as before. The plugin cannot tell an owner who removed every one of its
+  entries at once from a lost directory, and registers them again. A unit that is not active (a oneshot service between runs, a timer's service)
   gets no heartbeat, so its entry reads up while its ttl lasts after a registration and then expires;
   the next pass registers it again: its health in the directory says the entry is fresh, not that the
   unit runs. Writes go from 127.0.0.1, which the directory lets through without a token; the plugin
@@ -1951,7 +1959,8 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   or starting a role's own unit, the owner's restart of each host job's timer and path unit and its one
   run of the job's service, `restart --down-only` and the tick starting a host job unit that is down and
   running a silent job's service once, the stale-session restart of the host manager, the watchdog's start of
-  `delivery-host-manager.service`, an install's `enable --now`, run-session's replace of a leftover or
+  `delivery-host-manager.service`, `team-revive.js start` starting a role's own unit, an install's
+  `enable --now`, run-session's replace of a leftover or
   outside session), the unit's entry is read with `GET /api/services/local`. A missing entry the plugin
   never registered is registered and read again; a missing entry the plugin registered and someone
   removed, an entry owned by anyone but the plugin, or a unit the plugin did not write, is refused, with
