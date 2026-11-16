@@ -6,6 +6,8 @@
 //                                       hold work; per host job unit: running, or stopped since when; a
 //                                       source that cannot be read is a SOURCE UNAVAILABLE line, never
 //                                       counted as running
+//   host-manager.js directory [--json]  read-only: this node's entries in the owner's service directory on
+//                                       127.0.0.1:8085 and their health, the delivery plugin's own first
 //   host-manager.js restart [--down-only] [--json]    the owner's restart: restarts every installed host job (its timer
 //                                       and path units, then one run of its service), running or not, then
 //                                       per team starts the missing role sessions that hold work and
@@ -48,7 +50,7 @@ const HM = require('./lib/host-manager.js');
 const R = require('./lib/team-revive.js');
 const M = require('./lib/manifest.js');
 
-const USAGE = 'usage: host-manager.js status [--json] | host-manager.js restart [--down-only] [--json] | host-manager.js tick | host-manager.js install [--dry-run] --project <root> [--instance <id>] | host-manager.js install-role [--dry-run] --project <root> [--instance <id>] | host-manager.js run-session --project <root> --instance <id>';
+const USAGE = 'usage: host-manager.js status [--json] | host-manager.js directory [--json] | host-manager.js restart [--down-only] [--json] | host-manager.js tick | host-manager.js install [--dry-run] --project <root> [--instance <id>] | host-manager.js install-role [--dry-run] --project <root> [--instance <id>] | host-manager.js run-session --project <root> --instance <id>';
 const PLUGIN_ROOT = path.resolve(__dirname, '..');
 const RESTART_SEC = 30;
 // A session that exits at once (an expired sign-in, a refused flag) must not restart every 30 seconds
@@ -267,10 +269,9 @@ function restart(deps = {}, before, o = {}) {
   const held = {};
   const unforced = {};
   const oldSessions = {};
-  // a role a user unit serves is restarted through that unit (lib/team-revive.js remoteControlUnitFor)
-  const restartUnit = (unit) => run('systemctl', ['--user', 'restart', unit]);
-  // a missing role the plugin's own unit serves is started through it (team-revive.js startOwnUnit)
-  const startUnit = (unit) => require('./team-revive.js').startOwnUnit(unit, { exec: run });
+  // a role the plugin's own unit serves is restarted, or started when missing, through that unit, each only
+  // after its entry in the service directory is read (team-revive.js unitOps)
+  const opsOf = (root) => TR.unitOps(root, { exec: run, sdFetch: deps.sdFetch, now });
   // each unit start or restart is settled as a spawned start is: down after SETTLE_MS, it is a failed start
   const unitSettle = require('./team-revive.js').unitSettleOf(run, sleep);
   for (const t of before.teams) {
@@ -282,7 +283,7 @@ function restart(deps = {}, before, o = {}) {
     refused[root] = {};
     let r;
     try {
-      r = TR.revive(root, t.team, { start: true, cwd: deps.cwd, env: deps.env || process.env, home: deps.home, live: before.live, relist: () => sessionsNow(deps), only: want, ...(force.length ? { force } : {}), restartUnit, startUnit, unitSettle, ...(deps.spawn ? { spawn: deps.spawn } : {}), ...(deps.stop ? { stop: deps.stop } : {}), ...(deps.teamDeps ? deps.teamDeps(root) : {}) });
+      r = TR.revive(root, t.team, { start: true, cwd: deps.cwd, env: deps.env || process.env, home: deps.home, live: before.live, relist: () => sessionsNow(deps), only: want, ...(force.length ? { force } : {}), ...opsOf(root), unitSettle, sdFetch: deps.sdFetch, ...(deps.spawn ? { spawn: deps.spawn } : {}), ...(deps.stop ? { stop: deps.stop } : {}), ...(deps.teamDeps ? deps.teamDeps(root) : {}) });
     } catch (err) { for (const i of want) refused[root][i] = `the start failed: ${firstLine(err)}`; for (const i of force) (unforced[root] = unforced[root] || {})[i] = `the restart pass failed: ${firstLine(err)}`; continue; }
     started[root] = {};
     // a start that exited within its settle is recorded failed by the start pass: named, not waited for
@@ -513,7 +514,56 @@ function installTarget(root, o = {}, { env = process.env, hostname } = {}) {
 // rewritten, so an owner's edit of the tick service or timer survives; the reload, enable and start
 // still run, which is how a run repeats an enable that failed without writing anything again.
 // deps.writeFile: the write of a unit file (a test's failing write).
-function install(root, o = {}, { env = process.env, home = os.homedir(), exec, has, hostname, cwd, who, writeFile = fs.writeFileSync, live } = {}) {
+// directory [--json]: read-only, this node's entries in the owner's service directory (GET
+// /api/services/local) with their health (GET /api/health), the plugin's own first. Exit 1 when the
+// directory cannot be read.
+function directory({ json = false, sdFetch } = {}) {
+  const SD = require('./lib/service-directory.js');
+  const l = SD.local({ fetch: sdFetch });
+  if (l.unreadable) return { code: 1, out: `host-manager.js: ${l.unreadable}.` };
+  const h = SD.health({ fetch: sdFetch });
+  const health = h.health || {};
+  const rows = l.entries.filter((e) => e && e.name).map((e) => ({ name: e.name, owner: e.owner || null, source: e.source || null, url: e.url || ((e.links || [])[0] || {}).url || null, health: health[e.name] || null, ours: e.owner === SD.OWNER }))
+    .sort((a, b) => Number(b.ours) - Number(a.ours) || a.name.localeCompare(b.name));
+  if (json) return { code: 0, out: JSON.stringify({ base: SD.BASE, entries: rows, ...(h.unreadable ? { health_unreadable: h.unreadable } : {}) }, null, 2) };
+  const lines = [`Service directory ${SD.BASE}: ${rows.length} entr${rows.length === 1 ? 'y' : 'ies'} on this node, ${rows.filter((r) => r.ours).length} the delivery plugin's.`];
+  for (const r of rows) lines.push(`${r.ours ? 'Plugin' : 'Other'}: ${r.name}, ${r.health || 'health not known'}${r.owner && !r.ours ? `, owner ${r.owner}` : ''}${r.source ? `, ${r.source}` : ''}${r.url ? `, ${r.url}` : ''}`);
+  if (h.unreadable) lines.push(`Health could not be read: ${h.unreadable}.`);
+  return { code: 0, out: lines.join('\n') };
+}
+
+// The units an install writes, registered with the owner's service directory (dec-chief-of-staff-000485)
+// as they are written: lines that say so. A directory that cannot be reached never fails the install; the
+// watchdog's next pass registers what is missing (watchdog.js directoryPass).
+function registerUnits(units, sdFetch) {
+  const SD = require('./lib/service-directory.js');
+  const done = [];
+  const failed = [];
+  for (const n of units) { const g = SD.register(n, { fetch: sdFetch }); if (g.ok) done.push(n); else failed.push(g.why); }
+  return [done.length ? `Registered with the service directory: ${done.join(', ')}` : null, failed.length ? `Not registered with the service directory: ${[...new Set(failed)].join('; ')}; the watchdog's next pass registers them` : null].filter(Boolean);
+}
+// Each `enable --now` of an install starts a unit: its directory entry is read first (lib/service-directory.js
+// beforeChange). A unit that is down starts even while the directory cannot be read (a row and a warning);
+// a refused start is enabled only, and the line says why. -> { commands, lines }
+function gateStarts(root, commands, { run, sdFetch, now }) {
+  const SD = require('./lib/service-directory.js');
+  const lines = [];
+  const out = commands.map(([c, a]) => {
+    if (c !== 'systemctl' || !a.includes('--now')) return [c, a];
+    const unit = a[a.length - 1];
+    let st = '';
+    try { st = String(run('systemctl', ['--user', 'is-active', unit]) || ''); } catch (err) { st = String((err && err.stdout) || ''); }
+    // a unit already active is not started by --now (a start of a running unit does nothing): no change to read for
+    if (st.trim().split('\n')[0] === 'active') return [c, a];
+    const g = SD.beforeChange(unit, { action: 'start', running: false, fetch: sdFetch, onUnreachable: SD.unreachableRecorder(root, { now }) });
+    if (g.ok) return [c, a];
+    lines.push(`Not started now: ${g.why}; ${unit} is enabled only.`);
+    return [c, a.filter((x) => x !== '--now')];
+  });
+  return { commands: out, lines };
+}
+
+function install(root, o = {}, { env = process.env, home = os.homedir(), exec, has, hostname, cwd, who, writeFile = fs.writeFileSync, live, sdFetch, now } = {}) {
   const no = guard('install', { cwd, env, who });
   if (no) return { code: 1, out: no, wrote: [] };
   if (!whichOf(has)('systemctl')) return { code: 1, out: 'host-manager.js: this host has no systemctl, so the host manager\'s units cannot be installed here; nothing was installed.', wrote: [] };
@@ -557,7 +607,10 @@ function install(root, o = {}, { env = process.env, home = os.homedir(), exec, h
     // before the units are enabled: systemd opens the tick's StandardOutput=append: file itself and
     // fails the service (status 209/STDOUT) when its directory is missing
     fs.mkdirSync(u.stateDir, { recursive: true });
-    for (const [cmd, args] of commands) { run(cmd, args); lines.push(`Ran: ${cmd} ${args.join(' ')}`); }
+    lines.push(...registerUnits(u.files.map((f) => path.basename(f.file)), sdFetch));
+    const gated = gateStarts(root, commands, { run, sdFetch, now });
+    for (const [cmd, args] of gated.commands) { run(cmd, args); lines.push(`Ran: ${cmd} ${args.join(' ')}`); }
+    lines.push(...gated.lines);
     if (notNow) lines.push(`Not started now: ${notNow}`);
   } catch (err) { return { code: 1, out: `${lines.join('\n')}\nhost-manager.js: not installed (${firstLine(err)})`.trim(), wrote, kept, attempted: true }; }
   lines.push(`Installed. ${head}`);
@@ -608,7 +661,7 @@ function roleTarget(root, o, { env, hostname }) {
 // that session is gone. A user unit someone else wrote that serves the same directory (a hand-written
 // Remote Control service) refuses the install: two start paths would serve one directory. That unit is
 // the owner's, so it is named with the fix and never edited, stopped or disabled here.
-function installRole(root, o = {}, { env = process.env, home = os.homedir(), exec, has, hostname, cwd, who, live, writeFile = fs.writeFileSync } = {}) {
+function installRole(root, o = {}, { env = process.env, home = os.homedir(), exec, has, hostname, cwd, who, live, writeFile = fs.writeFileSync, sdFetch, now } = {}) {
   const no = guard('install-role', { cwd, env, who });
   if (no) return { code: 1, out: no, wrote: [] };
   if (!whichOf(has)('systemctl')) return { code: 1, out: 'host-manager.js: this host has no systemctl, so the Chief of Staff\'s unit cannot be installed here; nothing was installed.', wrote: [] };
@@ -640,7 +693,10 @@ function installRole(root, o = {}, { env = process.env, home = os.homedir(), exe
     if (lp) throw new Error(lp);
     fs.mkdirSync(path.dirname(u.file), { recursive: true });
     writeFile(u.file, u.body); wrote.push(u.file); lines.push(`Wrote ${u.file}`);
-    for (const [c, a] of commands) { run(c, a); lines.push(`Ran: ${c} ${a.join(' ')}`); }
+    lines.push(...registerUnits([u.unit], sdFetch));
+    const gated = gateStarts(root, commands, { run, sdFetch, now });
+    for (const [c, a] of gated.commands) { run(c, a); lines.push(`Ran: ${c} ${a.join(' ')}`); }
+    lines.push(...gated.lines);
     if (notNow) lines.push(`Not started now: ${notNow}.`);
   } catch (err) { return { code: 1, out: `${lines.join('\n')}\nhost-manager.js: not installed (${firstLine(err)})`.trim(), wrote }; }
   lines.push(`Installed. ${head}`);
@@ -820,8 +876,8 @@ function main(argv, { cwd = process.cwd(), env = process.env, who, ...deps } = {
   let o;
   try { o = parse(argv); } catch (err) { return { code: 2, out: `host-manager.js: ${err.message}\n${USAGE}` }; }
   const [cmd] = o._;
-  if (!['status', 'restart', 'tick', 'install', 'install-role', 'run-session'].includes(cmd) || o._.length > 1) return { code: 2, out: USAGE };
-  if (cmd !== 'status') {
+  if (!['status', 'directory', 'restart', 'tick', 'install', 'install-role', 'run-session'].includes(cmd) || o._.length > 1) return { code: 2, out: USAGE };
+  if (cmd !== 'status' && cmd !== 'directory') {
     const me = who || (() => { try { return require('./lib/gate-context.js').whoAmI({ cwd, env }); } catch (err) { return {}; } })();
     const no = refusal(cmd, cwd, env, me, o.instance);
     if (no) return { code: 1, out: no };
@@ -839,6 +895,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, who, ...deps } = {
     if (!o.project) return { code: 2, out: `host-manager.js: install needs --project <root> (the team whose manifest holds the host manager)\n${USAGE}` };
     return install(path.resolve(o.project), o, d);
   }
+  if (cmd === 'directory') return directory({ json: o.json, sdFetch: d.sdFetch });
   if (cmd === 'status') {
     const r = status(d);
     return { code: 0, out: o.json ? JSON.stringify({ teams: r.read.teams, units: r.read.units, unavailable: r.read.unavailable }, null, 2) : r.lines.join('\n') };

@@ -561,7 +561,7 @@ function hostManagerSetup(root, { platform, home, env, exec, has, live }) {
 // the tick's service and timer included, is never rewritten. When the last install row carries an
 // error (an enable that failed after the files were written), the next run repeats the install, which
 // then writes nothing that exists and runs the reload and enables again, until a run records no error.
-function ensureHostManager(root, { home, exec, now, env = process.env, has, hostname, live, writeFile }) {
+function ensureHostManager(root, { home, exec, now, env = process.env, has, hostname, live, writeFile, sdFetch }) {
   const HM = require('./lib/host-manager.js');
   const R = require('./lib/team-revive.js');
   const lines = [];
@@ -581,7 +581,7 @@ function ensureHostManager(root, { home, exec, now, env = process.env, has, host
     if (blocked !== null && !retry) return blocked || null;
     if (blocked) lines.push(blocked);
     if (blocked === null) {
-      const r = HMS.install(root, { onlyMissing: true }, { env, home, exec, has, hostname, cwd: root, ...(writeFile ? { writeFile } : {}), ...(live !== undefined ? { live } : {}) });
+      const r = HMS.install(root, { onlyMissing: true }, { env, home, exec, has, hostname, cwd: root, ...(writeFile ? { writeFile } : {}), ...(live !== undefined ? { live } : {}), ...(sdFetch ? { sdFetch } : {}) });
       const last = r.out.split('\n').pop().replace(/^host-manager\.js: /, '');
       // refused before it began (a role session): said, no row; the next run tries again
       if (!r.attempted) return `host manager: its units were not installed (${last})`;
@@ -595,11 +595,11 @@ function ensureHostManager(root, { home, exec, now, env = process.env, has, host
       if (!fs.existsSync(path.join(HM.unitDir(home), HM.UNIT))) return lines.join('\n');
     }
   }
-  const started = startHostManager(root, { home, exec, now, env, live });
+  const started = startHostManager(root, { home, exec, now, env, live, sdFetch });
   if (started) lines.push(started);
   return lines.length ? lines.join('\n') : null;
 }
-function startHostManager(root, { home, exec, now, env = process.env, live }) {
+function startHostManager(root, { home, exec, now, env = process.env, live, sdFetch }) {
   const HM = require('./lib/host-manager.js');
   const run = runner(exec);
   let state = '';
@@ -616,6 +616,11 @@ function startHostManager(root, { home, exec, now, env = process.env, live }) {
   const lv = require('./host-manager.js').liveHostManager(root, { env, home, live });
   if (lv.unreadable) return `host manager: ${HM.UNIT} is ${state}; the open sessions could not be listed, so it is not started now (a second host manager could start beside a live one)`;
   if (lv.sessions.length) return `host manager: ${HM.UNIT} is ${state}, and the host manager already runs as ${require('./lib/one-session.js').described(lv.sessions)}; not started beside it`;
+  // the unit's entry in the service directory is read before the start (dec-chief-of-staff-000485): it is
+  // down, so with the directory unreachable it still starts, with a row and a warning
+  const SD = require('./lib/service-directory.js');
+  const g = SD.beforeChange(HM.UNIT, { action: 'start', running: false, fetch: sdFetch, onUnreachable: SD.unreachableRecorder(root, { now }) });
+  if (!g.ok) return `host manager: ${HM.UNIT} is ${state} and is not started: ${g.why}`;
   let error = null;
   // a unit that hit its start limit (host-manager.js install bounds its restarts) stays failed until its
   // failed state is reset: this pass, every 15 minutes, is how often it is tried again
@@ -671,11 +676,52 @@ function defaultRevive(root, { team, env, now, dryRun, bd, live, exec }) {
   // a stale session is stopped only after a read of the open sessions made just then finds it idle,
   // never on the pass's first read, which may be minutes old by then (lib/team-revive.js staleOf)
   const relist = () => liveSessions(env.DELIVERY_CLAUDE_BIN || 'claude', env);
-  // a host manager on an older plugin is restarted through its own unit, after the same fresh read
-  const restartUnit = (unit) => runner(exec)('systemctl', ['--user', 'restart', unit]);
-  // and settled as a spawned start is: a unit down after SETTLE_MS is a failed start, retried next pass
+  // a host manager on an older plugin is restarted through its own unit, after the same fresh read, and a
+  // missing role the plugin's own unit serves is started through it, each after its entry in the service
+  // directory is read (team-revive.js unitOps)
   const TR = require('./team-revive.js');
-  return TR.revive(root, team, { start: true, cwd: root, dryRun, env, now, bd, relist, restartUnit, unitSettle: TR.unitSettleOf(runner(exec)), ...(live !== undefined ? { live } : {}) }).lines;
+  const ops = TR.unitOps(root, { exec: runner(exec), now });
+  // and settled as a spawned start is: a unit down after SETTLE_MS is a failed start, retried next pass
+  return TR.revive(root, team, { start: true, cwd: root, dryRun, env, now, bd, relist, ...ops, unitSettle: TR.unitSettleOf(runner(exec)), ...(live !== undefined ? { live } : {}) }).lines;
+}
+
+// The plugin's units in the owner's service directory (dec-chief-of-staff-000485), each pass: a unit file
+// the plugin wrote here, or a role scope now active, that has no entry is registered (so one written while
+// the directory was down is registered once it is back); one that is active gets a heartbeat, which is
+// what the directory's health reads for it; an entry the plugin owns whose unit is gone (no file, no
+// active scope) is removed. A scope that ended needs nothing: its entry expires with its ttl. One line,
+// or null when there is nothing to say. deps: exec (systemctl), sdFetch (the directory's).
+function directoryPass(root, { home = os.homedir(), exec, sdFetch } = {}) {
+  const SD = require('./lib/service-directory.js');
+  const run = runner(exec);
+  let files = [];
+  try { files = fs.readdirSync(require('./lib/host-manager.js').unitDir(home)).filter(SD.isPluginUnit); } catch (err) { files = []; }
+  let scopes = [];
+  try { scopes = String(run('systemctl', ['--user', 'list-units', '--type=scope', '--state=active', '--plain', '--no-legend', '--no-pager', 'delivery-role-*']) || '').split('\n').map((l) => l.trim().split(/\s+/)[0]).filter(SD.isPluginUnit); } catch (err) { scopes = []; }
+  const units = [...new Set([...files, ...scopes])];
+  const l = SD.local({ fetch: sdFetch });
+  if (l.unreadable) return units.length ? `service directory: ${units.length} plugin unit${units.length === 1 ? '' : 's'} not registered or refreshed (${l.unreadable}); the next pass that reaches it does` : null;
+  const ours = new Map(l.entries.filter((e) => e && e.owner === SD.OWNER).map((e) => [e.name, e]));
+  const active = (u) => { let st = ''; try { st = String(run('systemctl', ['--user', 'is-active', u]) || ''); } catch (err) { st = String((err && err.stdout) || ''); } return st.trim().split('\n')[0] === 'active'; };
+  const done = { registered: [], refreshed: [], removed: [], failed: [] };
+  for (const u of units) {
+    if (!ours.has(u)) {
+      if (l.entries.some((e) => e && e.name === u)) { done.failed.push(`${u} (listed under another owner, left as it is)`); continue; }
+      const g = SD.register(u, { fetch: sdFetch });
+      (g.ok ? done.registered : done.failed).push(g.ok ? u : `${u} (${g.why})`);
+      continue;
+    }
+    if (!active(u)) continue;
+    const h = SD.heartbeat(u, { fetch: sdFetch });
+    (h.ok ? done.refreshed : done.failed).push(h.ok ? u : `${u} (${h.why})`);
+  }
+  for (const name of ours.keys()) {
+    if (units.includes(name) || !SD.isPluginUnit(name)) continue;
+    const r = SD.remove(name, { fetch: sdFetch });
+    (r.ok ? done.removed : done.failed).push(r.ok ? name : `${name} (${r.why})`);
+  }
+  const parts = [['registered', done.registered], ['refreshed', done.refreshed], ['removed', done.removed], ['not updated', done.failed]].filter(([, x]) => x.length).map(([k, x]) => `${k} ${x.join(', ')}`);
+  return parts.length ? `service directory: ${parts.join('; ')}` : null;
 }
 
 function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, live, spawn, deliver, platform = process.platform, home = os.homedir(), exec, has, sweep, lockWaitMs, update = {}, userGuard, revive, hostUnit } = {}) {
@@ -740,6 +786,9 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
       const sealed = env.DELIVERY_SEAL_ACTIVE || env.DELIVERY_SEALED_RUN;
       const hm = o.dryRun || hostUnit === false || (!hostUnit && sealed) ? null : ensureHostManager(who.root, { home, exec, now, env, has, ...(live !== undefined ? { live } : {}), ...(hostUnit || {}) });
       if (hm) swept.push(hm);
+      // the plugin's units in the owner's service directory: registered, refreshed while active, removed when gone
+      const sd = o.dryRun || hostUnit === false || (!hostUnit && sealed) ? null : directoryPass(who.root, { home, exec, ...(hostUnit || {}) });
+      if (sd) swept.push(sd);
       try {
         const S = require('./testing/sweep.js');
         // a dry run says what the sweep would remove and removes nothing
@@ -763,7 +812,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
   return r || { code: 0, out: 'Another watchdog run holds the lock; this one does nothing.' };
 }
 
-module.exports = { spawnWake, main, liveSessions, wakeAlive, defaultUserGuard, checkLines, jobFiles, shimBody, everySeconds, roleContext, kickWatchUnit, tagOf, sdq, sdPct, jobPath, ensureHostManager, hostManagerSetup, teamSessionsHere };
+module.exports = { spawnWake, main, liveSessions, wakeAlive, defaultUserGuard, checkLines, jobFiles, shimBody, everySeconds, roleContext, kickWatchUnit, tagOf, sdq, sdPct, jobPath, ensureHostManager, hostManagerSetup, teamSessionsHere, directoryPass };
 
 if (require.main === module) {
   let r;

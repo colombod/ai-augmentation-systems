@@ -104,6 +104,23 @@ function startOwnUnit(unit, { exec = (c, a) => require('child_process').execFile
   exec('systemctl', ['--user', 'start', unit]);
 }
 
+// The unit start and restart a start pass is handed (the watchdog's, the owner's restart), each made only
+// after the unit's entry in the service directory is read (lib/service-directory.js beforeChange,
+// dec-chief-of-staff-000485): a refusal throws with its reason, which the pass records and says. A
+// restart is of a running unit; a start is of a missing role's unit, which is down, so it goes ahead with a
+// row and a warning while the directory cannot be read. exec: the systemctl runner; sdFetch: the directory's.
+function unitOps(root, { exec, sdFetch, now } = {}) {
+  const SD = require('./lib/service-directory.js');
+  const gate = (unit, action, running) => {
+    const g = SD.beforeChange(unit, { action, running, fetch: sdFetch, onUnreachable: SD.unreachableRecorder(root, { now }) });
+    if (!g.ok) throw Object.assign(new Error(`not ${action === 'start' ? 'started' : 'restarted'}: ${g.why}`), { refused: true });
+  };
+  return {
+    restartUnit: (unit) => { gate(unit, 'restart', true); exec('systemctl', ['--user', 'restart', unit]); },
+    startUnit: (unit) => { gate(unit, 'start', false); startOwnUnit(unit, { exec }); },
+  };
+}
+
 function stopServer(serverPid, sessionPid, { kill = (p, sig) => process.kill(p, sig), waitMs = 15000, stepMs = 250 } = {}) {
   const gone = (p) => { if (!p) return true; try { kill(p, 0); return false; } catch (err) { return err.code !== 'EPERM'; } };
   try { kill(serverPid, 'SIGTERM'); } catch (err) { if (err.code !== 'ESRCH') return false; }
@@ -266,7 +283,14 @@ function settleUnit(root, unitSettle, { instance, unit, at, what }) {
   return why;
 }
 
-function restartStale(root, f, a, { env, bin, spawn, stop, relist, systemdRun = null, restartUnit = null, unitSettle = null }) {
+// A role scope a start made is registered with the owner's service directory (lib/service-directory.js); a
+// directory that cannot be reached never holds the start back: the watchdog's next pass registers every
+// active role scope it finds.
+function registerScope(unit, sdFetch) {
+  try { const SD = require('./lib/service-directory.js'); SD.register(SD.scopeName(unit), { fetch: sdFetch }); } catch (err) { /* the next pass registers it */ }
+}
+
+function restartStale(root, f, a, { env, bin, spawn, stop, relist, systemdRun = null, restartUnit = null, unitSettle = null, sdFetch }) {
   const out = {};
   for (const i of a.stale.filter((x) => !x.stale.skip && !x.stale.held)) {
     const st = i.stale;
@@ -284,6 +308,12 @@ function restartStale(root, f, a, { env, bin, spawn, stop, relist, systemdRun = 
     if (st.unit) {
       if (!restartUnit) { out[i.instance] = { why: `it is served by the user unit ${st.unit}, and this pass has no way to restart a unit` }; continue; }
       try { restartUnit(st.unit); } catch (err) {
+        // refused on the service directory's read (unitOps): nothing was restarted, so no cap counts it
+        if (err && err.refused) {
+          R.record(root, { type: 'restart-refused', at, instance: i.instance, unit: st.unit, from: st.version, to: st.installed, why: err.message, ...forced });
+          out[i.instance] = { why: `${st.unit} was ${err.message}` };
+          continue;
+        }
         const why = String(err.message || err).trim().split('\n')[0].slice(0, 200);
         R.record(root, { type: 'restart-failed', at, instance: i.instance, unit: st.unit, from: st.version, to: st.installed, error: why, ...forced });
         out[i.instance] = { why: `systemctl --user restart ${st.unit} failed: ${why}` };
@@ -310,6 +340,7 @@ function restartStale(root, f, a, { env, bin, spawn, stop, relist, systemdRun = 
       continue;
     }
     R.record(root, { type: 'restart', at, instance: i.instance, pid, args: st.args, ...(cmd.unit ? { unit: cmd.unit } : {}), session_id: st.remoteId, mode: st.mode, from: st.version, to: st.installed, stopped: st.server, log: path.relative(root, logPath), ...forced });
+    if (cmd.unit) registerScope(cmd.unit, sdFetch);
     out[i.instance] = { pid, log: path.relative(root, logPath) };
   }
   return out;
@@ -362,6 +393,12 @@ function revivePass(root, team, { start = false, dryRun = false, env = process.e
       // a role the plugin's own unit serves is started through that unit, never in a scope beside it
       if (i.viaUnit) {
         try { (startUnit || startOwnUnit)(i.viaUnit); } catch (err) {
+          // refused on the service directory's read (unitOps): no start was made, so no cap counts it
+          if (err && err.refused) {
+            R.record(root, { type: 'start-refused', at, instance: i.instance, unit: i.viaUnit, why: err.message });
+            started[i.instance] = { why: `${i.viaUnit} was ${err.message}`, unitStart: true };
+            continue;
+          }
           const why = String((err && (err.stderr || err.message)) || err).trim().split('\n')[0].slice(0, 200);
           // a start row all the same, with its error: the hourly and daily caps hold for a unit that keeps failing
           R.record(root, { type: 'start', at, instance: i.instance, unit: i.viaUnit, via: 'unit', error: why });
@@ -379,6 +416,7 @@ function revivePass(root, team, { start = false, dryRun = false, env = process.e
       const cmd = require('./lib/role-scope.js').roleCommand(bin, i.args, { instance: i.instance, at, systemdRun: sdRun });
       const pid = spawn(cmd.bin, cmd.args, { cwd: i.roleDir, env: startEnv(env, i.instance), logPath });
       R.record(root, { type: 'start', at, instance: i.instance, pid, args: i.args, session_id: i.remoteId, mode: i.mode, log: path.relative(root, logPath), ...(cmd.unit ? { unit: cmd.unit } : {}) });
+      if (cmd.unit) registerScope(cmd.unit, deps.sdFetch);
       started[i.instance] = { pid, log: path.relative(root, logPath), at, args: i.args, roleDir: i.roleDir, ...(cmd.unit ? { unit: cmd.unit } : {}) };
     }
     const wait = settle !== undefined ? settle : (spawn === spawnRemote ? settleStarts : null);
@@ -413,7 +451,7 @@ function revivePass(root, team, { start = false, dryRun = false, env = process.e
   if (start && !dryRun) { try { tellTwice(root, team, a, { now: f.now }); } catch (err) { /* the next pass tells it */ } }
   let restarted = {};
   if (start && !dryRun && a.restart && a.stale.length) {
-    restarted = restartStale(root, f, a, { env, bin, spawn, stop, relist: again, systemdRun: sdRun, restartUnit, unitSettle });
+    restarted = restartStale(root, f, a, { env, bin, spawn, stop, relist: again, systemdRun: sdRun, restartUnit, unitSettle, sdFetch: deps.sdFetch });
   }
   return { a, started, restarted, lines: R.lines(a, { bin, started, restarted, dryRun: start && dryRun }) };
 }
@@ -463,7 +501,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, ...deps } = {}) {
   return { code: 0, out: r.lines.join('\n') };
 }
 
-module.exports = { startOwnUnit, unitSettleOf, tellTwice, main, revive, gather, startEnv, refusal, callerRefusal, serverAlive, serverOf, stopServer, systemdRunOf, settleStarts, exited, systemdRunRefused };
+module.exports = { startOwnUnit, unitOps, unitSettleOf, tellTwice, main, revive, gather, startEnv, refusal, callerRefusal, serverAlive, serverOf, stopServer, systemdRunOf, settleStarts, exited, systemdRunRefused };
 
 if (require.main === module) {
   let r;

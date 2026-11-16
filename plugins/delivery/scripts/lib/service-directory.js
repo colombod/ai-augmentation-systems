@@ -27,6 +27,8 @@ const ROLE_UNIT = /^delivery-role-[a-z0-9][a-z0-9-]*\.(service|scope)$/;
 // A unit the plugin writes: the host manager's three, a role's own unit (install-role) and the role scopes
 // (lib/team-revive.js scopedCommand). Anything else is not the plugin's to register, start or stop.
 const isPluginUnit = (name) => HM_UNITS.includes(String(name)) || ROLE_UNIT.test(String(name));
+// systemd-run --scope --unit <name> names the unit without its suffix; systemctl lists it as <name>.scope
+const scopeName = (unit) => (/\.(scope|service|timer)$/.test(String(unit)) ? String(unit) : `${unit}.scope`);
 
 function describe(unit) {
   if (unit === HM_UNITS[0]) return 'delivery plugin: the host manager\'s Remote Control session (systemd user unit)';
@@ -127,7 +129,7 @@ function unreachableRecorder(root, { now, raisedBy = 'host job' } = {}) {
   };
 }
 
-module.exports = { BASE, OWNER, CATEGORY, TAGS, TTL, HM_UNITS, isPluginUnit, entryFor, describe, defaultFetch, register, remove, heartbeat, local, health, beforeChange, unreachableRecorder };
+module.exports = { BASE, OWNER, CATEGORY, TAGS, TTL, HM_UNITS, isPluginUnit, scopeName, entryFor, describe, defaultFetch, register, remove, heartbeat, local, health, beforeChange, unreachableRecorder };
 
 // The child the default fetch runs: one request, its status and JSON body on stdout.
 if (require.main === module) {

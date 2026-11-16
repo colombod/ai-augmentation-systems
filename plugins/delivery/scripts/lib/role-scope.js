@@ -48,7 +48,8 @@ const REFUSE_WAIT_MS = 3000;
 // scope with the role live by then, or the sessions unreadable. Before this, a refused scope left the
 // wake logged as woken and --launch saying started, with nothing running (rv-202).
 // deps (tests): spawn (child_process.spawn), settle(pids) -> Set of pids that exited.
-function startRole(bin, args, { instance, env = process.env, cwd, logPath, systemdRun, stillMissing = () => true, spawn = require('child_process').spawn, settle } = {}) {
+// sdFetch: the service directory's (lib/service-directory.js); a scoped start that runs is registered there.
+function startRole(bin, args, { instance, env = process.env, cwd, logPath, systemdRun, stillMissing = () => true, spawn = require('child_process').spawn, settle, sdFetch } = {}) {
   fs.mkdirSync(path.dirname(logPath), { recursive: true });
   const run = (b, a) => {
     const fd = fs.openSync(logPath, 'a');
@@ -62,7 +63,11 @@ function startRole(bin, args, { instance, env = process.env, cwd, logPath, syste
   const pid = run(cmd.bin, cmd.args);
   if (!cmd.unit || !pid) return { pid, unit: cmd.unit };
   const wait = settle || ((pids) => require('../team-revive.js').settleStarts(pids, { waitMs: REFUSE_WAIT_MS, stepMs: 100 }));
-  if (!wait([pid]).has(pid) || !refusedIn(logPath)) return { pid, unit: cmd.unit };
+  if (!wait([pid]).has(pid) || !refusedIn(logPath)) {
+    // the scope runs: registered with the service directory; one it cannot reach is registered next pass
+    try { const SD = require('./service-directory.js'); SD.register(SD.scopeName(cmd.unit), { fetch: sdFetch }); } catch (err) { /* next pass */ }
+    return { pid, unit: cmd.unit };
+  }
   let missing;
   try { missing = stillMissing(); } catch (err) { missing = null; }
   if (missing !== true) return { pid: null, refused: cmd.unit, why: missing === false ? 'it has a live session by now' : 'the open sessions could not be listed again' };
