@@ -1066,8 +1066,33 @@ const RESUME_REASON = 'resuming or continuing a Claude session is the watchdog h
 // `git diff -- scripts/watchdog.js` names the file without running it. Quote-split (wat""chdog.js) and
 // glob (watchd?g.js) words are matched as the shell would expand them; a command word built from a
 // variable ($c) is refused when its arguments are a resume flag or a watchdog verb.
-const WRAPPERS = new Set(['env', 'nohup', 'exec', 'command', 'builtin', 'time', 'nice', 'sudo', 'doas', 'xargs', 'timeout', 'stdbuf', 'caffeinate', 'setsid', 'ionice', 'chrt']);
-const WRAPPER_VALUE_FLAGS = new Set(['-u', '-g', '-C', '-n', '-k', '-s', '-S', '--signal', '--kill-after', '--unset', '--chdir', '-P', '-I', '-L']);
+const WRAPPERS = new Set(['env', 'nohup', 'exec', 'command', 'builtin', 'time', 'nice', 'sudo', 'doas', 'xargs', 'timeout', 'stdbuf', 'caffeinate', 'setsid', 'ionice', 'chrt', 'pkexec', 'run0', 'strace', 'ltrace', 'watch']);
+// The options that take the next word as their value, per wrapper: one set for all of them read sudo's -n
+// (no value: non-interactive) as nice's -n (a value), so `sudo -n node x.js` swallowed `node` and the
+// command word went unseen. An option not listed for its wrapper takes no value.
+const WRAPPER_VALUE_FLAGS = {
+  sudo: new Set(['-u', '--user', '-g', '--group', '-C', '--close-from', '-D', '--chdir', '-p', '--prompt', '-R', '--chroot', '-r', '--role', '-t', '--type', '-T', '--command-timeout', '-U', '--other-user']),
+  doas: new Set(['-u', '-C']),
+  env: new Set(['-u', '--unset', '-C', '--chdir']),
+  nice: new Set(['-n', '--adjustment']),
+  timeout: new Set(['-s', '--signal', '-k', '--kill-after']),
+  xargs: new Set(['-I', '-L', '-n', '-P', '-s', '-d', '-E', '-a', '--arg-file', '--delimiter', '--max-args', '--max-procs', '--max-lines', '--max-chars', '--replace', '--eof']),
+  ionice: new Set(['-c', '--class', '-n', '--classdata', '-p', '--pid']),
+  stdbuf: new Set(['-i', '-o', '-e', '--input', '--output', '--error']),
+  time: new Set(['-f', '--format', '-o', '--output']),
+  exec: new Set(['-a']),
+  caffeinate: new Set(['-w', '-t']),
+  // the drill-relevant wrappers the review named: their value options skip the next word, the command follows
+  pkexec: new Set(['--user']),
+  run0: new Set(['-u', '--user', '-g', '--group', '-M', '--machine', '--setenv', '--property', '--slice', '--unit', '--description', '-D', '--chdir', '--nice', '-G', '--uid', '--gid']),
+  strace: new Set(['-o', '--output', '-E', '--env', '-p', '--attach', '-u', '--username', '-S', '-P', '-I', '-a', '-s', '-e', '-O', '-b', '-X', '--columns']),
+  ltrace: new Set(['-o', '-e', '-p', '-l', '-s', '-u', '-a', '-X']),
+  watch: new Set(['-n', '--interval']),
+};
+const takesValue = (wrapper, flag) => !!(WRAPPER_VALUE_FLAGS[wrapper] && WRAPPER_VALUE_FLAGS[wrapper].has(flag));
+// env -S and --split-string give one word that env splits into the command and its arguments; -S may be
+// the last letter of a joined short cluster (env -iS), where the split string is the next word
+const ENV_SPLIT = /^(?:-[A-Za-z]*S|--split-string)(?:=(.*))?$/;
 const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'fish']);
 const INTERPRETERS = new Set(['node', 'nodejs', 'bun', 'deno', 'tsx', 'ts-node']);
 // -i (interactive) takes no value: `node -i x.test.js` runs the file (Copilot on #117)
@@ -1102,6 +1127,8 @@ function stripGrammar(t) {
   const out = [...t];
   for (;;) {
     if (!out.length) return out;
+    // the `time` keyword takes -p/--portability before the command it times
+    if (out[0] === 'time' && /^(?:-p|--portability)$/.test(out[1] || '')) { out.splice(0, 2); continue; }
     if (KEYWORDS.has(out[0]) || /^[A-Za-z_][\w-]*\(\)$/.test(out[0])) { out.shift(); continue; }
     // `function name {` and a case arm's pattern (`x)`) after the first one
     if (out[0] === 'function') { out.splice(0, 2); continue; }
@@ -1135,9 +1162,28 @@ function commandWords(t) {
       i++;
       continue;
     }
-    if (i < t.length && WRAPPERS.has(baseOf(t[i]))) {
+    // flock [options] <file|dir|fd> command...: like taskset, a lockfile operand then the command (the
+    // -c form runs a shell string, handled in hostRefusal with the other -c wrappers)
+    if (i < t.length && baseOf(t[i]) === 'flock' && !t.slice(i + 1).some((w) => /^-[a-z]*c$/.test(w) || w === '--command')) {
       i++;
-      while (i < t.length && (t[i].startsWith('-') || /^[A-Za-z_][A-Za-z0-9_]*=/.test(t[i]) || /^\d+(?:\.\d+)?[smhd]?$/.test(t[i]))) { i += WRAPPER_VALUE_FLAGS.has(t[i]) ? 2 : 1; }
+      while (i < t.length && t[i].startsWith('-')) { i += /^(?:-w|--timeout|-E|--conflict-exit-code|-F|--fcntl)$/.test(t[i]) ? 2 : 1; }
+      i++;
+      continue;
+    }
+    if (i < t.length && WRAPPERS.has(baseOf(t[i]))) {
+      const wrapper = baseOf(t[i]);
+      i++;
+      while (i < t.length && (t[i].startsWith('-') || /^[A-Za-z_][A-Za-z0-9_]*=/.test(t[i]) || /^\d+(?:\.\d+)?[smhd]?$/.test(t[i]))) {
+        const split = wrapper === 'env' ? ENV_SPLIT.exec(t[i]) : null;
+        if (split) {
+          // the split string is the command that runs: read on from its words
+          const words = String(split[1] !== undefined ? split[1] : t[i + 1] || '').split(/\s+/).filter(Boolean);
+          t = [...words, ...t.slice(i + (split[1] !== undefined ? 1 : 2))];
+          i = 0;
+          break;
+        }
+        i += takesValue(wrapper, t[i]) ? 2 : 1;
+      }
       continue;
     }
     return t.slice(i);
@@ -1575,12 +1621,145 @@ function unitRead(args) {
   return operands.every((u) => UNIT_READ_NAME.test(u));
 }
 const HOST_SCRIPT = /(?:team-revive|host-manager)/;
-// 'units' | 'start' | 'manager' | 'code' | null for one command line, depth-limited
+// The outage drill's run cuts this host's network and restarts it, on the owner's consent: the Reality
+// Checker's alone, the host manager included. Its plan only reads and stays open. A word the shell builds
+// at run time could become run, so it is refused too.
+const DRILL_ROLE = 'reality-checker';
+const DRILL_SCRIPT = /outage-drill/;
+// The drill's script under any of its names: with or without an extension, or a glob that could expand
+// to it. A copy under another name is not seen here; the script's own role check (its working
+// directory's marker) refuses that one.
+const DRILL_FILE = /^outage-drill(?:\.[cm]?js)?$/;
+function drillFile(file) {
+  const base = baseOf(file);
+  if (DRILL_FILE.test(base)) return true;
+  if (!/[*?[]/.test(base)) return false;
+  try {
+    const re = new RegExp(`^${base.replace(/[.+^${}()|\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.').replace(/\[!/g, '[^')}$`);
+    return re.test('outage-drill.js') || re.test('outage-drill');
+  } catch (err) { return true; }
+}
+// A role variable naming the Reality Checker, set in command position (before the command word, after
+// env, or by export and its kin): the variables a role check reads, so another lane may not set them.
+const ROLE_ASSIGN = /^DELIVERY_ROLE(?:_ID|_DIR)?=.*reality-checker/i;
+const ASSIGNERS = new Set(['env', 'export', 'declare', 'typeset', 'readonly', 'local']);
+function roleAssignment(words) {
+  for (const w of words) {
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) { if (ROLE_ASSIGN.test(w)) return true; continue; }
+    if (ASSIGNERS.has(baseOf(w)) || /^-/.test(w)) continue;
+    return false;
+  }
+  return false;
+}
+const DRILL_REASON = 'the outage drill\'s run cuts this host\'s network and restarts it: it is the Reality Checker\'s, on a bead that names the owner\'s consent.\nRun outage-drill.js plan to see what it would do, and message the Delivery Manager';
+// Switching the network off or the host off, run directly. Once the host allows the drill's commands
+// without a password, a lane could run them itself, past the drill's consent check: they are refused to
+// every role, the Reality Checker's and the host manager's included, since the drill's script runs them
+// itself (not through a tool call) and no role needs them by hand.
+const POWER_REASON = 'switching this host\'s network off, or powering the host off or restarting it, is refused to every role: the outage drill schedules both itself, on the owner\'s consent.\nRun outage-drill.js plan to see what it would do, and message the Delivery Manager';
+const POWER_TOOLS = new Set(['shutdown', 'poweroff', 'reboot', 'halt', 'telinit']);
+const POWER_VERBS = new Set(['poweroff', 'reboot', 'halt', 'kexec', 'soft-reboot', 'suspend', 'hibernate', 'hybrid-sleep', 'suspend-then-hibernate', 'rescue', 'emergency']);
+const POWER_TARGET = /^(?:poweroff|reboot|halt|kexec|soft-reboot|rescue|emergency|shutdown|suspend|hibernate|hybrid-sleep|sleep)\.target$/;
+const NMCLI_VALUE_FLAGS = new Set(['-f', '--fields', '-m', '--mode', '-c', '--colors', '-e', '--escape', '-w', '--wait', '-g', '--get-values']);
+// systemctl options that take the next word as their value: one in front of the verb must not hide it
+// (rv-218: `systemctl --message x poweroff`, `-H h`, `-M m`, `--when +5min`). Read them as unitRead does.
+const SYSTEMCTL_VALUE_OPTS = new Set(['-H', '--host', '-M', '--machine', '-p', '--property', '-t', '--type', '--state', '-n', '--lines', '-o', '--output', '-s', '--signal', '--kill-whom', '--job-mode', '--message', '--when', '--what', '--boot-loader-menu', '--boot-loader-entry', '--timeout']);
+// loginctl's own power verbs, which on many desktops need no sudo
+const LOGINCTL_VERBS = new Set(['poweroff', 'reboot', 'halt', 'suspend', 'hibernate', 'hybrid-sleep', 'suspend-then-hibernate']);
+// the non-option operands of a command, skipping each value option's value (the shell builds a word? refuse)
+function operands(args, valueOpts) {
+  if (args.some((a) => /[$`]/.test(a))) return null;
+  const out = [];
+  let ends = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (!ends && a === '--') { ends = true; continue; }
+    if (!ends && a.startsWith('-')) {
+      const opt = a.includes('=') ? a.slice(0, a.indexOf('=')) : a;
+      if (!a.includes('=') && valueOpts.has(opt)) i++;
+      continue;
+    }
+    out.push(a);
+  }
+  return out;
+}
+// nmcli takes any prefix of an object or command word (n, net, networking; r, radio; of, off)
+const prefixOf = (word, full, min = 1) => word.length >= min && full.startsWith(word);
+function powerCommand(name, args) {
+  if (POWER_TOOLS.has(name)) return true;
+  if (name === 'init' && args.some((a) => /^[06sS]$/.test(a))) return true;
+  if (name === 'loginctl') {
+    const words = operands(args, new Set(['-H', '--host', '-M', '--machine', '-p', '--property']));
+    return !words || (!!words.length && LOGINCTL_VERBS.has(words[0]));
+  }
+  if (name === 'systemctl') {
+    const words = operands(args, SYSTEMCTL_VALUE_OPTS);
+    if (!words) return true;
+    if (words.length && POWER_VERBS.has(words[0])) return true;
+    if (words.some((w) => POWER_TARGET.test(w))) return true;
+    return false;
+  }
+  if (name !== 'nmcli') return false;
+  if (args.some((a) => /[$`]/.test(a))) return true;
+  const words = [];
+  for (let i = 0; i < args.length; i++) {
+    if (NMCLI_VALUE_FLAGS.has(args[i])) { i++; continue; }
+    if (args[i].startsWith('-')) continue;
+    words.push(args[i]);
+  }
+  const [obj, a, b] = words;
+  if (!obj) return false;
+  if (prefixOf(obj, 'networking') && a && prefixOf(a, 'off', 2)) return true;
+  if (prefixOf(obj, 'radio') && a && b && ['all', 'wifi', 'wwan'].some((r) => prefixOf(a, r)) && prefixOf(b, 'off', 2)) return true;
+  return false;
+}
+// The drill's own transient units and the tool that schedules them. The owner's sudoers rule for the
+// drill lets any lane run these directly: systemd-run as the system manager (the drill script's own way
+// of scheduling the restore and restart), and systemctl acting on a delivery-drill-* unit (starting one,
+// or stopping a running drill's restore). Both are refused to every role; the drill script runs them
+// itself, never through a tool call. A systemd-run or systemctl that carries a power or network-off
+// command is refused the same way, so the carried command cannot slip the scheduler past the check.
+const DRILL_UNIT = /\bdelivery-drill-(?:restore|restart)-/;
+// systemd-run's options that take the next word as a value (without '='); the command it runs follows
+const SYSTEMD_RUN_VALUE = new Set(['-u', '--unit', '--description', '-p', '--property', '--slice', '-E', '--setenv', '-G', '--uid', '--gid', '--nice', '--on-active', '--on-calendar', '--on-boot', '--on-startup', '--on-unit-active', '--on-unit-inactive', '--timer-property', '--working-directory', '-W', '--machine', '-M', '-H', '--host', '--service-type', '--path-property', '--socket-property', '--wait']);
+// the command systemd-run runs: the words after its options (null when a word is shell-built, or none)
+function systemdRunCommand(args) {
+  if (args.some((a) => /[$`]/.test(a))) return null;
+  let ends = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (!ends && a === '--') { ends = true; continue; }
+    if (!ends && a.startsWith('-')) { if (!a.includes('=') && SYSTEMD_RUN_VALUE.has(a)) i++; continue; }
+    return args.slice(i);
+  }
+  return [];
+}
+// is this systemd-run the system manager's (not --user)? that is the one the sudoers rule empowers
+const systemManagerRun = (args) => !args.some((a) => a === '--user' || USER_OPT.test(a));
+// a service-tool command the drill owns, refused to every role: returns true or false
+function drillServiceCommand(name, args) {
+  if (name === 'systemd-run') {
+    if (systemManagerRun(args)) return true;
+    const carried = systemdRunCommand(args);
+    if (carried === null) return true;
+    return carried.length ? powerCommand(baseOf(carried[0]), carried.slice(1)) : false;
+  }
+  if (name === 'systemctl') {
+    if (args.some((a) => /[$`]/.test(a) || DRILL_UNIT.test(a)) && !unitRead(args)) return true;
+    return false;
+  }
+  return false;
+}
+// 'units' | 'start' | 'manager' | 'code' | 'drill' | null for one command line, depth-limited. The host
+// manager is spared every refusal here but the drill's.
 function hostRefusal(text, roleId, depth = 0) {
-  if (depth > 4 || roleId === HOST_MANAGER) return null;
+  if (depth > 4) return null;
+  const hm = roleId === HOST_MANAGER;
   for (const sub of substitutions(text)) { const r = hostRefusal(sub, roleId, depth + 1); if (r) return r; }
   for (const seg of splitWithOps(text)) {
-    const t = commandWords(stripGrammar(argWords(seg.text)));
+    const raw = stripGrammar(argWords(seg.text));
+    if (roleId !== DRILL_ROLE && roleAssignment(raw)) return 'drill';
+    const t = commandWords(raw);
     if (!t.length) continue;
     const name = baseOf(t[0]);
     const args = t.slice(1);
@@ -1591,26 +1770,50 @@ function hostRefusal(text, roleId, depth = 0) {
       if (r) return r;
       continue;
     }
+    // commands that carry another command the lane must still judge: su/runuser/script run a shell string
+    // after -c, runuser/su also a word list after --, flock -c a shell string, and find -exec a command
+    // up to ; or +. The carried command is judged on its own (rv-218).
+    if (['su', 'runuser', 'script', 'flock'].includes(name)) {
+      const k = args.findIndex((a) => /^-[a-z]*c$/.test(a) || a === '--command');
+      let carried = null;
+      if (k >= 0) carried = args[k + 1] || '';
+      else if (name !== 'flock') { const d = args.indexOf('--'); if (d >= 0) carried = args.slice(d + 1).join(' '); }
+      const r = carried ? hostRefusal(carried, roleId, depth + 1) : null;
+      if (r) return r;
+      if (carried !== null) continue;
+    }
+    if (name === 'find') {
+      const k = args.findIndex((a) => a === '-exec' || a === '-execdir' || a === '-ok' || a === '-okdir');
+      if (k >= 0) {
+        const end = args.slice(k + 1).findIndex((a) => a === ';' || a === '+');
+        const carried = args.slice(k + 1, end >= 0 ? k + 1 + end : undefined).filter((a) => a !== '{}').join(' ');
+        const r = carried ? hostRefusal(carried, roleId, depth + 1) : null;
+        if (r) return r;
+      }
+    }
+    if (powerCommand(name, args)) return 'power';
+    if (drillServiceCommand(name, args)) return 'power';
     if (SERVICE_TOOLS.has(name)) {
       if (name === 'systemctl' && unitRead(args)) continue;
       // a word the shell builds at run time could become --user: its options cannot be known
-      if (args.some((a) => USER_OPT.test(a) || /[$`]/.test(a)) || machineUser(args)) return 'units';
+      if (!hm && (args.some((a) => USER_OPT.test(a) || /[$`]/.test(a)) || machineUser(args))) return 'units';
       continue;
     }
     // a Remote Control server named or attached to a session is a role session started by hand: the
     // Chief of Staff's and the host manager's alone, as team-revive.js start is (its --help is no start)
-    if (name === 'claude' && args.includes('remote-control') && args.some((a) => /^--(?:name|spawn|session-id)(?:=|$)/.test(a)) && roleId !== 'chief-of-staff') return 'start';
+    if (name === 'claude' && args.includes('remote-control') && args.some((a) => /^--(?:name|spawn|session-id)(?:=|$)/.test(a)) && roleId !== 'chief-of-staff' && !hm) return 'start';
     if (!INTERPRETERS.has(name)) continue;
     let script = null;
     for (let i = 0; i < args.length; i++) {
       const a = args[i];
       if (CODE_FLAGS.has(a) || /^--(?:eval|print|require|import|loader)=/.test(a)) {
         const code = a.includes('=') ? a.slice(a.indexOf('=') + 1) : args[++i] || '';
-        if (HOST_SCRIPT.test(code)) return 'code';
+        if (roleId !== DRILL_ROLE && DRILL_SCRIPT.test(code)) return 'drill';
+        if (!hm && HOST_SCRIPT.test(code)) return 'code';
         continue;
       }
       // code read from standard input (a here-string or a pipe): judged by the whole line's text
-      if (a === '--input-type' || a.startsWith('--input-type=')) { if (HOST_SCRIPT.test(text)) return 'code'; if (a === '--input-type') i++; continue; }
+      if (a === '--input-type' || a.startsWith('--input-type=')) { if (roleId !== DRILL_ROLE && DRILL_SCRIPT.test(text)) return 'drill'; if (!hm && HOST_SCRIPT.test(text)) return 'code'; if (a === '--input-type') i++; continue; }
       if (a === '--') { script = i + 1 < args.length ? i + 1 : null; break; }
       if (NODE_VALUE_FLAGS.has(a)) { i++; continue; }
       if (a.startsWith('-')) continue;
@@ -1623,12 +1826,21 @@ function hostRefusal(text, roleId, depth = 0) {
     // the project's launcher runs its first argument as the plugin script
     if (isLauncher(file)) { file = rest[0]; rest = rest.slice(1); }
     const base = baseOf(file);
+    // behind xargs the arguments come from standard input, so a run cannot be told from a plan: the
+    // drill's script run that way is refused to every lane but the Reality Checker's
+    const k = raw.indexOf(t[0]);
+    const fed = raw.slice(0, k < 0 ? raw.length : k).some((w) => baseOf(w) === 'xargs');
+    if (drillFile(file) && roleId !== DRILL_ROLE && (fed || rest.some((x) => x === 'run' || /[$`]/.test(x)))) return 'drill';
+    // the script word built by the shell ($ or backtick): it could be the drill's, so a run through it is
+    // refused (its plan is read-only and open; only run is held)
+    if (roleId !== DRILL_ROLE && /[$`]/.test(String(file)) && rest.some((x) => x === 'run')) return 'drill';
+    if (hm) continue;
     if (base === 'team-revive.js' && rest.includes('start') && roleId !== 'chief-of-staff') return 'start';
     if (base === 'host-manager.js' && rest.some((x) => ['restart', 'tick', 'install', 'run-session'].includes(x))) return 'manager';
   }
   return null;
 }
-const HOST_REASONS = { units: HOST_UNITS_REASON, start: START_REASON, manager: HOST_MANAGER_REASON, code: HOST_CODE_REASON };
+const HOST_REASONS = { units: HOST_UNITS_REASON, start: START_REASON, manager: HOST_MANAGER_REASON, code: HOST_CODE_REASON, drill: DRILL_REASON, power: POWER_REASON };
 const MERGE_REASON = 'merging is the Delivery Manager\'s.\nOpen the pull request and message the Delivery Manager; resolve conflicts when it asks';
 const DEFAULT_BRANCHES = ['main', 'master'];
 
