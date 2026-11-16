@@ -533,14 +533,23 @@ function directory({ json = false, sdFetch } = {}) {
 }
 
 // The units an install writes, registered with the owner's service directory (dec-chief-of-staff-000485)
-// as they are written: lines that say so. A directory that cannot be reached never fails the install; the
-// watchdog's next pass registers what is missing (watchdog.js directoryPass).
-function registerUnits(units, sdFetch) {
+// as they are written: lines that say so. The directory's entries are read once first, and a name it lists
+// under another owner is never posted (POST upserts: it would become the plugin's), only named. A directory
+// that cannot be reached never fails the install; the watchdog's next pass registers what is missing
+// (watchdog.js directoryPass).
+function registerUnits(units, sdFetch, { env, home } = {}) {
   const SD = require('./lib/service-directory.js');
   const done = [];
+  const held = [];
   const failed = [];
-  for (const n of units) { const g = SD.register(n, { fetch: sdFetch }); if (g.ok) done.push(n); else failed.push(g.why); }
-  return [done.length ? `Registered with the service directory: ${done.join(', ')}` : null, failed.length ? `Not registered with the service directory: ${[...new Set(failed)].join('; ')}; the watchdog's next pass registers them` : null].filter(Boolean);
+  const l = SD.local({ fetch: sdFetch });
+  for (const n of units) {
+    const g = l.unreadable ? { ok: false, why: l.unreadable } : SD.register(n, { fetch: sdFetch, entries: l.entries, env, home });
+    if (g.ok) done.push(n); else if ('held' in g) held.push(`${n} (${g.why})`); else failed.push(g.why);
+  }
+  return [done.length ? `Registered with the service directory: ${done.join(', ')}` : null,
+    held.length ? `Not registered with the service directory, held by another owner: ${held.join('; ')}` : null,
+    failed.length ? `Not registered with the service directory: ${[...new Set(failed)].join('; ')}; the watchdog's next pass registers them` : null].filter(Boolean);
 }
 // Each `enable --now` of an install starts a unit: its directory entry is read first (lib/service-directory.js
 // beforeChange). A unit that is down starts even while the directory cannot be read (a row and a warning);
@@ -607,7 +616,7 @@ function install(root, o = {}, { env = process.env, home = os.homedir(), exec, h
     // before the units are enabled: systemd opens the tick's StandardOutput=append: file itself and
     // fails the service (status 209/STDOUT) when its directory is missing
     fs.mkdirSync(u.stateDir, { recursive: true });
-    lines.push(...registerUnits(u.files.map((f) => path.basename(f.file)), sdFetch));
+    lines.push(...registerUnits(u.files.map((f) => path.basename(f.file)), sdFetch, { env, home }));
     const gated = gateStarts(root, commands, { run, sdFetch, now });
     for (const [cmd, args] of gated.commands) { run(cmd, args); lines.push(`Ran: ${cmd} ${args.join(' ')}`); }
     lines.push(...gated.lines);
@@ -693,7 +702,7 @@ function installRole(root, o = {}, { env = process.env, home = os.homedir(), exe
     if (lp) throw new Error(lp);
     fs.mkdirSync(path.dirname(u.file), { recursive: true });
     writeFile(u.file, u.body); wrote.push(u.file); lines.push(`Wrote ${u.file}`);
-    lines.push(...registerUnits([u.unit], sdFetch));
+    lines.push(...registerUnits([u.unit], sdFetch, { env, home }));
     const gated = gateStarts(root, commands, { run, sdFetch, now });
     for (const [c, a] of gated.commands) { run(c, a); lines.push(`Ran: ${c} ${a.join(' ')}`); }
     lines.push(...gated.lines);
@@ -912,7 +921,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, who, ...deps } = {
   return tick(d);
 }
 
-module.exports = { UNIT_ROLES, roleUnitName, roleUnitFiles, installRole, liveHostManager, main, read, status, restart, tick, install, installTarget, runSession, sessionArgs, unitFiles, refusal, deliverAlert, lastPassOf, factsOf, sessionsNow, POLL_EVERY_MS, POLL_MAX_MS };
+module.exports = { UNIT_ROLES, registerUnits, roleUnitName, roleUnitFiles, installRole, liveHostManager, main, read, status, restart, tick, install, installTarget, runSession, sessionArgs, unitFiles, refusal, deliverAlert, lastPassOf, factsOf, sessionsNow, POLL_EVERY_MS, POLL_MAX_MS };
 
 if (require.main === module) {
   let r;

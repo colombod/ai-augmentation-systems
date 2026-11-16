@@ -145,6 +145,7 @@ const defaultDeliver = (socket, text) => require('./lib/session-message.js').del
 function spawnWake(bin, args, { cwd, env, logPath, systemdRun, spawn, settle, stillMissing }) {
   const r = require('./lib/role-scope.js').startRole(process.execPath, [path.join(__dirname, 'lib', 'wake-run.js'), String(wakeLimitMs(env)), bin, ...args], { instance: env.DELIVERY_ROLE, env, cwd, logPath, systemdRun, spawn, settle, stillMissing });
   if (!r.pid && r.refused) { try { fs.appendFileSync(logPath, `watchdog: systemd-run refused scope ${r.refused}, and no plain start followed: ${r.why}\n`); } catch (e) { /* the log is best effort */ } }
+  if (r.directoryHeld) { try { fs.appendFileSync(logPath, `watchdog: scope ${r.unit} is not registered with the service directory: ${r.directoryHeld}\n`); } catch (e) { /* the log is best effort */ } }
   return r.pid;
 }
 
@@ -501,7 +502,7 @@ const whichOf = (has) => has || ((cmd) => { try { require('child_process').execF
 // cannot run the job: said plainly, with the way out, instead of a crontab error (dlv-4oj)
 const NO_SCHEDULER = 'this host has no scheduler (no systemctl, no crontab), so the watchdog cannot run on its own here: a stopped role is woken only while someone keeps a loop alive. Run the team on an always-on host (one with systemd, launchd or cron), or run `watchdog.js run --project <root>` yourself when work is due.';
 
-function install(root, o, { platform = process.platform, home = os.homedir(), env = process.env, exec, has, live } = {}) {
+function install(root, o, { platform = process.platform, home = os.homedir(), env = process.env, exec, has, live, sdFetch } = {}) {
   const which = whichOf(has);
   const cron = platform !== 'darwin' && !which('systemctl');
   if (cron && !which('crontab')) return { code: 1, out: `watchdog.js: ${NO_SCHEDULER}` };
@@ -539,6 +540,8 @@ function install(root, o, { platform = process.platform, home = os.homedir(), en
       try { run(cmd, args); lines.push(`Ran: ${cmd} ${args.join(' ')}`); } catch (err) { if (!mayFail) throw err; }
     }
     fs.writeFileSync(WD.installedFile(root), `${JSON.stringify({ kind: j.kind, file: j.file, every_s: e.sec, at: new Date().toISOString() })}\n`);
+    // the job's units are the plugin's: registered with the owner's service directory (lib/service-directory.js)
+    if (j.kind === 'systemd') lines.push(...require('./host-manager.js').registerUnits(j.files.map((f) => path.basename(f.file)), sdFetch, { env, home }));
   } catch (err) { return { code: 1, out: `${lines.join('\n')}\nwatchdog.js: the job was not installed (${String(err.message).split('\n')[0]})\n${removal}`.trim() }; }
   lines.push(`Installed. ${head}`);
   if (j.kind === 'systemd') lines.push('A user timer runs only while you are logged in, unless lingering is on: loginctl enable-linger $USER.');
@@ -700,14 +703,18 @@ function defaultRevive(root, { team, env, now, dryRun, bd, live, exec, sleep, re
 }
 
 // The plugin's units in the owner's service directory (dec-chief-of-staff-000485), each pass: a unit file
-// the plugin wrote here, or a role scope now active, that has no entry is registered (so one written while
-// the directory was down is registered once it is back); one that is active gets a heartbeat, which is
-// what the directory's health reads for it; an entry the plugin owns whose unit is gone (no file, no
-// active scope) is removed. A scope that ended needs nothing: its entry expires with its ttl. One line,
-// or null when there is nothing to say. deps: exec (systemctl), sdFetch (the directory's).
-function directoryPass(root, { home = os.homedir(), exec, sdFetch } = {}) {
+// the plugin wrote here (the host manager's, a role's, the watchdog's job units), or a role scope now
+// active, that has no entry is registered (so one written while the directory was down is registered once
+// it is back); one that is active gets a heartbeat, which is what the directory's health reads for it; an
+// entry the plugin registered from here (on its local list) whose unit is gone (no file, no active scope)
+// is removed. A scope that ended needs nothing: its entry expires with its ttl. A name listed under another
+// owner is left as it is, and one the plugin registered whose entry someone removed is not registered
+// again (lib/service-directory.js): both are said. One line, or null when there is nothing to say.
+// deps: exec (systemctl), sdFetch (the directory's), env.
+function directoryPass(root, { home = os.homedir(), exec, sdFetch, env } = {}) {
   const SD = require('./lib/service-directory.js');
   const run = runner(exec);
+  const st = { fetch: sdFetch, home, ...(env ? { env } : {}) };
   let files = [];
   try { files = fs.readdirSync(require('./lib/host-manager.js').unitDir(home)).filter(SD.isPluginUnit); } catch (err) { files = []; }
   let scopes = [];
@@ -716,25 +723,27 @@ function directoryPass(root, { home = os.homedir(), exec, sdFetch } = {}) {
   const l = SD.local({ fetch: sdFetch });
   if (l.unreadable) return units.length ? `service directory: ${units.length} plugin unit${units.length === 1 ? '' : 's'} not registered or refreshed (${l.unreadable}); the next pass that reaches it does` : null;
   const ours = new Map(l.entries.filter((e) => e && e.owner === SD.OWNER).map((e) => [e.name, e]));
-  const active = (u) => { let st = ''; try { st = String(run('systemctl', ['--user', 'is-active', u]) || ''); } catch (err) { st = String((err && err.stdout) || ''); } return st.trim().split('\n')[0] === 'active'; };
-  const done = { registered: [], refreshed: [], removed: [], failed: [] };
+  const active = (u) => { let s = ''; try { s = String(run('systemctl', ['--user', 'is-active', u]) || ''); } catch (err) { s = String((err && err.stdout) || ''); } return s.trim().split('\n')[0] === 'active'; };
+  const done = { registered: [], refreshed: [], removed: [], withdrawn: [], failed: [] };
   for (const u of units) {
     if (!ours.has(u)) {
       if (l.entries.some((e) => e && e.name === u)) { done.failed.push(`${u} (listed under another owner, left as it is)`); continue; }
-      const g = SD.register(u, { fetch: sdFetch });
+      if (SD.removedByOther(u, st)) { done.withdrawn.push(u); continue; }
+      const g = SD.register(u, { ...st, entries: l.entries });
       (g.ok ? done.registered : done.failed).push(g.ok ? u : `${u} (${g.why})`);
       continue;
     }
     if (!active(u)) continue;
-    const h = SD.heartbeat(u, { fetch: sdFetch });
-    (h.ok ? done.refreshed : done.failed).push(h.ok ? u : `${u} (${h.why})`);
+    const h = SD.heartbeat(u, st);
+    (h.ok ? done.refreshed : h.removed ? done.withdrawn : done.failed).push(h.ok || h.removed ? u : `${u} (${h.why})`);
   }
+  const mine = SD.registeredNames(st);
   for (const name of ours.keys()) {
-    if (units.includes(name) || !SD.isPluginUnit(name)) continue;
-    const r = SD.remove(name, { fetch: sdFetch });
+    if (units.includes(name) || !SD.isPluginUnit(name) || !(name in mine)) continue;
+    const r = SD.remove(name, st);
     (r.ok ? done.removed : done.failed).push(r.ok ? name : `${name} (${r.why})`);
   }
-  const parts = [['registered', done.registered], ['refreshed', done.refreshed], ['removed', done.removed], ['not updated', done.failed]].filter(([, x]) => x.length).map(([k, x]) => `${k} ${x.join(', ')}`);
+  const parts = [['registered', done.registered], ['refreshed', done.refreshed], ['removed', done.removed], ['not registered again, its entry was removed since the plugin registered it (the owner may have taken it out of the plugin\'s hands)', done.withdrawn], ['not updated', done.failed]].filter(([, x]) => x.length).map(([k, x]) => `${k} ${x.join(', ')}`);
   return parts.length ? `service directory: ${parts.join('; ')}` : null;
 }
 
@@ -750,7 +759,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
   const who = whoAmI({ cwd, env, project: o.project });
   if (!who.root) return { code: 2, out: 'watchdog.js: no project found; pass --project <root>' };
   if (cmd === 'pass') return rolePass(who.root, o, { bd, now, team: who.team, rows, env });
-  if (cmd === 'install') return install(who.root, o, { platform, home, env, exec, has, ...(live !== undefined ? { live } : {}) });
+  if (cmd === 'install') return install(who.root, o, { platform, home, env, exec, has, sdFetch: (hostUnit || {}).sdFetch, ...(live !== undefined ? { live } : {}) });
   if (cmd === 'uninstall') return uninstall(who.root, { platform, home, env, exec, has });
   const state = { installed: false };
   const go = ({ first = true } = {}) => {
@@ -834,10 +843,12 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
       if (ug) swept.push(ug);
       // a run inside the sealed test runner never touches the host's own units unless a test hands it fakes
       const sealed = env.DELIVERY_SEAL_ACTIVE || env.DELIVERY_SEALED_RUN;
-      const hm = o.dryRun || hostUnit === false || (!hostUnit && sealed) ? null : ensureHostManager(who.root, { home, exec, now, env, has, ...(live !== undefined ? { live } : {}), ...(hostUnit || {}) });
+      // one directory for this pass: after a request that cannot reach it, the rest of the pass does not wait again
+      const passSd = require('./lib/service-directory.js').passFetch((hostUnit || {}).sdFetch);
+      const hm = o.dryRun || hostUnit === false || (!hostUnit && sealed) ? null : ensureHostManager(who.root, { home, exec, now, env, has, ...(live !== undefined ? { live } : {}), ...(hostUnit || {}), sdFetch: passSd });
       if (hm) swept.push(hm);
       // the plugin's units in the owner's service directory: registered, refreshed while active, removed when gone
-      const sd = o.dryRun || hostUnit === false || (!hostUnit && sealed) ? null : directoryPass(who.root, { home, exec, ...(hostUnit || {}) });
+      const sd = o.dryRun || hostUnit === false || (!hostUnit && sealed) ? null : directoryPass(who.root, { home, exec, ...(hostUnit || {}), sdFetch: passSd });
       if (sd) swept.push(sd);
       try {
         const S = require('./testing/sweep.js');

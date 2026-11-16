@@ -64,9 +64,11 @@ function startRole(bin, args, { instance, env = process.env, cwd, logPath, syste
   if (!cmd.unit || !pid) return { pid, unit: cmd.unit };
   const wait = settle || ((pids) => require('../team-revive.js').settleStarts(pids, { waitMs: REFUSE_WAIT_MS, stepMs: 100 }));
   if (!wait([pid]).has(pid) || !refusedIn(logPath)) {
-    // the scope runs: registered with the service directory; one it cannot reach is registered next pass
-    try { const SD = require('./service-directory.js'); SD.register(SD.scopeName(cmd.unit), { fetch: sdFetch }); } catch (err) { /* next pass */ }
-    return { pid, unit: cmd.unit };
+    // the scope runs: registered with the service directory; one it cannot reach is registered next pass;
+    // a name it lists under another owner is not posted, and the result says so (directoryHeld)
+    let held = null;
+    try { const SD = require('./service-directory.js'); const g = SD.register(SD.scopeName(cmd.unit), { fetch: sdFetch }); if (!g.ok && 'held' in g) held = g.why; } catch (err) { /* next pass */ }
+    return held ? { pid, unit: cmd.unit, directoryHeld: held } : { pid, unit: cmd.unit };
   }
   let missing;
   try { missing = stillMissing(); } catch (err) { missing = null; }

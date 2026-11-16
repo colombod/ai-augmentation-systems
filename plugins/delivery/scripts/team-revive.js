@@ -288,9 +288,15 @@ function settleUnit(root, unitSettle, { instance, unit, at, what, touchLock = nu
 
 // A role scope a start made is registered with the owner's service directory (lib/service-directory.js); a
 // directory that cannot be reached never holds the start back: the watchdog's next pass registers every
-// active role scope it finds.
-function registerScope(unit, sdFetch) {
-  try { const SD = require('./lib/service-directory.js'); SD.register(SD.scopeName(unit), { fetch: sdFetch }); } catch (err) { /* the next pass registers it */ }
+// active role scope it finds. A name the directory lists under another owner is not posted: a ledger row
+// says so (directory-held).
+function registerScope(root, unit, sdFetch, now) {
+  try {
+    const SD = require('./lib/service-directory.js');
+    const name = SD.scopeName(unit);
+    const g = SD.register(name, { fetch: sdFetch });
+    if (!g.ok && 'held' in g) R.record(root, { type: 'directory-held', at: now || new Date().toISOString(), unit: name, owner: g.held, why: g.why });
+  } catch (err) { /* the next pass registers it */ }
 }
 
 function restartStale(root, f, a, { env, bin, spawn, stop, relist, systemdRun = null, restartUnit = null, unitSettle = null, touchLock = null, sdFetch }) {
@@ -343,7 +349,7 @@ function restartStale(root, f, a, { env, bin, spawn, stop, relist, systemdRun = 
       continue;
     }
     R.record(root, { type: 'restart', at, instance: i.instance, pid, args: st.args, ...(cmd.unit ? { unit: cmd.unit } : {}), session_id: st.remoteId, mode: st.mode, from: st.version, to: st.installed, stopped: st.server, log: path.relative(root, logPath), ...forced });
-    if (cmd.unit) registerScope(cmd.unit, sdFetch);
+    if (cmd.unit) registerScope(root, cmd.unit, sdFetch, at);
     out[i.instance] = { pid, log: path.relative(root, logPath) };
   }
   return out;
@@ -419,7 +425,7 @@ function revivePass(root, team, { start = false, dryRun = false, env = process.e
       const cmd = require('./lib/role-scope.js').roleCommand(bin, i.args, { instance: i.instance, at, systemdRun: sdRun });
       const pid = spawn(cmd.bin, cmd.args, { cwd: i.roleDir, env: startEnv(env, i.instance), logPath });
       R.record(root, { type: 'start', at, instance: i.instance, pid, args: i.args, session_id: i.remoteId, mode: i.mode, log: path.relative(root, logPath), ...(cmd.unit ? { unit: cmd.unit } : {}) });
-      if (cmd.unit) registerScope(cmd.unit, deps.sdFetch);
+      if (cmd.unit) registerScope(root, cmd.unit, deps.sdFetch, at);
       started[i.instance] = { pid, log: path.relative(root, logPath), at, args: i.args, roleDir: i.roleDir, ...(cmd.unit ? { unit: cmd.unit } : {}) };
     }
     const wait = settle !== undefined ? settle : (spawn === spawnRemote ? settleStarts : null);

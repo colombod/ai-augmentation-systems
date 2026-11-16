@@ -1938,8 +1938,46 @@ test('install and install-role register each unit they write with the service di
   // the directory back: the next pass registers all three
   n.dir.down = false;
   const line = watchdog.directoryPass(n.alpha.root, { home: n.home, exec: n.sd.exec, sdFetch: n.dir.fetch });
-  assert.match(line, /^service directory: registered delivery-host-manager-tick\.service, delivery-host-manager-tick\.timer, delivery-host-manager\.service$/, line);
+  assert.match(line, /^service directory: registered delivery-host-manager-tick\.service, delivery-host-manager-tick\.timer, delivery-host-manager\.service, delivery-watchdog-[0-9a-f]+\.service$/, line);
   for (const u of [HM.UNIT, HM.TICK_SERVICE, HM.TICK_TIMER]) assert.ok(n.dir.entry(u), u);
+});
+
+// POST upserts by name: an install reads the directory first and never posts a name another owner holds
+test('an install registers a free name and never posts one another owner holds: that entry is left unchanged and the reply names it', () => {
+  const m = machine({ alphaRoles: [{ id: 'chief-of-staff', host: 'pc' }, { id: 'host-manager', host: 'pc' }] });
+  m.dir = fakeDirectory({ entries: [{ name: HM.UNIT, url: 'systemd-user://owners-own', owner: 'colombod' }] });
+  const r = m.run(['install', '--project', m.alpha.root]);
+  assert.equal(r.code, 0, r.out);
+  assert.deepEqual([m.dir.entry(HM.UNIT).owner, m.dir.entry(HM.UNIT).url], ['colombod', 'systemd-user://owners-own'], 'the owner\'s entry is unchanged');
+  assert.equal(m.dir.calls.filter((c) => c === 'POST /api/services').length, 2, 'only the two free names are posted');
+  assert.match(r.out, /^Registered with the service directory: delivery-host-manager-tick\.service, delivery-host-manager-tick\.timer$/m, r.out);
+  assert.match(r.out, /^Not registered with the service directory, held by another owner: delivery-host-manager\.service \(the service directory lists delivery-host-manager\.service as owned by "colombod", not by the delivery plugin, so the plugin leaves that entry as it is\)$/m, r.out);
+  assert.ok(!(HM.UNIT in m.dir.names()), 'not on the plugin\'s list');
+  // and its start is refused, so it is enabled only
+  assert.match(r.out, /Not started now: the service directory lists delivery-host-manager\.service as owned by "colombod".*; delivery-host-manager\.service is enabled only\./, r.out);
+  // install-role the same: the Chief of Staff's unit held by the owner is not posted
+  cosMarker(m);
+  m.dir.entries.push({ name: cosUnit(m), url: 'systemd-user://x', owner: 'colombod' });
+  const before = m.dir.calls.filter((c) => c === 'POST /api/services').length;
+  const role = m.run(['install-role', '--project', m.alpha.root]);
+  assert.equal(role.code, 0, role.out);
+  assert.equal(m.dir.calls.filter((c) => c === 'POST /api/services').length, before, 'no POST for it');
+  assert.equal(m.dir.entry(cosUnit(m)).owner, 'colombod');
+  assert.match(role.out, new RegExp(`^Not registered with the service directory, held by another owner: ${esc(cosUnit(m))} `, 'm'), role.out);
+});
+
+// the watchdog's own install registers the job's units, which are the plugin's
+test('watchdog.js install registers the job\'s service, timer and path units with the service directory, and not a name another owner holds', () => {
+  const m = machine();
+  const d = fakeDirectory();
+  const t = watchdog.tagOf(m.alpha.root);
+  d.entries.push({ name: `delivery-watchdog-${t}.path`, url: 'http://x', owner: 'colombod' });
+  const r = watchdog.main(['install', '--apply', '--project', m.alpha.root], { cwd: m.alpha.root, env: { PATH: '/usr/bin', DELIVERY_HOST: 'pc' }, home: m.home, platform: 'linux', exec: m.sd.exec, has: () => true, live: [], hostUnit: { sdFetch: d.fetch } });
+  assert.equal(r.code, 0, r.out);
+  for (const x of ['service', 'timer']) assert.equal(d.entry(`delivery-watchdog-${t}.${x}`).owner, 'delivery plugin', x);
+  assert.equal(d.entry(`delivery-watchdog-${t}.path`).owner, 'colombod', 'left as it is');
+  assert.match(r.out, new RegExp(`^Registered with the service directory: delivery-watchdog-${t}\\.service, delivery-watchdog-${t}\\.timer$`, 'm'), r.out);
+  assert.match(r.out, new RegExp(`^Not registered with the service directory, held by another owner: delivery-watchdog-${t}\\.path `, 'm'), r.out);
 });
 
 // Each pass keeps the directory current: an active plugin unit gets a heartbeat (the directory's health
@@ -1955,7 +1993,12 @@ test('the watchdog pass sends a heartbeat for each active plugin unit and scope,
   m.sd.units[HM.TICK_SERVICE] = loaded(false);
   m.sd.units[scope] = loaded(true);
   const exec = (cmd, args) => (args[1] === 'list-units' ? `${scope} loaded active running a role\n` : m.sd.exec(cmd, args));
+  // the tick service's entry expired with its ttl (registered over an hour ago, no heartbeat since: it is not active)
   m.dir.entries = m.dir.entries.filter((e) => e.name !== HM.TICK_SERVICE);
+  SD.remember(HM.TICK_SERVICE, { fetch: m.dir.fetch, now: Date.now() - 2 * 3600e3 });
+  // the gone scope was registered from here; an entry of the plugin's another host or user wrote is not on the list
+  SD.remember('delivery-role-reviewer-1.scope', { fetch: m.dir.fetch });
+  m.dir.entries.push(SD.entryFor('delivery-role-elsewhere-3.scope'));
   const line = watchdog.directoryPass(m.alpha.root, { home: m.home, exec, sdFetch: m.dir.fetch });
   assert.equal(m.dir.beats[HM.UNIT], 1);
   assert.equal(m.dir.beats[HM.TICK_TIMER], 1);
@@ -1963,10 +2006,20 @@ test('the watchdog pass sends a heartbeat for each active plugin unit and scope,
   assert.ok(!m.dir.beats[HM.TICK_SERVICE], 'an inactive unit gets no heartbeat');
   assert.ok(m.dir.entry(HM.TICK_SERVICE), 'a unit with no entry is registered');
   assert.equal(m.dir.entry('delivery-role-reviewer-1.scope'), null, 'a scope gone: removed');
+  assert.ok(!('delivery-role-reviewer-1.scope' in m.dir.names()), 'and forgotten');
+  assert.ok(m.dir.entry('delivery-role-elsewhere-3.scope'), 'an entry not on this list is not removed');
   assert.ok(m.dir.entry('delivery-role-other-2.scope') && m.dir.entry('muxplex'), 'another owner\'s entries are left');
-  assert.match(line, /^service directory: registered delivery-host-manager-tick\.service; refreshed .*; removed delivery-role-reviewer-1\.scope$/, line);
+  assert.match(line, /^service directory: registered delivery-host-manager-tick\.service, delivery-watchdog-[0-9a-f]+\.service; refreshed .*; removed delivery-role-reviewer-1\.scope$/, line);
+  assert.equal(m.dir.entries.filter((e) => /^delivery-watchdog-[0-9a-f]+\.service$/.test(e.name) && e.owner === 'delivery plugin').length, 1, 'the watchdog job\'s unit file is registered too');
   const down = fakeDirectory({ down: true });
-  assert.match(watchdog.directoryPass(m.alpha.root, { home: m.home, exec, sdFetch: down.fetch }), /^service directory: 4 plugin units not registered or refreshed \(the service directory at http:\/\/127\.0\.0\.1:8085 could not be reached .*\); the next pass that reaches it does$/);
+  // an entry the plugin registered that someone removed (within its ttl): not registered again, said
+  m.dir.entries = m.dir.entries.filter((e) => e.name !== HM.TICK_TIMER);
+  const posts = m.dir.calls.filter((c) => c === 'POST /api/services').length;
+  const again = watchdog.directoryPass(m.alpha.root, { home: m.home, exec, sdFetch: m.dir.fetch });
+  assert.equal(m.dir.entry(HM.TICK_TIMER), null, 'not registered again');
+  assert.equal(m.dir.calls.filter((c) => c === 'POST /api/services').length, posts, 'no POST');
+  assert.match(again, /not registered again, its entry was removed since the plugin registered it \(the owner may have taken it out of the plugin's hands\) delivery-host-manager-tick\.timer/, again);
+  assert.match(watchdog.directoryPass(m.alpha.root, { home: m.home, exec, sdFetch: down.fetch }), /^service directory: 5 plugin units not registered or refreshed \(the service directory at http:\/\/127\.0\.0\.1:8085 could not be reached .*\); the next pass that reaches it does$/);
 });
 
 test('a role scope a start path creates is registered with the service directory: the start pass\'s start and the wake\'s scoped start; a directory down never holds the start back', () => {
@@ -1989,6 +2042,22 @@ test('a role scope a start path creates is registered with the service directory
   // down: started all the same
   const r2 = RS.startRole('claude', ['-p', 'go'], { instance: 'builder', env: {}, cwd: m.base, logPath: log, systemdRun: '/usr/bin/systemd-run', spawn: fake, settle: () => new Set(), sdFetch: fakeDirectory({ down: true }).fetch });
   assert.equal(r2.pid, 77);
+  // a scope name another owner holds: not posted, left as it is, and said (a ledger row; startRole's result)
+  const o = machine({ beads: WORK });
+  const held = fakeDirectory({ entries: [{ name: `${unit}.scope`, url: 'http://x', owner: 'colombod' }] });
+  TR.revive(o.alpha.root, o.alpha.team, { start: true, cwd: o.base, env: { DELIVERY_HOST: 'pc', PATH: '/usr/bin', DELIVERY_CLAUDE_BIN: NO_CLAUDE }, home: o.home, live: [], relist: () => [], only: ['chief-of-staff'], spawn: () => 4243, settle: null, systemdRun: '/usr/bin/systemd-run', sdFetch: held.fetch, ...o.deps().teamDeps(o.alpha.root) });
+  assert.equal(R.ledger(o.alpha.root).find((x) => x.type === 'start').unit, unit, 'the same start, so the same scope name');
+  assert.ok(!held.calls.includes('POST /api/services'), 'no POST for it');
+  assert.equal(held.entry(`${unit}.scope`).owner, 'colombod');
+  const row = R.ledger(o.alpha.root).find((x) => x.type === 'directory-held');
+  assert.deepEqual([row.unit, row.owner], [`${unit}.scope`, 'colombod']);
+  const RSheld = { pid: 0 };
+  const hf = (method, p, body) => (method === 'GET' ? { status: 200, body: [{ name: RSheld.unit, owner: 'colombod' }] } : { status: 200, body });
+  const realSpawn = (bin, args) => { RSheld.unit = `${args.find((a) => a.startsWith('--unit=')).slice(7)}.scope`; return fake(); };
+  const r3 = RS.startRole('claude', ['-p', 'go'], { instance: 'builder', env: {}, cwd: m.base, logPath: log, systemdRun: '/usr/bin/systemd-run', spawn: realSpawn, settle: () => new Set(), sdFetch: (mth, p, b) => { if (mth === 'POST') RSheld.posted = true; return hf(mth, p, b); } });
+  assert.equal(r3.pid, 77, 'the start runs all the same');
+  assert.ok(!RSheld.posted, 'no POST for a scope name another owner holds');
+  assert.match(r3.directoryHeld, /owned by "colombod", not by the delivery plugin/);
 });
 
 test('host-manager.js directory lists this node\'s entries and their health, the plugin\'s own first, in any role session; it writes nothing', () => {
