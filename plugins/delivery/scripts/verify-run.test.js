@@ -50,7 +50,8 @@ function setup() {
   const whoFor = (instance) => ({ root, team, instance, roleId: instance.replace(/-\d+$/, ''), actor: `t@pc/${instance}`, roleDir });
   const as = (mod, instance, argv, now) => mod.main(argv, { cwd: root, env: {}, bd, now, who: whoFor(instance) });
   const dm = (...argv) => as(rc, 'delivery-lead', argv, T.plan);
-  const refine = (n, command, match) => dm('refine', ID, '--criterion', String(n), '--step', '1', '--command', command, ...(match ? ['--match', match] : []));
+  // a match with regex characters in these tests is a pattern, so the refine says so (hjx.1.7)
+  const refine = (n, command, match) => dm('refine', ID, '--criterion', String(n), '--step', '1', '--command', command, ...(match ? ['--match', match, ...(/[\\^$.*+?()[\]{}|]/.test(match) ? ['--regex'] : [])] : []));
   const deploy = () => as(evidence, 'delivery-lead', ['state', ID, 'deployed', '--sha', prod.deployed], T.deploy);
   const verify = (n, instance = 'reality-checker') => as(vr, instance, ['run', ID, '--criterion', String(n)], T.run);
   const rows = () => G.readEvidence(root, ID).filter((r) => r.type === 'row');
@@ -166,8 +167,40 @@ test('run: a failing exit, a missing match and a timeout are recorded as fail ro
   assert.equal(s.rows()[0].result, 'fail');
   s.refine(2, 'sh tool.sh', 'imported 0 cards');
   const nomatch = s.verify(2);
-  assert.match(nomatch.out, /: fail \(exit 0 but stdout does not match/);
+  assert.match(nomatch.out, /: fail \(exit 0 but stdout does not show the match \((?:literal|regex)\)/);
   assert.equal(s.rows().filter((x) => x.criterion === 2)[0].result, 'fail');
+});
+
+// hjx.1.7 (A3 a3-reality-checker-26, -11, -12): a match written as text with regex characters was read as
+// a pattern, its parentheses became a group, and a passing run was recorded as a fail and stopped the
+// line. A literal match is found as written; a step stored before modes passes on its text or its
+// pattern; the capture names the mode.
+test('run: a literal match with parentheses passes on the line it names, and a step stored with no mode passes on its text or its pattern', () => {
+  const s = ready();
+  const line = 'RD-C1 HOLDS: refine runs nothing (a refined touch leaves no file), and warns on a trailing pipe';
+  assert.equal(s.dm('refine', ID, '--criterion', '1', '--step', '1', '--command', `echo "${line}"`, '--match', line, '--literal').code, 0);
+  const lit = s.verify(1);
+  assert.match(lit.out, /: pass \(exit 0\)/, lit.out);
+  const cap = fs.readdirSync(path.join(s.roleDir, 'project', '.delivery', 'evidence', 'artifacts', ID)).map((f) => fs.readFileSync(path.join(s.roleDir, 'project', '.delivery', 'evidence', 'artifacts', ID, f), 'utf8')).join('\n');
+  assert.ok(cap.includes(`match (literal): ${line}`), 'the capture names the mode');
+  // stored before modes (no match_mode): the same text passes, and so does a real pattern
+  const file = path.join(s.root, rc.scriptRel(ID));
+  const stored = (match, command) => {
+    const sc = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const st = sc.criteria.find((g) => g.criterion === 2).steps[0];
+    Object.assign(st, { command, match });
+    delete st.match_mode;
+    fs.writeFileSync(file, `${JSON.stringify(sc, null, 2)}\n`);
+  };
+  stored('Kicked: 1 (a message)', 'echo "Kicked: 1 (a message)"');
+  assert.match(s.verify(2).out, /: pass \(exit 0\)/);
+  stored('\\nok \\d+ - a case\\n[\\s\\S]*# fail 0', 'printf "x\\nok 7 - a case\\n# fail 0\\n"');
+  const pat = s.verify(2);
+  assert.match(pat.out, /: pass \(exit 0\)/, pat.out);
+  // the other direction: text the output never shows still fails, whatever the mode
+  const r = ready();
+  r.dm('refine', ID, '--criterion', '1', '--step', '1', '--command', 'echo "Kicked: 0"', '--match', 'Kicked: 1 (a message)', '--literal');
+  assert.match(r.verify(1).out, /: fail \(exit 0 but stdout does not show the match \(literal\): Kicked: 1 \(a message\)\)/);
 });
 
 // 8l1.4.1.2: a command that checks nothing is not a fail of the product: no row, no andon, back to refine.
@@ -606,7 +639,7 @@ test('8wz.4 refine: a versioned plugin path is stored version-free: the launcher
   }
   // refine --from rewrites the same way
   const f = path.join(s.root, 'cmds.json');
-  fs.writeFileSync(f, JSON.stringify({ 2: { command: `node ${VCACHE('0.43.3')}/scripts/team-status.js --json`, match: '.' } }));
+  fs.writeFileSync(f, JSON.stringify({ 2: { command: `node ${VCACHE('0.43.3')}/scripts/team-status.js --json`, match: '.', match_mode: 'regex' } }));
   assert.equal(s.dm('refine', ID, '--from', f).code, 0);
   assert.equal(step(2).command, `node ${lp} team-status.js --json`);
   // a path the shell cannot fill in (inside node -e '...', or built in code) is refused, and nothing is written
@@ -618,7 +651,7 @@ test('8wz.4 refine: a versioned plugin path is stored version-free: the launcher
     const r = s.refine(1, bad, '.');
     assert.equal(r.code, 1, bad);
     assert.match(r.out, /names one installed version of the plugin.*process\.env\.DELIVERY_PLUGIN_ROOT/s);
-    fs.writeFileSync(f, JSON.stringify({ 1: { command: bad, match: '.' } }));
+    fs.writeFileSync(f, JSON.stringify({ 1: { command: bad, match: '.', match_mode: 'regex' } }));
     const rf = s.dm('refine', ID, '--from', f);
     assert.equal(rf.code, 1, bad);
     assert.match(rf.out, /criterion 1: the command names one installed version/);
