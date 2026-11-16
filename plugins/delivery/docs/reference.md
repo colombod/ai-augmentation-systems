@@ -1524,7 +1524,7 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   marketplace clone shallow, so a clone that lacks the installed sha is first deepened (`git fetch --deepen`,
   50, then 200, then 1000 commits) until it holds it. It never installs
   while a wake is running (held to the next cycle), and while an install is held it starts no new wake,
-  so the running wakes end and the next cycle (or the kick a wake leaves as it ends) installs. A hold past the wake timeout and a cycle (2.5 h) means a wake outlived its stop: it is logged once as `held-overdue` and the owner briefing says which version waits, until it installs. It refuses an ungated or older version, retries a failed
+  so the running wakes end and the next cycle (or the kick a wake leaves as it ends) installs. A wake still running past the wake timeout plus the kill grace outlived its supervisor's own stop: before it looks at the install, the pass ends it (SIGTERM to its session's process group and to its supervisor, which stops the whole group as at the limit), logs a `wake-stopped` row with what it signalled, counts it as ended so the install goes in that pass, and kicks the next run, which starts the role fresh under the installed plugin. A later pass, once the kill grace has passed and within an hour of the stop, sends SIGKILL to any signalled target that is still that wake's (the supervisor while it reads as that wake by its row's time, a group while its leader started before the stop), once, as a `wake-killed` row; a number reused since, or an old row after a host restart, is never killed. A hold past the wake timeout and a cycle (2.5 h) is logged once as `held-overdue`, the Chief of Staff is sent one alert naming the roles waiting with work in progress, and the owner briefing says which version waits, until it installs. While a hold lasts the pass names every idle role with in-progress work (`Waiting for the install: ...`), and the run after the hold ends wakes those roles first. A wake whose row cannot be written after its spawn is stopped at once, so no run goes untracked. It refuses an ungated or older version, retries a failed
   update once an hour, and logs each outcome as a `self-update` row. If main moved during the update, so
   the installed sha is not the one checked, the row says `ungated-install` and an `install-ungated`
   warning is recorded. After an install the pass wakes no one and kicks the next run, which runs the new
@@ -1663,9 +1663,17 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   rule lets those commands run without a password, every lane, the Reality Checker's and the host
   manager's included, refuses switching the network off (`nmcli networking off` or `nmcli radio ... off`,
   under any abbreviation), powering the host off or restarting it (`shutdown`, `poweroff`, `reboot`,
-  `halt`, `telinit`, `init 0` or `6`, and `systemctl poweroff`, `reboot`, `halt`, `kexec`, `suspend`,
-  `hibernate`, `rescue` or `isolate` of such a target), with `sudo` or without: the drill's script runs
-  them itself. A schedule that fails cuts nothing and stops the
+  `halt`, `telinit`, `init 0` or `6`, the `systemctl` power verbs and `isolate` of such a target, and the
+  `loginctl` power verbs, which often need no `sudo`), with `sudo` or without, and however a value option
+  is placed before the verb: the drill's script runs them itself. It also refuses the scheduler the rule
+  empowers: `systemd-run` as the system manager (not `--user`), and `systemctl` acting on a
+  `delivery-drill-*` unit (starting one, or stopping a running drill's restore), so a lane cannot schedule
+  or cancel a drill itself; a `systemd-run` or `systemctl` carrying a power or network-off command is
+  refused the same way. These refusals read the command behind the wrappers a shell offers
+  (`sudo`, `doas`, `env`, `pkexec`, `run0`, `nice`, `timeout`, `strace`, `watch`, `xargs`, `flock`, and
+  the command `su`, `runuser`, `script` or `find -exec` carries). What they cannot read is a command in a
+  script file the lane never sees, or fed to a shell on its standard input; there the consent record is the
+  control, as it is for the drill's own role check. A schedule that fails cuts nothing and stops the
   timer made before it and the one that reported failing, which may still have been made, the restart
   first. A cut that exits non-zero or times out may still have taken the network down: it stops only the
   restart timer, runs the restore at once through the same privilege, and keeps the restore timer, so
@@ -1673,7 +1681,9 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   checked: one that exits non-zero, times out or throws is reported as the timer that may still be
   scheduled, with its unit (after a failed cut, with the time the host would restart).
   `outage-drill.js stop --record <id>` then stops that drill's restart timer through the same privilege;
-  it never stops the restore, which only brings the network back, so any role may run it. The
+  it never stops the restore, which only brings the network back, so any role may run it. On a record
+  whose drill never ran, the timer is not loaded (`systemctl` exits 5 or says so), so `stop` reports that
+  no drill restart is scheduled for it, rather than warning of a timer that may still fire. The
   consent is one cut of up to 30 minutes and one restart, so an offline gap longer than the cut is
   not covered and no option stretches it.
 - **A running role session moves onto a newly installed plugin.** Claude Code loads a plugin's hooks when

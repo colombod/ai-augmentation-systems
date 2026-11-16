@@ -213,7 +213,7 @@ function wakeAlive(ended, now) {
   return (pid, since) => !ended.has(pid) && WD.pidAlive(pid, { since, now });
 }
 
-function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWake, ended = new Set(), deliver = defaultDeliver, home = os.homedir() }) {
+function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWake, ended = new Set(), deliver = defaultDeliver, stopWake = WD.stopWake, home = os.homedir() }) {
   const at = now || new Date().toISOString();
   if (res.unreadable || res.paused) return [];
   // a wake row is stamped at its spawn, not at the pass start: the check reads the supervisor's start
@@ -221,6 +221,9 @@ function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWa
   // given its clock (a test, a replay) keeps that clock exactly, so its gates read as it set them.
   const spawnStamp = () => (now ? at : new Date().toISOString());
   const p = WD.plan(res, { root, now: at, alive: wakeAlive(ended, at) });
+  // the roles that waited with work in progress through an install hold are woken first (hjx.1.6.20.1)
+  const firstUp = WD.waitedRoles(WD.logRows(root), at);
+  if (firstUp.size) p.wakes.sort((a, b) => Number(firstUp.has(b.target)) - Number(firstUp.has(a.target)));
   const lines = [];
   const bin = env.DELIVERY_CLAUDE_BIN || 'claude';
   const open = p.wakes.length ? (live !== undefined ? live : liveSessions(bin, env)) : null;
@@ -279,7 +282,16 @@ function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWa
       lines.push(`Not woken: ${w.target}: its start ran nothing (systemd-run refused the scope; log ${path.relative(root, logPath)}); its messages stay waiting. ${w.lines[0]}`);
       continue;
     }
-    WD.log(root, { type: 'wake', at: spawnStamp(), keys: w.keys, instance: w.target, session: s.session, mode: c.mode, ...(c.why ? { fresh: c.why } : {}), wake_id: wakeId, prompt: w.prompt, pid, log: path.relative(root, logPath) });
+    // a wake with no row is a run nothing tracks: no hold waits for it, no cap counts it, and a hang has
+    // no end. A row that cannot be written stops the wake it would have recorded (hjx.1.6.20.1). That stop
+    // is SIGTERM only: with no row, no later pass finishes it with SIGKILL (lib/watchdog.js finishStops).
+    try {
+      WD.log(root, { type: 'wake', at: spawnStamp(), keys: w.keys, instance: w.target, session: s.session, mode: c.mode, ...(c.why ? { fresh: c.why } : {}), wake_id: wakeId, prompt: w.prompt, pid, log: path.relative(root, logPath) });
+    } catch (err) {
+      try { stopWake(pid); } catch (e) { /* gone */ }
+      lines.push(`Not woken: ${w.target}: its wake (pid ${pid}) started, but its row could not be written (${String(err.message).split('\n')[0]}), so it was stopped; the next run tries again. ${w.lines[0]}`);
+      continue;
+    }
     // the messages and handoffs it carries are handed over: the next run does not wake for them again
     for (const d of w.delivers || []) require('./lib/inbox.js').markDelivered(root, d.to, d.upTo);
     // a handoffs file another writer holds: the wake stands, the row is handed over at the next pass
@@ -676,7 +688,7 @@ function defaultRevive(root, { team, env, now, dryRun, bd, live, exec }) {
   return require('./team-revive.js').revive(root, team, { start: true, cwd: root, dryRun, env, now, bd, relist, restartUnit, ...(live !== undefined ? { live } : {}) }).lines;
 }
 
-function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, live, spawn, deliver, platform = process.platform, home = os.homedir(), exec, has, sweep, lockWaitMs, update = {}, userGuard, revive, hostUnit } = {}) {
+function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, live, spawn, deliver, platform = process.platform, home = os.homedir(), exec, has, sweep, lockWaitMs, update = {}, userGuard, revive, hostUnit, stopWake, kill: killFn } = {}) {
   let o;
   try { o = parse(argv); } catch (err) { return { code: 2, out: `watchdog.js: ${err.message}\n${USAGE}` }; }
   const [cmd] = o._;
@@ -707,12 +719,48 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
     // starts in a new process under the new plugin, whose wakes start the old-version sessions fresh.
     // a pass taken for a kick looks again while an install is held: the kick is often the held-for wake
     // ending, and installing then beats waiting for the next cycle
-    const updated = cmd === 'run' && (first || state.held) ? require('./lib/self-update.js').selfUpdate(who.root, { pluginRoot: PLUGIN_ROOT, env, now, dryRun: !!o.dryRun, alive: wakeAlive(endedPids(kicked), now), roleDirs: (res.sessions || []).map((s) => s.roleDir).filter(Boolean), ...update }) : { lines: [], installed: false };
+    // hjx.1.6.20.1: a wake still running past its time limit plus the kill grace outlived its supervisor's
+    // stop and would hold the install (and with it every wake) with no end: it is ended first, so this
+    // pass can install, and its role starts fresh at the next run under the installed plugin
+    const ended = new Set(endedPids(kicked));
+    const stoppedLines = [];
+    if (cmd === 'run' && first && !o.dryRun) {
+      const stopAt = now || new Date().toISOString();
+      // a stop from an earlier pass whose group outlived the kill grace is finished with SIGKILL
+      for (const k of WD.finishStops(WD.logRows(who.root), { now: Date.parse(stopAt), ...(killFn ? { kill: killFn } : {}) })) {
+        WD.log(who.root, { type: 'wake-killed', at: stopAt, pid: k.pid, wake_at: k.wake_at, instance: k.instance, killed: k.killed });
+        if (k.killed.length) stoppedLines.push(`Killed: ${k.instance || 'a role'}'s stopped wake (pid ${k.pid}) outlived the kill grace (${k.killed.join(', ')}).`);
+      }
+      for (const w of WD.overdueWakes(WD.logRows(who.root), { now: Date.parse(stopAt), alive: wakeAlive(ended, stopAt) })) {
+        const signalled = (stopWake || WD.stopWake)(w.pid) || [];
+        ended.add(w.pid);
+        WD.log(who.root, { type: 'wake-stopped', at: stopAt, pid: w.pid, instance: w.instance, wake_at: w.at, signalled, why: 'ran past its time limit plus the kill grace' });
+        stoppedLines.push(`Stopped: ${w.instance || 'a role'}'s wake (pid ${w.pid}, started ${w.at}) ran past its time limit plus the kill grace; the role starts fresh at the next run.`);
+      }
+    }
+    const updated = cmd === 'run' && (first || state.held) ? require('./lib/self-update.js').selfUpdate(who.root, { pluginRoot: PLUGIN_ROOT, env, now, dryRun: !!o.dryRun, alive: wakeAlive(ended, now), roleDirs: (res.sessions || []).map((s) => s.roleDir).filter(Boolean), ...update }) : { lines: [], installed: false };
     if (updated.installed) { KICK.kick(who.root, `plugin ${updated.version} installed`); state.installed = true; }
+    // a hold ended by stopping a hung wake goes to the next run at once, as an install does
+    else if (stoppedLines.length) KICK.kick(who.root, 'a hung wake was ended');
     state.held = !!updated.held;
+    // while an install is held no wake starts (0ba.6): the roles waiting with work in progress are named
+    // each pass and in the owner's alert, and the run that follows the hold wakes them first
+    const waitingLines = [];
+    if (updated.held) {
+      const waiting = WD.waitingRoles(res);
+      if (waiting.length) {
+        waitingLines.push(`Waiting for the install: ${waiting.map((x) => `${x.instance} (${x.beads.join(', ')})`).join('; ')}; woken first once it is in.`);
+        if (!o.dryRun) WD.noteWaiting(who.root, waiting, now);
+      }
+      if (updated.overdueNew && !o.dryRun) {
+        const chief = WD.chiefOf(who.team);
+        require('./lib/inbox.js').queue(who.root, { to: chief, from: 'watchdog', summary: `${updated.held} held past its bound`,
+          message: `The watchdog (a host job) here: ${updated.held} has waited to install since ${updated.heldSince}, past the bound, because a run has not stopped. No wake starts until it is in${waiting.length ? `; waiting with work in progress: ${waiting.map((x) => `${x.instance} (${x.beads.join(', ')})`).join('; ')}` : ''}. The host job ends a wake past its time limit and installs at the next pass; put this in the owner queue once if it is still held then.`, at: now });
+      }
+    }
     // a held install starts no wake: one started now is another run the install must wait for, and with
     // wakes back to back it never went (delivery-plugin-planning-0ba.6)
-    const woke = [...updated.lines, ...(updated.installed ? ['Wakes wait for the next run, which starts under the plugin just installed.'] : updated.held ? [`No new wake starts until ${updated.held} is installed: the running wakes end first.`] : wake(who.root, res, { now, dryRun: o.dryRun, env, live, spawn, home, ended: endedPids(kicked), ...(deliver ? { deliver } : {}) }))];
+    const woke = [...stoppedLines, ...updated.lines, ...waitingLines, ...(updated.installed ? ['Wakes wait for the next run, which starts under the plugin just installed.'] : updated.held ? [`No new wake starts until ${updated.held} is installed: the running wakes end first.`] : wake(who.root, res, { now, dryRun: o.dryRun, env, live, spawn, home, ended, ...(deliver ? { deliver } : {}), ...(stopWake ? { stopWake } : {}) }))];
     // every cycle, the test runs' leftovers in the host's temp directory go (dec-chief-of-staff-000211):
     // a server is never left for a restart or a person to clean; a failing sweep never stops the wakes
     // after the wakes, so a role a wake now runs is seen running; never under an install (the next run's)

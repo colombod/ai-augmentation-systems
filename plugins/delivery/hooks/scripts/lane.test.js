@@ -2418,6 +2418,11 @@ test('outage-drill.js run is refused to every lane but the Reality Checker\'s, i
     `nice -n 5 ${drill} ${RUN}`, `env -S "${drill} ${RUN}"`, `env --split-string="${drill} ${RUN}"`,
     // fed through xargs, whose arguments come from standard input and cannot be read
     `echo ${RUN} | xargs ${drill}`, `xargs -n 9 ${drill} < args.txt`, `xargs -a args.txt ${drill}`,
+    // and behind the other wrappers the review named (rv-218)
+    `pkexec ${drill} ${RUN}`, `run0 ${drill} ${RUN}`, `flock /tmp/l ${drill} ${RUN}`, `strace -f ${drill} ${RUN}`, `watch -n 5 ${drill} ${RUN}`,
+    `su -c "${drill} ${RUN}"`, `runuser -u x -- ${drill} ${RUN}`, `script -qc "${drill} ${RUN}" /dev/null`, `time -p ${drill} ${RUN}`,
+    // the script word built by the shell while an argument is run
+    `node $SCRIPT ${RUN}`, 'node `echo x` run --record dec-x-1 --restart',
   ];
   for (const role of ['builder', 'spike-researcher', 'delivery-lead', 'chief-of-staff', 'host-manager']) {
     for (const c of spellings) {
@@ -2464,6 +2469,18 @@ test('switching the network off and powering off or restarting the host are refu
     'systemctl kexec', 'systemctl soft-reboot', 'systemctl suspend', 'systemctl isolate rescue.target', 'systemctl start reboot.target',
     'shutdown -h now', 'sudo shutdown -r +1', 'poweroff', 'reboot', 'halt', 'telinit 6', 'init 0', 'bash -c "sudo -n nmcli networking off"',
     'cd /tmp && sudo -n systemctl reboot',
+    // rv-218: a value option must not hide the verb; loginctl power verbs; the drill's scheduler and units
+    'systemctl --message "drill" poweroff', 'systemctl -H host reboot', 'systemctl -M m poweroff', 'systemctl --when +5min poweroff',
+    'loginctl poweroff', 'loginctl reboot', 'loginctl -p x suspend',
+    'sudo -n systemd-run --on-active=1s --unit=delivery-drill-restart-zz /bin/sh -c "nmcli networking on; systemctl reboot"',
+    'sudo -n systemd-run --on-active=1s --unit=delivery-drill-restore-zz nmcli networking off', 'sudo -n systemd-run nmcli networking off',
+    'systemd-run reboot', 'sudo -n systemctl stop delivery-drill-restore-dec-x.timer', 'systemctl start delivery-drill-restart-x.timer',
+    'systemctl --user stop delivery-drill-restore-x.timer',
+    // the same commands behind the wrappers the review named
+    'pkexec systemctl poweroff', 'pkexec --user root nmcli networking off', 'run0 systemctl poweroff', 'flock /tmp/l systemctl poweroff',
+    'flock -w 5 /tmp/l nmcli networking off', 'strace -f systemctl reboot', 'strace -o out nmcli networking off', 'watch -n 5 systemctl poweroff',
+    'su -c "systemctl poweroff"', 'su root -c "nmcli networking off"', 'runuser -u root -- systemctl poweroff', 'script -qc "systemctl poweroff" /dev/null',
+    'find . -name x -exec systemctl poweroff {} ;', 'env -iS "systemctl poweroff"', 'time -p systemctl poweroff', 'flock /tmp/l -c "systemctl poweroff"',
   ];
   for (const role of ['builder', 'delivery-lead', 'reality-checker', 'host-manager', 'chief-of-staff']) {
     for (const c of refused) {
@@ -2477,7 +2494,17 @@ test('switching the network off and powering off or restarting the host are refu
     'nmcli networking on', 'nmcli networking', 'nmcli n connectivity', 'nmcli device status', 'nmcli radio all', 'nmcli radio wifi on',
     'systemctl status cron.service', 'systemctl --version', 'grep -rn "systemctl reboot" plugins/delivery', 'git commit -m "nmcli networking off is refused"',
     'bd update x-1 --append-notes "the drill runs shutdown"', 'cat /etc/sudoers.d/delivery-drill',
+    // rv-218: reads and harmless wrapper uses still pass; a user-manager scope start is the host manager's
+    'loginctl list-sessions', 'loginctl show-session 2', 'loginctl user-status', 'systemd-analyze',
+    'pkexec --version', 'flock /tmp/l echo hi', 'strace -f true', 'watch -n 5 git status', 'su -c "ls"', 'runuser -u x -- git status',
+    'find . -name "*.js" -exec grep poweroff {} ;', 'time -p npm test', 'env -iS "git status"',
   ]) assert.equal(hostRefusal(c, 'builder'), null, c);
+  // the user-manager scope start the host manager uses to start sessions is not a power refusal
+  assert.equal(hostRefusal('systemd-run --user --scope --unit=delivery-role-x node claude', 'host-manager'), null);
+  // but a user-manager systemd-run carrying a power or network-off command is refused even for the host
+  // manager, whose lane is otherwise allowed --user (so the carried-command check, not the --system one)
+  assert.equal(hostRefusal('systemd-run --user --scope nmcli networking off', 'host-manager'), 'power');
+  assert.equal(hostRefusal('systemd-run --user systemctl poweroff', 'host-manager'), 'power');
 });
 
 test('host manager lane: operands after -- must match, value flags are not operands, job modes and --force are refused', () => {
