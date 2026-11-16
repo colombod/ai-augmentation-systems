@@ -70,6 +70,7 @@ const PROCESS_FILES = {
   'scripts/lib/publish-records.js': 'git, to publish records',
   'scripts/lib/role-scope.js': 'the role-session start itself: systemd-run, or the plain start',
   'scripts/lib/self-update.js': 'git, gh and `claude plugin`, which start no role session',
+  'scripts/lib/service-directory.js': 'its own file, through node, for one bounded request to the service directory on 127.0.0.1:8085 (the plugin\'s code is synchronous); it starts no session',
   'scripts/lib/session-message.js': 'the socket client that delivers a message to a running session',
   'scripts/lib/team-revive.js': 'systemctl --user is-enabled and is-active, the reads that tell whether a unit the plugin did not write still serves a role directory',
   'scripts/lib/user-guard.js': 'a hook script, through node',
