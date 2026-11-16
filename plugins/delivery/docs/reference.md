@@ -1598,7 +1598,8 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   nor started: the check names it. A start pass holds `revive.lock` in the watchdog directory, so the
   Chief of Staff's `start` and the host job's never start the same instance twice; a pass that finds
   it held starts nothing and names the holder's pid, and a lock older than two minutes or whose pid is
-  gone is broken. Each start is a row in the watchdog directory's `revive.ndjson` (instance, pid,
+  gone is broken. A running pass refreshes its lock around each 60 s settle, so a pass that settles
+  several unit starts keeps its lock however long it runs. Each start is a row in the watchdog directory's `revive.ndjson` (instance, pid,
   time, arguments, the id it reattached), its output in `logs/revive-<instance>-<time>.log` beside it.
   `claude remote-control` takes no prompt, so a session it starts comes up with no turn. The watchdog
   reads these rows: the newest start of an instance, from two minutes to six hours old, whose session
@@ -1816,7 +1817,13 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   still the open one did not take (the unit's run-session found it live and exited 3), so it does not
   hold the next try: once the start caps allow, a later pass or the owner's restart restarts the unit
   again; only a restart that brought up a new session that still records the older version is not
-  tried again for that version, as for every role. Busy on
+  tried again for that version, as for every role. Every start or restart through the plugin's own
+  unit (this one, and a missing role's start) is settled as a spawned start is: the pass waits the same
+  60 seconds and reads `systemctl --user is-active <unit>`; a unit not active by then (inactive, failed,
+  or still activating, as a session that exits within seconds leaves it) gets a `failed` row naming the
+  start, the reply says `Failed`, and the next pass tries again instead of holding the hour; the daily
+  cap still counts it, so a unit that keeps failing stays bounded. An answer that cannot be read is not
+  judged. Busy on
   either read, it is named and left; with that unit not installed for its role directory it is named
   and left, since nothing else restarts it; a unit the plugin did not write on that directory is
   named with its fix, as above, and nothing is restarted. Its server is never stopped and no session
@@ -1852,9 +1859,15 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   directory, and a fresh second read of the sessions finds it idle, run-session stops that server (the
   same stop, and wait for the server and its session to end, that team-revive's restart uses), writes a
   `host-manager-replaced` row, and execs the unit's own session as above, reattaching the recorded
-  session once. A server in any `.service` (this unit, or one the plugin did not write: the plugin never
-  stops what such a unit runs), a hand-written unit on the directory, busy on either read, a cgroup or
-  process list that cannot be read, or two live sessions: exit 3, nothing changed; a server
+  session once. A leftover is replaced the same way: a server in `delivery-host-manager.service`'s own
+  cgroup (and no other service's) that is not the unit's main process, as `systemctl --user show
+  delivery-host-manager.service -p MainPID --value` reads it (0 while the unit is down, or another
+  process). A unit stopped with `KillMode=process` leaves its processes in its cgroup, so a session an
+  older unit left there is moved onto the unit's own session, idle only, with the same row (marked
+  `leftover`). A server that is the unit's main process, a MainPID that cannot be read, a server in
+  any other `.service` (one the plugin did not write: the plugin never stops what such a unit runs), a
+  hand-written unit on the directory, busy on either read, a cgroup or process list that cannot be
+  read, or two live sessions: exit 3, nothing changed; a server
   that does not stop: exit 1, and no session is started beside it. A list that cannot be read is a
   failure, and `Restart=` tries again later. Its restarts are bounded:
   `Restart=always` with a delay growing from 30 seconds to 30 minutes over 5 restarts (`RestartSec=30`,

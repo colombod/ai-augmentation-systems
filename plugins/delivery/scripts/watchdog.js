@@ -678,17 +678,21 @@ function defaultUserGuard(env, home) {
 // work is in flight (team-revive.js, dec-chief-of-staff-000279): the job runs it each pass, so a team
 // dropped by a network loss comes back with no step from the owner. A run inside the sealed test
 // runner starts none: a test must never start a real session on the machine it runs on.
-function defaultRevive(root, { team, env, now, dryRun, bd, live, exec }) {
+// deps (tests): sleep (the settle's wait, the real 60 s one by default), relist, and deps (team-revive's
+// own seams: home, spawn, stop, prs, configDir...), so a test settles a unit restart without waiting.
+function defaultRevive(root, { team, env, now, dryRun, bd, live, exec, sleep, relist: relistOf, deps = {} }) {
   if (env.DELIVERY_SEAL_ACTIVE || env.DELIVERY_SEALED_RUN) return [];
   // a stale session is stopped only after a read of the open sessions made just then finds it idle,
   // never on the pass's first read, which may be minutes old by then (lib/team-revive.js staleOf)
-  const relist = () => liveSessions(env.DELIVERY_CLAUDE_BIN || 'claude', env);
+  const relist = relistOf || (() => liveSessions(env.DELIVERY_CLAUDE_BIN || 'claude', env));
   // a host manager on an older plugin is restarted through its own unit, after the same fresh read
   const restartUnit = (unit) => runner(exec)('systemctl', ['--user', 'restart', unit]);
-  return require('./team-revive.js').revive(root, team, { start: true, cwd: root, dryRun, env, now, bd, relist, restartUnit, ...(live !== undefined ? { live } : {}) }).lines;
+  // and settled as a spawned start is: a unit down after SETTLE_MS is a failed start, retried next pass
+  const TR = require('./team-revive.js');
+  return TR.revive(root, team, { ...deps, start: true, cwd: root, dryRun, env, now, bd, relist, restartUnit, unitSettle: TR.unitSettleOf(runner(exec), sleep), ...(live !== undefined ? { live } : {}) }).lines;
 }
 
-function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, live, spawn, deliver, platform = process.platform, home = os.homedir(), exec, has, sweep, lockWaitMs, update = {}, userGuard, revive, hostUnit, stopWake, kill: killFn } = {}) {
+function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, live, spawn, deliver, platform = process.platform, home = os.homedir(), exec, has, sweep, lockWaitMs, update = {}, userGuard, revive, hostUnit, sleep, stopWake, kill: killFn } = {}) {
   let o;
   try { o = parse(argv); } catch (err) { return { code: 2, out: `watchdog.js: ${err.message}\n${USAGE}` }; }
   const [cmd] = o._;
@@ -766,7 +770,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
     // after the wakes, so a role a wake now runs is seen running; never under an install (the next run's)
     let revived = [];
     if (cmd === 'run' && first && !updated.installed && !updated.held) {
-      try { revived = (revive || defaultRevive)(who.root, { team: who.team, env, now, dryRun: !!o.dryRun, bd, live, exec }).map((l) => `Team: ${l}`); } catch (err) { revived = [`Team: the missing role sessions were not checked (${String(err && err.message || err).split('\n')[0].slice(0, 200)})`]; }
+      try { revived = (revive || defaultRevive)(who.root, { team: who.team, env, now, dryRun: !!o.dryRun, bd, live, exec, sleep }).map((l) => `Team: ${l}`); } catch (err) { revived = [`Team: the missing role sessions were not checked (${String(err && err.message || err).split('\n')[0].slice(0, 200)})`]; }
     }
     let swept = kicked.length ? [`Kicked: ${kicked.length} (${[...new Set(kicked.map((k) => k.replace(/^\S+\s*/, '').replace(/ \(pid \d+\)$/, '') || 'a kick'))].join('; ').slice(0, 300)})`] : [];
     if (cmd === 'run' && first) {
@@ -809,7 +813,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
   return r || { code: 0, out: 'Another watchdog run holds the lock; this one does nothing.' };
 }
 
-module.exports = { spawnWake, main, liveSessions, wakeAlive, defaultUserGuard, checkLines, jobFiles, shimBody, everySeconds, roleContext, kickWatchUnit, tagOf, sdq, sdPct, jobPath, ensureHostManager, hostManagerSetup, teamSessionsHere };
+module.exports = { spawnWake, main, defaultRevive, liveSessions, wakeAlive, defaultUserGuard, checkLines, jobFiles, shimBody, everySeconds, roleContext, kickWatchUnit, tagOf, sdq, sdPct, jobPath, ensureHostManager, hostManagerSetup, teamSessionsHere };
 
 if (require.main === module) {
   let r;
