@@ -78,6 +78,7 @@ const PROCESS_FILES = {
   'scripts/lib/watchdog.js': 'git and bd reads for the watchdog\'s plan',
   'scripts/map.js': 'git, for the files a change touches',
   'scripts/materialise.js': 'git and bd, to write the bead graph',
+  'scripts/outage-drill.js': 'sudo -n nmcli and systemd-run for the drill\'s cut, restore and restart timers, and ps to find a leftover headless claude child in its pre-flight; it starts no session',
   'scripts/prepare-role.js': 'git, to prepare role worktrees',
   'scripts/ready.js': 'git, to tell a repository',
   'scripts/review-run.js': 'git, for the reviewer\'s scratch clone',
