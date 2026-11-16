@@ -2213,14 +2213,18 @@ test('host manager lane: its commands run, systemctl only on the plugin\'s units
   for (const c of [
     `node ${script('host-manager.js')} status`, `node ${script('host-manager.js')} status --json`, `node ${script('host-manager.js')} restart`, `node ${script('host-manager.js')} tick`,
     `node ${script('team-revive.js')} check --project /srv/alpha`, `node ${script('team-revive.js')} start --project /srv/alpha`,
-    'systemctl --user status delivery-watchdog-0a1b2c3d.timer', 'systemctl --user start delivery-watchdog-0a1b2c3d.timer delivery-watchdog-0a1b2c3d.path',
-    'systemctl --user restart delivery-host-manager.service', 'systemctl --user stop delivery-host-manager-tick.timer',
+    'systemctl --user status delivery-watchdog-0a1b2c3d.timer',
     'systemctl --user show delivery-watchdog-0a1b2c3d.timer -p ActiveState -p InactiveEnterTimestamp --no-pager', 'systemctl --user is-active delivery-host-manager.service',
-    'systemctl --user list-units', 'systemctl --user list-timers --all', 'systemctl --user daemon-reload',
+    'systemctl --user list-units', 'systemctl --user list-timers --all',
     'amplifier run "the dolt server refuses logins; prove it with bd list"', 'ps -o command= -p 123', 'df -h', 'free -m', 'uptime',
     'ps aux | sort -k3 | uniq -c', 'bd list --status in_progress', 'bd update ex-1 --append-notes "host job restarted"',
   ]) assert.equal(sh(c), true, c);
   for (const c of [
+    // the plugin's own units are only read by hand: every change to them goes through host-manager.js,
+    // which reads the unit's service-directory entry first
+    'systemctl --user start delivery-watchdog-0a1b2c3d.timer delivery-watchdog-0a1b2c3d.path', 'systemctl --user restart delivery-host-manager.service',
+    'systemctl --user stop delivery-host-manager-tick.timer', 'systemctl --user daemon-reload', 'systemctl --user restart delivery-watchdog-0a1b2c3d.timer',
+    'systemctl --user start --job-mode replace delivery-host-manager.service',
     'systemctl --user stop ssh.service', 'systemctl --user start delivery-watchdog-0a1b2c3d.timer ssh.service', 'systemctl --user start',
     'systemctl --user restart delivery-watchdog-0a1b2c3d', 'systemctl --user show -p ActiveState dbus.service', 'systemctl stop delivery-host-manager.service',
     'systemctl --user --machine x@ start delivery-host-manager.service', 'systemctl --user start delivery-host-manager.service --system',
@@ -2247,7 +2251,8 @@ test('every lane but the host manager\'s refuses systemctl --user and the host m
     const d = (command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy, roleDir: rd, groups: GROUPS, pluginRoot: PLUGIN_ROOT, cwd: rd });
     for (const c of ['systemctl --user restart delivery-watchdog-0a1b2c3d.timer', 'systemctl --user status ssh.service', 'cd /tmp && systemctl --no-pager --user stop x.service', 'bash -c "systemctl --user stop x"', `${hmjs} restart`, `${hmjs} tick`]) {
       const r = d(c);
-      if (id === 'host-manager') { if (!/ssh|x\.service|bash -c|stop x/.test(c)) assert.equal(r.allow, true, `${id}: ${c}`); continue; }
+      // the host manager runs its own scripts; a unit change by hand is refused to it too
+      if (id === 'host-manager') { assert.equal(r.allow, !/systemctl/.test(c), `${id}: ${c}`); continue; }
       assert.equal(r.allow, false, `${id}: ${c}`);
       if (policy.bash.includes('any')) assert.match(r.reason, /host manager/, `${id}: ${c}`);
     }
@@ -2395,19 +2400,22 @@ test('claude remote-control is refused to every lane but the Chief of Staff\'s a
   for (const role of ['chief-of-staff', 'host-manager']) assert.doesNotMatch(String(d('claude remote-control --name x@y --spawn session', policyOf(role)).reason), /starting role sessions is/, role);
 });
 
-test('host manager lane: operands after -- must match, value flags are not operands, job modes and --force are refused', () => {
+test('host manager lane: operands after -- must match, value flags are not operands, and every start, stop or restart by hand is refused', () => {
   const hm = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/host-manager' });
   const rd = fs.mkdtempSync(path.join(os.tmpdir(), 'hm-ops-'));
   const sh = (command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: hm, roleDir: rd, groups: GROUPS, pluginRoot: PLUGIN_ROOT, cwd: rd }).allow;
   for (const c of [
-    'systemctl --user stop -- delivery-watchdog-0a1b2c3d.timer', 'systemctl --user start --job-mode=replace delivery-watchdog-0a1b2c3d.service', 'systemctl --user start --job-mode fail delivery-watchdog-0a1b2c3d.service',
+    'systemctl --user status -- delivery-watchdog-0a1b2c3d.timer',
     'systemctl --user list-units -t timer --state=failed', 'systemctl --user list-units --type timer', 'systemctl --user status delivery-host-manager.service -n 50 -o cat',
-    'systemctl --user show --property ActiveState delivery-host-manager.service', 'systemctl --user stop "delivery-watchdog-*.timer"',
+    'systemctl --user show --property ActiveState delivery-host-manager.service', 'systemctl --user is-active "delivery-watchdog-*.timer"',
   ]) assert.equal(sh(c), true, c);
   for (const c of [
-    'systemctl --user stop -- delivery-host-manager.service -.slice', 'systemctl --user stop -- -.slice', 'systemctl --user start --job-mode=isolate delivery-watchdog-0a1b2c3d.service',
+    // the reads only: a change to the plugin's units goes through host-manager.js, which reads the directory first
+    'systemctl --user stop -- delivery-watchdog-0a1b2c3d.timer', 'systemctl --user start --job-mode=replace delivery-watchdog-0a1b2c3d.service', 'systemctl --user start --job-mode fail delivery-watchdog-0a1b2c3d.service',
+    'systemctl --user stop "delivery-watchdog-*.timer"',
+    'systemctl --user status -- delivery-host-manager.service -.slice', 'systemctl --user status -- -.slice', 'systemctl --user start --job-mode=isolate delivery-watchdog-0a1b2c3d.service',
     'systemctl --user start --job-mode isolate delivery-watchdog-0a1b2c3d.service', 'systemctl --user start --job-mode=ignore-dependencies delivery-watchdog-0a1b2c3d.service', 'systemctl --user start --job=isolate delivery-watchdog-0a1b2c3d.service',
     'systemctl --user stop --force delivery-host-manager.service', 'systemctl --user restart -f delivery-host-manager.service', 'systemctl --user stop --for delivery-host-manager.service',
-    'systemctl --user list-units -t timer ssh.service',
+    'systemctl --user status --force delivery-host-manager.service', 'systemctl --user list-units -t timer ssh.service',
   ]) assert.equal(sh(c), false, c);
 });
