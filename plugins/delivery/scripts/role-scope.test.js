@@ -296,7 +296,7 @@ test('the starts through a user unit are listed with their reasons, and each is 
   // the watchdog's start pass gets its unit restart and start from unitOps alone, and unitOps restarts a
   // unit only as systemctl --user restart, and starts one only through startOwnUnit, each after the read
   const dr = body('scripts/watchdog.js', 'defaultRevive');
-  assert.match(dr, /const ops = TR\.unitOps\(root, \{ exec: runner\(exec\), now \}\);/);
+  assert.match(dr, /const ops = TR\.unitOps\(root, \{ exec: runner\(exec\), now, sdFetch: deps\.sdFetch \}\);/);
   assert.doesNotMatch(dr, /'restart'|'start'/);
   const uo = body('scripts/team-revive.js', 'unitOps');
   assert.deepEqual([...uo.matchAll(/\bexec\(([^;]*)\);/g)].map((m) => m[1]), ["'systemctl', ['--user', 'restart', unit]"]);
