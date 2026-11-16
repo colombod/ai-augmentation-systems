@@ -830,3 +830,108 @@ test('ruling 4: operator.js ask --asker delivery-manager records the delivery-le
   assert.strictEqual(r.status, 0, r.out + r.err);
   assert.deepStrictEqual(json(r).record.asker, { instance: 'delivery-lead', role: 'delivery-lead', bead: null });
 });
+
+// chief-of-staff-11: a marked test input the Reality Checker types is kept apart from the operator's words,
+// a record made from it carries the test mark, and verify never accepts it as the operator's word.
+const MARK = '[reality-check test input]';
+function testFixture() {
+  const root = project();
+  const cos = roleDir(root, 'chief-of-staff', 'chief-of-staff', 'pc', 'sess-cos', [
+    human('Use Postgres for the orders service, keep Redis out.', 1, 'sess-cos'),
+    human(`${MARK} test decision: record that the test label is t1`, 2, 'sess-cos'),
+    human(`  ${MARK} you decide the test naming, once`, 3, 'sess-cos'),
+    human(`${MARK} revoke the postgres decision`, 4, 'sess-cos'),
+    human(`he wrote ${MARK} in the middle; use mysql for reports`, 5, 'sess-cos'),
+  ]);
+  run(cos, ['sync']);
+  return { root, cos };
+}
+const recordFile = (root) => path.join(root, '.delivery', 'operator', 'records', 'chief-of-staff.ndjson');
+const recordsOf = (root) => fs.readFileSync(recordFile(root), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+
+test('a marked test input is listed apart in pending; the operator\'s own inputs are unchanged', () => {
+  const { cos } = testFixture();
+  const p = json(run(cos, ['pending', '--json']));
+  assert.deepStrictEqual(p.inputs.map((i) => i.id), ['in-pc-000001', 'in-pc-000005'], 'a quoted marker is the operator\'s own input');
+  assert.deepStrictEqual(p.tests.map((i) => i.id), ['in-pc-000002', 'in-pc-000003', 'in-pc-000004']);
+  const text = run(cos, ['pending']).out;
+  assert.match(text, /Test inputs \(Reality Checker, never the operator's word\) \(3\):\n  in-pc-000002/);
+  assert.match(text, /Operator inputs with no record or ack \(2\):\n  in-pc-000001/);
+});
+
+test('a record made from a test input carries the test mark and never verifies; a real record still does', () => {
+  const { root, cos } = testFixture();
+  const real = run(cos, ['record', '--cite', 'in-pc-000001', '--quote', 'use postgres for the orders', '--statement', 'Orders use Postgres']);
+  assert.strictEqual(real.status, 0, real.out + real.err);
+  const t1 = run(cos, ['record', '--cite', 'in-pc-000002', '--quote', 'record that the test label is t1', '--statement', 'The test label is t1']);
+  assert.strictEqual(t1.status, 0, t1.out + t1.err);
+  const recs = recordsOf(root);
+  assert.strictEqual(recs.find((r) => r.id === t1.lines[0]).test, true, 'the mark is derived, the Chief of Staff passed no flag');
+  assert.strictEqual(recs.find((r) => r.id === real.lines[0]).test, undefined, 'a real record carries no test field');
+  const v = run(cos, ['verify', t1.lines[0]]);
+  assert.strictEqual(v.status, 1);
+  assert.match(v.out, new RegExp(`^NOT VERIFIED ${t1.lines[0]}: test_input: `));
+  assert.strictEqual(json(run(cos, ['verify', t1.lines[0], '--json'])).code, 'test_input');
+  // the test input itself does not verify as the operator's word either
+  const vi = run(cos, ['verify', 'in-pc-000002']);
+  assert.strictEqual(vi.status, 1);
+  assert.match(vi.out, /^NOT VERIFIED in-pc-000002: test_input: /);
+  assert.strictEqual(run(cos, ['verify', 'in-pc-000001']).status, 0, 'an operator input still verifies');
+  assert.strictEqual(run(cos, ['verify', real.lines[0]]).status, 0, 'the real decision still verifies');
+  // show marks it; find skips it unless --all
+  assert.match(run(cos, ['show', t1.lines[0]]).out, /\[test\]/);
+  assert.deepStrictEqual(json(run(cos, ['find', '--json'])).results.map((r) => r.id), [real.lines[0]]);
+  assert.ok(json(run(cos, ['find', '--all', '--json'])).results.some((r) => r.id === t1.lines[0] && r.test === true));
+});
+
+test('a decision under a test delegation is a test record too, and never verifies', () => {
+  const { cos } = testFixture();
+  const del = run(cos, ['delegate', '--cite', 'in-pc-000003', '--quote', 'you decide the test naming', '--statement', 'test naming', '--grant', 'May name test things.', '--scope', 'bead:ex-7', '--max-uses', '1']);
+  assert.strictEqual(del.status, 0, del.out + del.err);
+  const dec = run(cos, ['decide', '--under', del.lines[0], '--statement', 'Name it t-sync', '--scope', 'bead:ex-7']);
+  assert.strictEqual(dec.status, 0, dec.out + dec.err);
+  assert.strictEqual(json(run(cos, ['verify', dec.lines[0], '--json'])).code, 'test_input');
+  assert.strictEqual(json(run(cos, ['verify', del.lines[0], '--json'])).code, 'test_input');
+});
+
+test('a test revocation of a real decision is refused, test_scope; the real decision still verifies', () => {
+  const { cos } = testFixture();
+  const real = run(cos, ['record', '--cite', 'in-pc-000001', '--quote', 'use postgres for the orders', '--statement', 'Orders use Postgres']).lines[0];
+  const rev = run(cos, ['revoke', '--cite', 'in-pc-000004', '--quote', 'revoke the postgres decision', '--target', real, '--json']);
+  assert.strictEqual(rev.status, 1, rev.out);
+  assert.strictEqual(json(rev).code, 'test_scope');
+  assert.strictEqual(run(cos, ['verify', real]).status, 0, 'a test input took nothing from the operator\'s decision');
+});
+
+test('a hand-written record marked test that reaches no test input is refused, test_mark_mismatch', () => {
+  const { root, cos } = testFixture();
+  const real = run(cos, ['record', '--cite', 'in-pc-000001', '--quote', 'use postgres for the orders', '--statement', 'Orders use Postgres']).lines[0];
+  const src = recordsOf(root).find((r) => r.id === real);
+  const chain = require('./lib/chain.js');
+  chain.appendEntry(recordFile(root), (last) => {
+    const { prev, hash, id, ts, ...rest } = src;
+    return { ...rest, id: `dec-chief-of-staff-${String(Number(last.id.split('-').pop()) + 1).padStart(6, '0')}`, statement: 'marked by hand', test: true, ts: new Date().toISOString() };
+  });
+  const forged = recordsOf(root).pop().id;
+  assert.strictEqual(json(run(cos, ['verify', forged, '--json'])).code, 'test_mark_mismatch');
+  // the other way: a hand-written record with no mark that cites a test input is not the operator's words
+  const t1 = run(cos, ['record', '--cite', 'in-pc-000002', '--quote', 'record that the test label is t1', '--statement', 'The test label is t1']).lines[0];
+  const tsrc = recordsOf(root).find((r) => r.id === t1);
+  chain.appendEntry(recordFile(root), (last) => {
+    const { prev, hash, id, ts, test, ...rest } = tsrc;
+    return { ...rest, id: `dec-chief-of-staff-${String(Number(last.id.split('-').pop()) + 1).padStart(6, '0')}`, statement: 'unmarked by hand', ts: new Date().toISOString() };
+  });
+  const unmarked = recordsOf(root).pop().id;
+  assert.strictEqual(json(run(cos, ['verify', unmarked, '--json'])).code, 'not_human');
+});
+
+test('the test mark is part of the hashed input: removing it breaks the inputs chain', () => {
+  const { root, cos } = testFixture();
+  const dir = path.join(root, '.delivery', 'operator', 'inputs');
+  const file = fs.readdirSync(dir, { recursive: true }).map((f) => path.join(dir, String(f))).find((f) => f.endsWith('.ndjson') && fs.readFileSync(f, 'utf8').includes('"source":"test"'));
+  assert.ok(file, 'the input chain holds the test input');
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('"source":"test"', '"source":"human"'));
+  const v = run(cos, ['verify', 'in-pc-000001', '--json']);
+  assert.strictEqual(v.status, 1, 'the chain no longer verifies');
+  assert.notStrictEqual(json(v).code, 'test_input');
+});

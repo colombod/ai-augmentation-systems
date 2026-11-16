@@ -632,6 +632,10 @@ const handlers = {
       lines.push(`Delegations awaiting a glance (${p.delegations_awaiting_glance.length}):`);
       for (const d of p.delegations_awaiting_glance) lines.push(`  ${d.id}  GRANT: ${d.grant}  (operator: ${quoted(d.quote)})`);
     }
+    if (p.tests && p.tests.length) {
+      lines.push(`Test inputs (Reality Checker, never the operator's word) (${p.tests.length}):`);
+      for (const i of p.tests) lines.push(`  ${i.id}  ${i.ts}  [test] ${quoted(i.text.length > 100 ? i.text.slice(0, 100) + '...' : i.text)}`);
+    }
     if (p.inputs.length) {
       lines.push(`Operator inputs with no record or ack (${p.inputs.length}):`);
       for (const i of p.inputs) lines.push(`  ${i.id}  ${i.ts}  ${quoted(i.text.length > 100 ? i.text.slice(0, 100) + '...' : i.text)}`);
@@ -748,7 +752,7 @@ const handlers = {
     if (id.startsWith('in-')) {
       obj = log.getInput(ctx.projectRoot, id) || (ctx.refreshOnce() && log.getInput(ctx.projectRoot, id)) || null;
       if (!obj) throw new R.OperatorError('not_found', `input ${id} was not found (operator.js refresh pulls other hosts; operator.js pending lists inputs)`);
-      out(ctx, obj, [`${obj.id}  input (${obj.source})`, `host: ${obj.host}`, `session: ${obj.session_id}`, `instance: ${obj.instance} (${obj.role})`,
+      out(ctx, obj, [`${obj.id}  input (${obj.source})${obj.source === 'test' ? ' [test]' : ''}`, `host: ${obj.host}`, `session: ${obj.session_id}`, `instance: ${obj.instance} (${obj.role})`,
         `at: ${obj.ts} (captured ${obj.captured_at})`, `transcript: ${obj.transcript_ref && obj.transcript_ref.file}:${obj.transcript_ref && obj.transcript_ref.line}`,
         `text: ${quoted(obj.text)}`]);
       return 0;
@@ -758,7 +762,7 @@ const handlers = {
     // the record is displayed as stored; its words count as the operator's only if it validates
     const v = R.verifyRecord(ctx.projectRoot, id, { refresh: ctx.refreshOnce, noLedger: true });
     const validity = v.ok ? { ok: true } : { ok: false, code: v.code, error: v.error };
-    const lines = [`${obj.id}  ${obj.kind}`, v.ok ? 'validity: valid' : `validity: invalid (${v.code}): ${v.error}`,
+    const lines = [`${obj.id}  ${obj.kind}${obj.test === true ? ' [test]' : ''}`, v.ok ? 'validity: valid' : `validity: invalid (${v.code}): ${v.error}`,
       `by: ${obj.by && obj.by.instance} (${obj.by && obj.by.role}) at ${obj.ts}`];
     for (const k of ['statement', 'question', 'text', 'answer', 'confidence', 'rationale', 'reason']) if (obj[k]) lines.push(`${k}: ${obj[k]}`);
     if (obj.quote && !v.ok) lines.push("quote: withheld, the record does not validate (the raw record is in --json)");
