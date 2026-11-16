@@ -246,11 +246,13 @@ function restartLines(before, after, plan, o = {}) {
   for (const j of plan.jobs) {
     const u = unit(after, j);
     if (u && u.running) out.push(`Back: ${j} is running.`);
-    else out.push(`Not back: ${j}${jobErrors[j] ? ` (start failed: ${jobErrors[j]})` : ''}; ${u ? unitLine(u) : 'its state could not be read'}.`);
+    // a start refused on the service directory's read says so as it is (host-manager.js restart)
+    else out.push(`Not back: ${j}${jobErrors[j] ? ` (${/^not started: /.test(jobErrors[j]) ? jobErrors[j] : `start failed: ${jobErrors[j]}`})` : ''}; ${u ? unitLine(u) : 'its state could not be read'}.`);
   }
   for (const k of plan.kick || []) {
     const p = passes[k.root];
-    if (kickErrors[k.service]) out.push(`Not back: ${k.team}'s host job, still silent: its timer runs but no pass since ${at(k.lastPass)}, and starting ${k.service} once failed (${kickErrors[k.service]}).`);
+    if (kickErrors[k.service] && /^not started: /.test(kickErrors[k.service])) out.push(`Not back: ${k.team}'s host job, still silent: its timer runs but no pass since ${at(k.lastPass)}, and ${k.service} was ${kickErrors[k.service]}.`);
+    else if (kickErrors[k.service]) out.push(`Not back: ${k.team}'s host job, still silent: its timer runs but no pass since ${at(k.lastPass)}, and starting ${k.service} once failed (${kickErrors[k.service]}).`);
     else if (Number.isFinite(p) && (!Number.isFinite(k.lastPass) || p > k.lastPass)) out.push(`Back: ${k.team}'s host job ran a pass at ${at(p)}.`);
     else out.push(`Not back: ${k.team}'s host job, still silent: its timer runs but no pass since ${at(k.lastPass)}; ${k.service} was started once and the read after it shows no new pass.`);
   }
