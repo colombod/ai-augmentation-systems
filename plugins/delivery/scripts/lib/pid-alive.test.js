@@ -23,7 +23,8 @@ const proc = ({ cmd = SUP, started = T0 - 2000, exists = true } = {}) => ({
 
 test('a wake supervisor that started with its wake row is a running wake', () => {
   assert.equal(WD.pidAlive(4242, { since: iso(T0), now: T0 + 60e3, proc: proc() }), true);
-  // a hung wake past its timeout is still that wake: it still holds, and the hold is reported overdue
+  // a hung wake past its timeout is still that wake (pidAlive tells the truth about the process); the host
+  // job ends it (lib/watchdog.js overdueWakes, stopWake), so it no longer holds the install (hjx.1.6.20.1)
   assert.equal(WD.pidAlive(4242, { since: iso(T0), now: T0 + 91 * 3600e3, proc: proc() }), true);
 });
 

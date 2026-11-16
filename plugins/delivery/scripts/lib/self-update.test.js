@@ -526,6 +526,280 @@ test('the host job\'s run installs past a wake pid that started after its row, a
   } finally { try { process.kill(-sup.pid, 'SIGKILL'); } catch (e) { /* gone */ } }
 });
 
+// hjx.1.6.20.1: a hung wake during a held install, through the host job's run, both directions. Every time
+// comes from the supervisor's own start (the kernel's clock), so the cases hold on a shifted clock.
+function hungSupervisor(t) {
+  if (!fs.existsSync('/proc/self/stat')) { t.skip('no /proc on this host'); return null; }
+  // a supervisor that does not stop by itself within the test, with a child in a group of its own
+  const sup = require('child_process').spawn(process.execPath, [path.join(__dirname, 'wake-run.js'), String(3600e3), process.execPath, '-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', detached: true });
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
+  const started = WD.procReads.startedMs(sup.pid);
+  const kids = () => { try { return fs.readFileSync(`/proc/${sup.pid}/task/${sup.pid}/children`, 'utf8').trim().split(/\s+/).map(Number).filter(Boolean); } catch (e) { return []; } };
+  const child = kids()[0] || null;
+  const stop = () => { for (const p of [child, sup.pid]) { try { process.kill(-p, 'SIGKILL'); } catch (e) { /* gone */ } } };
+  if (!Number.isFinite(started) || !child) { stop(); t.skip('the supervisor or its child cannot be read here'); return null; }
+  return { sup, child, started, stop };
+}
+const gone = (pid, ms = 8000) => {
+  const until = Date.now() + ms;
+  for (;;) {
+    let alive = true;
+    try { process.kill(pid, 0); alive = !/^State:\s+Z/m.test(fs.readFileSync(`/proc/${pid}/status`, 'utf8')); } catch (e) { alive = false; }
+    if (!alive) return true;
+    if (Date.now() > until) return false;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+  }
+};
+
+test('a wake still running past its time limit plus the kill grace is ended, its group with it, and the held install goes in that pass', (t) => {
+  const r = hungSupervisor(t);
+  if (!r) return;
+  try {
+    const h = harness({});
+    const f = fixture({ root: h.root });
+    merged(f, 140, true);
+    WD.log(h.root, { type: 'wake', at: new Date(r.started + 1000).toISOString(), instance: 'builder-2', pid: r.sup.pid });
+    // the hold began when the wake was young
+    WD.log(h.root, { type: 'self-update', from: '0.43.30', version: '0.43.31', sha: f.mainSha, pr: 140, at: new Date(r.started + 60e3).toISOString(), result: 'held', why: `a run is in progress (wake pid ${r.sup.pid})` });
+    const now = new Date(r.started + (WD.WAKE_TIMEOUT_H * 3600e3 + WD.KILL_GRACE_MS) + 5 * 60e3).toISOString();
+    const out = jobRun(h, f, claude(f), { ownCheck: true, now }).out;
+    assert.match(out, new RegExp(`Stopped: builder-2's wake \\(pid ${r.sup.pid}, started .*\\) ran past its time limit plus the kill grace`), out);
+    assert.match(out, /self-update: installed plugin delivery 0\.43\.31/, out);
+    assert.ok(WD.logRows(h.root).some((x) => x.type === 'wake-stopped' && x.pid === r.sup.pid), 'the stop is a row');
+    assert.ok(gone(r.child), `its session's group ${r.child} is gone`);
+    assert.ok(gone(r.sup.pid), `its supervisor ${r.sup.pid} is gone`);
+  } finally { r.stop(); }
+});
+
+test('a wake the run ends counts as ended in that pass, however long its group takes to go', (t) => {
+  const r = hungSupervisor(t);
+  if (!r) return;
+  try {
+    const h = harness({});
+    const f = fixture({ root: h.root });
+    merged(f, 140, true);
+    WD.log(h.root, { type: 'wake', at: new Date(r.started + 1000).toISOString(), instance: 'builder-2', pid: r.sup.pid });
+    const now = new Date(r.started + (WD.WAKE_TIMEOUT_H * 3600e3 + WD.KILL_GRACE_MS) + 5 * 60e3).toISOString();
+    // a stop whose signals have not landed yet: the supervisor still answers when the install looks
+    const stops = [];
+    registerInstance(h.root, { instance: 'delivery-lead', session_id: 'sess-dl', host: 'pc', model: 'sonnet', role_dir: h.roleDir('delivery-lead'), now: later(-30 * 60e3) });
+    KICK.take(h.root);
+    const out = watchdog.main(['run'], { cwd: h.root, env: { ...process.env, DELIVERY_ROLE: '', BD_FAKE_STORE: h.store, PATH: `${path.join(__dirname, '..', 'testing')}${path.delimiter}${process.env.PATH}` }, now, live: [], bd: memStore(h), sweep: () => ({ removed: [], failed: [] }), spawn: () => 999999999,
+      stopWake: (pid) => { stops.push(pid); return []; }, update: { pluginRoot: f.pluginRoot, configDir: f.config, exec: claude(f) } }).out;
+    assert.deepEqual(stops, [r.sup.pid]);
+    assert.match(out, /self-update: installed plugin delivery 0\.43\.31/, `the ended wake holds nothing in its own pass: ${out}`);
+  } finally { r.stop(); }
+});
+
+test('a stop that outlived the kill grace is finished with SIGKILL, once, only on targets still that wake\'s', () => {
+  const stopAt = Date.parse(T0);
+  const wakeAt = stopAt - 3 * 3600e3;
+  const rows = [{ type: 'wake-stopped', at: T0, pid: 500, wake_at: new Date(wakeAt).toISOString(), instance: 'builder-2', signalled: [-601, 500] }];
+  // what the system says of each pid: 500 the wake's supervisor, 601 its session's group leader, both
+  // started before the stop
+  const procOf = (over = {}) => ({
+    exists: (pid) => pid === 500 || pid === 601,
+    cmdline: (pid) => (pid === 500 ? 'node wake-run.js 7200000 claude' : 'claude -p'),
+    startedMs: (pid) => (pid === 500 ? wakeAt - 1000 : wakeAt + 1000),
+    ...over,
+  });
+  const run = (proc, now = stopAt + WD.KILL_GRACE_MS + 1000, r = rows) => {
+    const sent = [];
+    const kill = (p, sig) => { if (!(p === 500 || p === -601)) throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' }); if (sig) sent.push(p); };
+    const out = WD.finishStops(r, { now, kill, proc });
+    return { out, sent };
+  };
+  assert.deepEqual(run(procOf(), stopAt + WD.KILL_GRACE_MS - 1000).out, [], 'inside the grace: not yet');
+  assert.deepEqual(run(procOf()).sent, [-601, 500], 'the wake\'s own group and supervisor');
+  // rv-208: a live target that started after the stop row is another program's: never killed
+  const reusedGroup = run(procOf({ startedMs: (pid) => (pid === 500 ? wakeAt - 1000 : stopAt + 60e3) }));
+  assert.deepEqual(reusedGroup.sent, [500], 'a group whose leader started after the stop is not that wake\'s');
+  const reusedSup = run(procOf({ cmdline: (pid) => (pid === 500 ? 'node mcp-pdf-server --stdio' : 'claude -p'), startedMs: (pid) => (pid === 500 ? stopAt + 60e3 : wakeAt + 1000) }));
+  assert.deepEqual(reusedSup.sent, [-601], 'a supervisor pid now another program is not killed');
+  // a later wake's supervisor on the same pid is that later wake's, not this one's: judged by the row time
+  const laterWake = run(procOf({ startedMs: (pid) => (pid === 500 ? stopAt + 60e3 : wakeAt + 1000) }));
+  assert.deepEqual(laterWake.sent, [-601], 'a supervisor that started after this wake\'s row is another wake');
+  // an old row (a host restart since): skipped whole, whatever answers
+  assert.deepEqual(run(procOf(), stopAt + WD.KILL_GRACE_MS + WD.FINISH_WINDOW_MS + 60e3).out, [], 'past the window: never');
+  // once: a wake-killed row for this wake ends it; one for an earlier wake on the same pid does not
+  assert.deepEqual(run(procOf(), undefined, [...rows, { type: 'wake-killed', at: T0, pid: 500, wake_at: rows[0].wake_at }]).out, []);
+  assert.deepEqual(run(procOf(), undefined, [...rows, { type: 'wake-killed', at: T0, pid: 500, wake_at: '2026-10-01T00:00:00.000Z' }]).sent, [-601, 500]);
+});
+
+test('through the run: a stopped wake\'s session that ignores SIGTERM is killed once the grace has passed', (t) => {
+  if (!fs.existsSync('/proc/self/stat')) { t.skip('no /proc on this host'); return; }
+  // a session, in a group of its own, that ignores SIGTERM: an old supervisor would leave it orphaned
+  const s1 = require('child_process').spawn(process.execPath, ['-e', "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"], { stdio: 'ignore', detached: true });
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300);
+  try {
+    const h = harness({});
+    process.kill(-s1.pid, 'SIGTERM');
+    assert.ok(!gone(s1.pid, 300), 'it shrugs off SIGTERM');
+    const now = new Date(Date.now() + WD.KILL_GRACE_MS + 5000).toISOString();
+    WD.log(h.root, { type: 'wake-stopped', at: new Date(Date.now()).toISOString(), pid: 999999997, instance: 'builder-2', signalled: [-s1.pid] });
+    const out = jobRun(h, fixture({ root: h.root }), claude(fixture({ root: h.root })), { ownCheck: true, now }).out;
+    assert.match(out, new RegExp(`Killed: builder-2's stopped wake \\(pid 999999997\\) outlived the kill grace \\(-${s1.pid}\\)`), out);
+    assert.ok(gone(s1.pid), 'its group is gone');
+    assert.ok(WD.logRows(h.root).some((x) => x.type === 'wake-killed' && x.pid === 999999997));
+  } finally { try { process.kill(-s1.pid, 'SIGKILL'); } catch (e) { /* gone */ } }
+});
+
+test('stopping a wake signals its session group and its supervisor', () => {
+  const sent = [];
+  WD.stopWake(500, { kill: (p, sig) => sent.push([p, sig]), children: () => [601, 602] });
+  assert.deepEqual(sent, [[-601, 'SIGTERM'], [-602, 'SIGTERM'], [500, 'SIGTERM']]);
+  // the other direction: a group already gone does not stop the supervisor's signal
+  const sent2 = [];
+  WD.stopWake(500, { kill: (p, sig) => { if (p < 0) throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' }); sent2.push([p, sig]); }, children: () => [601] });
+  assert.deepEqual(sent2, [[500, 'SIGTERM']]);
+});
+
+test('a supervisor given SIGTERM stops its whole group before it exits', (t) => {
+  const r = hungSupervisor(t);
+  if (!r) return;
+  try {
+    process.kill(r.sup.pid, 'SIGTERM');
+    assert.ok(gone(r.child), `the session group ${r.child} is stopped by its supervisor`);
+    assert.ok(gone(r.sup.pid), 'and the supervisor exits');
+  } finally { r.stop(); }
+});
+
+test('a wake inside its time limit is not ended: the install stays held and no wake starts', (t) => {
+  const r = hungSupervisor(t);
+  if (!r) return;
+  try {
+    const h = harness({});
+    const f = fixture({ root: h.root });
+    merged(f, 140, true);
+    WD.log(h.root, { type: 'wake', at: new Date(r.started + 1000).toISOString(), instance: 'builder-2', pid: r.sup.pid });
+    const now = new Date(r.started + 3600e3).toISOString();
+    const run = jobRun(h, f, claude(f), { ownCheck: true, now });
+    assert.doesNotMatch(run.out, /Stopped:/);
+    assert.match(run.out, new RegExp(`held: a run is in progress \\(wake pid ${r.sup.pid}\\)`), run.out);
+    assert.deepEqual(run.woke, [], 'no wake starts during a hold');
+    assert.ok(!gone(r.sup.pid, 300), 'the wake runs on');
+  } finally { r.stop(); }
+});
+
+test('a hold past its bound alerts the Chief of Staff once, naming the roles that wait with work in progress', () => {
+  const h = harness({});
+  const f = fixture({ root: h.root });
+  merged(f, 140, true);
+  // a wake that cannot be ended (an injected check calls it running; no supervisor to stop)
+  WD.log(h.root, { type: 'wake', at: T0, instance: 'builder-1', pid: 4242 });
+  const exec = claude(f);
+  const alive = (pid) => pid === 4242;
+  const chief = WD.chiefOf(require('./manifest.js').loadManifest(h.root).team);
+  const alerts = () => (IB.pending(h.root).find((m) => m.to === chief) || { entries: [] }).entries.filter((e) => /held past its bound|past the bound/.test(`${e.summary} ${e.message}`));
+  jobRun(h, f, exec, { alive, now: later(60e3) });
+  assert.equal(alerts().length, 0, 'inside the bound: no alert');
+  // the hold is timed from its first pass (one minute in)
+  jobRun(h, f, exec, { alive, now: later(SU.HOLD_BOUND_MS + 5 * 60e3) });
+  assert.equal(alerts().length, 1, 'past the bound: one alert');
+  assert.match(alerts()[0].message, /has waited to install since .*past the bound/);
+  jobRun(h, f, exec, { alive, now: later(SU.HOLD_BOUND_MS + 20 * 60e3) });
+  assert.equal(alerts().length, 1, 'not again the next pass');
+});
+
+test('while an install is held the roles waiting with work in progress are named and not woken; the run after it wakes them first', () => {
+  const res = { stalls: [
+    { kind: 'assigned', target: 'builder-2', bead: 'ex-1', detail: 'in_progress, assigned to u@h/builder-2; session quiet since x' },
+    { kind: 'assigned', target: 'builder-3', bead: 'ex-2', detail: 'open, assigned to u@h/builder-3; session quiet since x' },
+    // an in-progress bead quiet past stall_hours (2 h, under the 2.5 h hold bound) is a quiet stall at its holder
+    { kind: 'quiet', target: 'builder-4', bead: 'ex-3', detail: 'in progress with builder-4; no bead update or session activity since x' },
+    // the same with no holder session goes to the Delivery Manager: not a waiting role
+    { kind: 'quiet', target: 'delivery-lead', bead: 'ex-4', detail: 'in progress with u@h/builder-9; no bead update or session activity since x' },
+  ] };
+  assert.deepEqual(WD.waitingRoles(res), [{ instance: 'builder-2', beads: ['ex-1'] }, { instance: 'builder-4', beads: ['ex-3'] }], 'each idle role with in-progress work it holds, assigned or quiet');
+  const os = require('os');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'held-wait-'));
+  try {
+    assert.equal(WD.noteWaiting(root, WD.waitingRoles(res), T0), true);
+    assert.equal(WD.noteWaiting(root, WD.waitingRoles(res), later(60e3)), false, 'kept once per change');
+    // while the hold lasts nobody is put first: the hold has not ended
+    assert.deepEqual([...WD.waitedRoles(WD.logRows(root), later(2 * 60e3))], []);
+    // the hold ends (the install, or a stopped hung wake): the next run puts them first
+    WD.log(root, { type: 'self-update', result: 'installed', version: '0.43.31', at: later(3 * 60e3) });
+    assert.deepEqual([...WD.waitedRoles(WD.logRows(root), later(4 * 60e3))].sort(), ['builder-2', 'builder-4']);
+    // once a wake has gone after it, nobody is put first again
+    WD.log(root, { type: 'wake', at: later(5 * 60e3), instance: 'builder-2', pid: 1 });
+    assert.deepEqual([...WD.waitedRoles(WD.logRows(root), later(6 * 60e3))], []);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('through the run: a held pass names the role waiting with work in progress and wakes nobody; the run after the install wakes it first', () => {
+  const quiet = later(-3 * 3600e3);
+  const h = harness({ beads: {
+    'ex-ip': { id: 'ex-ip', status: 'in_progress', assignee: 'dev@pc/builder-2', priority: 1, updated_at: later(-30 * 60e3), created_at: quiet },
+    'ex-op': { id: 'ex-op', status: 'in_progress', assignee: 'dev@pc/builder-3', priority: 1, updated_at: later(-30 * 60e3), created_at: quiet },
+  } });
+  for (const i of ['builder-2', 'builder-3']) registerInstance(h.root, { instance: i, session_id: `sess-${i}`, host: 'pc', model: 'sonnet', role_dir: h.roleDir(i), now: quiet });
+  const f = fixture({ root: h.root });
+  merged(f, 140, true);
+  WD.log(h.root, { type: 'wake', at: T0, instance: 'builder-1', pid: 4242 });
+  const exec = claude(f);
+  const held = jobRun(h, f, exec, { alive: (pid) => pid === 4242, now: later(60e3) });
+  assert.match(held.out, /Waiting for the install: .*builder-2 \(ex-ip\)/, held.out);
+  assert.deepEqual(held.woke, [], 'no wake starts during the hold');
+  // the hold ends: the install goes, and the run after it wakes the named roles first
+  const inst = jobRun(h, f, exec, { alive: () => false, now: later(16 * 60e3) });
+  assert.match(inst.out, /self-update: installed plugin delivery 0\.43\.31/, inst.out);
+  assert.deepEqual([...WD.waitedRoles(WD.logRows(h.root), later(17 * 60e3))].sort(), ['builder-2', 'builder-3']);
+});
+
+test('the run after a hold wakes the roles that waited first, before any other', () => {
+  const h = harness({});
+  for (const i of ['builder-1', 'builder-2']) registerInstance(h.root, { instance: i, session_id: `sess-${i}`, host: 'pc', model: 'sonnet', role_dir: h.roleDir(i), now: later(-9 * 3600e3) });
+  for (const i of ['builder-1', 'builder-2']) IB.queue(h.root, { to: i, from: 'delivery-lead', summary: 'x', message: `for ${i}`, at: T0 });
+  const order = () => {
+    const woke = [];
+    watchdog.main(['run'], { cwd: h.root, env: { ...process.env, DELIVERY_ROLE: '', BD_FAKE_STORE: h.store, PATH: `${path.join(__dirname, '..', 'testing')}${path.delimiter}${process.env.PATH}` }, now: later(60e3), live: [], bd: memStore(h), sweep: () => ({ removed: [], failed: [] }), revive: () => [],
+      spawn: (bin, args, o) => { woke.push(o.env.DELIVERY_ROLE); return 999999999; }, update: { configDir: fs.mkdtempSync(path.join(require('os').tmpdir(), 'no-install-')) } });
+    return woke;
+  };
+  // builder-2 waited through a hold that has ended: it goes first
+  WD.log(h.root, { type: 'held-waiting', at: later(-30 * 60e3), roles: ['builder-2'] });
+  WD.log(h.root, { type: 'self-update', result: 'installed', version: '0.43.31', at: later(-60e3) });
+  KICK.take(h.root);
+  assert.deepEqual(order(), ['builder-2', 'builder-1']);
+});
+
+test('a wake whose row cannot be written is stopped, never left running untracked; with its row it runs', (t) => {
+  if (process.getuid && process.getuid() === 0) { t.skip('a read-only file does not stop root'); return; }
+  const run = (h, stops) => {
+    const woke = [];
+    const out = watchdog.main(['run'], { cwd: h.root, env: { ...process.env, DELIVERY_ROLE: '', BD_FAKE_STORE: h.store, PATH: `${path.join(__dirname, '..', 'testing')}${path.delimiter}${process.env.PATH}` }, now: later(60e3), live: [], bd: memStore(h), sweep: () => ({ removed: [], failed: [] }), revive: () => [],
+      spawn: (bin, args, o) => { woke.push(o.env.DELIVERY_ROLE); return 777001; }, stopWake: (pid) => { stops.push(pid); return []; }, update: { configDir: fs.mkdtempSync(path.join(require('os').tmpdir(), 'no-install-')) } }).out;
+    return { out, woke };
+  };
+  const setup = () => {
+    const h = harness({});
+    registerInstance(h.root, { instance: 'builder-1', session_id: 'sess-b1', host: 'pc', model: 'sonnet', role_dir: h.roleDir('builder-1'), now: later(-9 * 3600e3) });
+    IB.queue(h.root, { to: 'builder-1', from: 'delivery-lead', summary: 'x', message: 'for builder-1', at: T0 });
+    WD.log(h.root, { type: 'note', at: T0 });
+    KICK.take(h.root);
+    return h;
+  };
+  const h = setup();
+  const file = path.join(h.root, WD.REL, 'wakes.ndjson');
+  fs.chmodSync(file, 0o444);
+  const stops = [];
+  try {
+    const r = run(h, stops);
+    assert.deepEqual(r.woke, ['builder-1'], 'the wake was spawned');
+    assert.deepEqual(stops, [777001], 'and stopped, since nothing records it');
+    assert.match(r.out, /Not woken: builder-1: its wake \(pid 777001\) started, but its row could not be written .*so it was stopped/, r.out);
+    assert.doesNotMatch(r.out, /Woke builder-1/, 'a stopped wake is not reported woken');
+    assert.equal((IB.pending(h.root).find((m) => m.to === 'builder-1') || { entries: [] }).entries.length, 1, 'its message stays pending for the next run');
+  } finally { fs.chmodSync(file, 0o644); }
+  // the other direction: the row is written and the wake runs
+  const h2 = setup();
+  const stops2 = [];
+  const r2 = run(h2, stops2);
+  assert.deepEqual(stops2, []);
+  assert.ok(WD.logRows(h2.root).some((x) => x.type === 'wake' && x.pid === 777001));
+});
+
 test('the self-update\'s own default check reads a wake pid by its row time', (t) => {
   if (!fs.existsSync('/proc/self/stat')) { t.skip('no /proc on this host'); return; }
   const sup = require('child_process').spawn(process.execPath, [path.join(__dirname, 'wake-run.js'), '60000', process.execPath, '-e', 'setTimeout(() => {}, 20000)'], { stdio: 'ignore', detached: true });
