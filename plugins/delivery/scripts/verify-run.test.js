@@ -197,6 +197,20 @@ test('run: a literal match with parentheses passes on the line it names, and a s
   stored('\\nok \\d+ - a case\\n[\\s\\S]*# fail 0', 'printf "x\\nok 7 - a case\\n# fail 0\\n"');
   const pat = s.verify(2);
   assert.match(pat.out, /: pass \(exit 0\)/, pat.out);
+  // a no-mode step still FAILS when neither its text nor its pattern appears: it is not a blanket pass
+  // (rv-223: a mutant making the no-mode branch return true survived without this). The match has regex
+  // characters, so this also proves it is not read as a never-matching pattern by accident. A fresh world,
+  // since criterion 2 above is at its run cap.
+  const f = ready();
+  const ffile = path.join(f.root, rc.scriptRel(ID));
+  const fsc = JSON.parse(fs.readFileSync(ffile, 'utf8'));
+  const fst = fsc.criteria.find((g) => g.criterion === 1).steps[0];
+  Object.assign(fst, { command: 'echo "Kicked: 0"', match: 'Kicked: 1 (a message)' });
+  delete fst.match_mode;
+  fs.writeFileSync(ffile, `${JSON.stringify(fsc, null, 2)}\n`);
+  const miss = f.verify(1);
+  assert.match(miss.out, /: fail \(exit 0 but stdout does not show the match \(stored before modes, text or pattern\): Kicked: 1 \(a message\)\)/, miss.out);
+  assert.equal(f.rows().filter((x) => x.criterion === 1).slice(-1)[0].result, 'fail');
   // the other direction: text the output never shows still fails, whatever the mode
   const r = ready();
   r.dm('refine', ID, '--criterion', '1', '--step', '1', '--command', 'echo "Kicked: 0"', '--match', 'Kicked: 1 (a message)', '--literal');
