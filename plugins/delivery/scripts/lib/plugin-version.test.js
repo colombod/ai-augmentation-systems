@@ -58,6 +58,27 @@ test('8wz: a session that last ran an older plugin is woken fresh, not resumed; 
   } finally { fs.rmSync(s.roleDir, { recursive: true, force: true }); }
 });
 
+// The host manager's session belongs to its own unit (delivery-host-manager.service): one on an older
+// plugin is moved onto the installed one only by a restart of that unit (team-revive, idle only). A wake
+// handed to it in place kept it on the old brief and scripts for hours after an install.
+test('a host-manager session on an older plugin is not woken in place, live or not; a current one still gets its wake as a message', () => {
+  const installed = '0.43.121';
+  const s = role({ instance: 'host-manager', role: 'host-manager', session: 's-hm', pluginVersion: '0.43.111' });
+  try {
+    const live = [{ sessionId: 's-hm', cwd: s.roleDir, status: 'idle' }];
+    const old = WD.wakeCommand(s, 'go', live, 'auto', { installed });
+    assert.equal(old.mode, undefined, JSON.stringify(old));
+    assert.match(old.skip, /^it runs the delivery plugin 0\.43\.111 and 0\.43\.121 is installed: the host manager is moved onto it only by a restart of its unit delivery-host-manager\.service \(when idle\), never woken in place$/);
+    for (const l of [[], [{ sessionId: 's-hm', cwd: s.roleDir, status: 'waiting' }]]) assert.ok(WD.wakeCommand(s, 'go', l, 'auto', { installed }).skip, JSON.stringify(l));
+    // a current one: the wake as a message to its live session, as for every role
+    const cur = WD.wakeCommand({ ...s, pluginVersion: installed }, 'go', live, 'auto', { installed });
+    assert.equal(cur.mode, 'message');
+    assert.equal(cur.session.sessionId, 's-hm');
+    // another role on the older plugin keeps its message wake
+    assert.equal(WD.wakeCommand({ ...s, instance: 'delivery-lead', role: 'delivery-lead' }, 'go', live, 'auto', { installed }).mode, 'message');
+  } finally { fs.rmSync(s.roleDir, { recursive: true, force: true }); }
+});
+
 test('8wz: the watchdog reads the version a session last ran from the roster, else from its own commands', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pv-proj-'));
   try {
