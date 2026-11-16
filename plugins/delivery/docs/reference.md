@@ -574,11 +574,24 @@ script.
 driven by commands) has no screen, so the Reality Checker checks it with
 `verify-run.js run <bead> --criterion <n>` (the `verify-run` lane group, the Reality Checker's only).
 The Delivery Manager puts the command in the script step with `reality-check.js refine <bead>
---criterion <n> --step <k> --command '<shell command>' [--match '<pattern stdout must show>']`, or, for
+--criterion <n> --step <k> --command '<shell command>' [--match '<what stdout must show>' [--literal|--regex]
+[--sample '<output>']]`, or, for
 commands that hold quotes, from a JSON file with `reality-check.js refine <bead> --from <file>`, where the
-file is `{"<criterion>": {"command": ..., "match": ..., "step": <k, default 1>, "as_role": <bool>}}`;
-the whole file is checked (known criteria and steps, known keys, a valid `match`) before anything is
-written. Each new command is checked without being run (refine runs no product code): it refuses, and
+file is `{"<criterion>": {"command": ..., "match": ..., "match_mode": "literal"|"regex", "sample": ...,
+"step": <k, default 1>, "as_role": <bool>}}`;
+the whole file is checked (known criteria and steps, known keys, each `match` in its mode) before anything
+is written. **A match is literal text unless it is marked a pattern.** `--literal` (`"match_mode":
+"literal"`) finds it as written; `--regex` (`"match_mode": "regex"`) reads it as a regular expression,
+which must parse. A match with no mode and no regex characters is literal. One that holds a regex
+character (`\ ^ $ . * + ? ( ) [ ] { } |`) is refused until the refine says which it is, and the refusal
+names both forms: the text with `--literal`, or the escaped pattern with `--regex`. Text with parentheses
+read as a pattern makes a group, so the line it names never matches and a passing run is recorded as a
+fail. `--sample` (`"sample"`) is output the step is meant to print: a match not found in it, in its mode,
+is refused, so a match naming text the output never shows is caught before a run. The refine's output
+names each match's mode (`match (literal): ...` or `match (regex): /.../`), and so does the run's capture.
+`verify-run.js` reads the match in the mode stored with the step; a step refined before modes passes when
+its text is found as written or its pattern matches, so regex characters in it cannot fail a passing run
+and the patterns already stored keep working. Each new command is checked without being run (refine runs no product code): it refuses, and
 saves nothing, a command whose `DELIVERY_TEST_FILES` names a path that is not a file under the plugin
 root (a relative path counts only after a `cd` that says where it runs; otherwise name it
 `${DELIVERY_PLUGIN_ROOT}/...`); with `--from`, one refused command keeps every other one in the file from
