@@ -673,7 +673,9 @@ function defaultRevive(root, { team, env, now, dryRun, bd, live, exec }) {
   const relist = () => liveSessions(env.DELIVERY_CLAUDE_BIN || 'claude', env);
   // a host manager on an older plugin is restarted through its own unit, after the same fresh read
   const restartUnit = (unit) => runner(exec)('systemctl', ['--user', 'restart', unit]);
-  return require('./team-revive.js').revive(root, team, { start: true, cwd: root, dryRun, env, now, bd, relist, restartUnit, ...(live !== undefined ? { live } : {}) }).lines;
+  // and settled as a spawned start is: a unit down after SETTLE_MS is a failed start, retried next pass
+  const TR = require('./team-revive.js');
+  return TR.revive(root, team, { start: true, cwd: root, dryRun, env, now, bd, relist, restartUnit, unitSettle: TR.unitSettleOf(runner(exec)), ...(live !== undefined ? { live } : {}) }).lines;
 }
 
 function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, live, spawn, deliver, platform = process.platform, home = os.homedir(), exec, has, sweep, lockWaitMs, update = {}, userGuard, revive, hostUnit } = {}) {

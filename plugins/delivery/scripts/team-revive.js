@@ -229,7 +229,7 @@ function revive(root, team, opts = {}) {
   if (no) throw new Error(no);
   const lock = R.startLock(root);
   if (lock.held) {
-    const { start, dryRun, env = process.env, spawn, force, restartUnit, startUnit, ...deps } = opts;
+    const { start, dryRun, env = process.env, spawn, force, restartUnit, startUnit, unitSettle, ...deps } = opts;
     const a = { ...R.assess(gather(root, team, { env, ...deps })), go: false, locked: lock.held };
     return { a, started: {}, lines: [`Not started now: another start pass holds the start lock (pid ${lock.held.pid || 'unknown'}, ${path.relative(root, R.lockFile(root))}); it starts what is missing.`] };
   }
@@ -240,7 +240,33 @@ function revive(root, team, opts = {}) {
 // first read may be seconds old), and only once its server stopped; each restart is a ledger row.
 // A role a user unit serves (st.unit) is restarted through restartUnit(unit) (systemctl --user restart, the
 // caller's), after the same second read: never stopped here, never started in a scope.
-function restartStale(root, f, a, { env, bin, spawn, stop, relist, systemdRun = null, restartUnit = null }) {
+// A unit start or restart is settled as a spawned start is (failStarts, hjx.1.6.10.1): unitSettle(unit)
+// waits SETTLE_MS and reads whether the unit is up, true, false or null when unknown. A unit that is not up
+// by then (its session exited within seconds, as run-session's exit 3 did beside a leftover) gets a
+// 'failed' row naming its start: the hourly cap does not hold the next try, and the start still counts
+// against the daily cap. unitSettleOf(exec, sleep): the real check, systemctl --user is-active after the
+// wait; a caller without unitSettle (a test that injects restartUnit) settles nothing.
+function unitSettleOf(exec, sleepFn = sleep) {
+  return (unit) => {
+    sleepFn(R.SETTLE_MS);
+    let state = '';
+    try { state = String(exec('systemctl', ['--user', 'is-active', unit]) || ''); } catch (err) { state = String((err && err.stdout) || ''); }
+    state = state.trim().split('\n')[0];
+    if (state === 'active') return true;
+    return /^(inactive|failed|activating|deactivating)$/.test(state) ? false : null;
+  };
+}
+function settleUnit(root, unitSettle, { instance, unit, at, what }) {
+  if (!unitSettle) return null;
+  let up = null;
+  try { up = unitSettle(unit); } catch (err) { up = null; }
+  if (up !== false) return null;
+  const why = `its unit ${unit} was not active ${Math.round(R.SETTLE_MS / 1000)}s after the ${what}`;
+  R.record(root, { type: 'failed', at: new Date().toISOString(), instance, start_at: at, unit, via: 'unit', why });
+  return why;
+}
+
+function restartStale(root, f, a, { env, bin, spawn, stop, relist, systemdRun = null, restartUnit = null, unitSettle = null }) {
   const out = {};
   for (const i of a.stale.filter((x) => !x.stale.skip && !x.stale.held)) {
     const st = i.stale;
@@ -264,7 +290,8 @@ function restartStale(root, f, a, { env, bin, spawn, stop, relist, systemdRun = 
         continue;
       }
       R.record(root, { type: 'restart', at, instance: i.instance, unit: st.unit, via: 'unit', session_id: st.remoteId, from_session: st.session, from: st.version, to: st.installed, ...forced });
-      out[i.instance] = { unit: st.unit };
+      const down = settleUnit(root, unitSettle, { instance: i.instance, unit: st.unit, at, what: 'restart' });
+      out[i.instance] = down ? { why: `${down}; a failed start, retried at the next pass within the daily cap`, failed: true } : { unit: st.unit };
       continue;
     }
     if (!stop(st.server, st.pid)) {
@@ -317,7 +344,7 @@ function tellTwice(root, team, a, { now, queue = (r, m) => require('./lib/inbox.
 // A start pass spawns every missing instance, then waits SETTLE_MS (settle) for any that exit at once: those
 // get a 'failed' row, are named Failed, and the next pass retries them (lib/team-revive.js assess). settle is
 // the real wait only with the real spawn; a test that injects spawn injects settle too, or gets none.
-function revivePass(root, team, { start = false, dryRun = false, env = process.env, spawn = spawnRemote, stop = stopServer, relist, settle, systemdRun, only = null, force = null, restartUnit = null, startUnit = null, ...deps } = {}) {
+function revivePass(root, team, { start = false, dryRun = false, env = process.env, spawn = spawnRemote, stop = stopServer, relist, settle, systemdRun, only = null, force = null, restartUnit = null, startUnit = null, unitSettle = null, ...deps } = {}) {
   const f = gather(root, team, { env, ...deps });
   if (force) f.force = force;
   const a = R.assess(f);
@@ -343,6 +370,9 @@ function revivePass(root, team, { start = false, dryRun = false, env = process.e
         }
         R.record(root, { type: 'start', at, instance: i.instance, unit: i.viaUnit, via: 'unit' });
         started[i.instance] = { unit: i.viaUnit, unitStart: true, at };
+        // a unit whose session exited within seconds is a failed start, retried at the next pass
+        const down = settleUnit(root, unitSettle, { instance: i.instance, unit: i.viaUnit, at, what: 'start' });
+        if (down) started[i.instance] = { ...started[i.instance], failed: true, why: down };
         continue;
       }
       const logPath = path.join(root, WD.REL, 'logs', `revive-${i.instance}-${at.replace(/[:.]/g, '-')}.log`);
@@ -383,7 +413,7 @@ function revivePass(root, team, { start = false, dryRun = false, env = process.e
   if (start && !dryRun) { try { tellTwice(root, team, a, { now: f.now }); } catch (err) { /* the next pass tells it */ } }
   let restarted = {};
   if (start && !dryRun && a.restart && a.stale.length) {
-    restarted = restartStale(root, f, a, { env, bin, spawn, stop, relist: again, systemdRun: sdRun, restartUnit });
+    restarted = restartStale(root, f, a, { env, bin, spawn, stop, relist: again, systemdRun: sdRun, restartUnit, unitSettle });
   }
   return { a, started, restarted, lines: R.lines(a, { bin, started, restarted, dryRun: start && dryRun }) };
 }
@@ -433,7 +463,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, ...deps } = {}) {
   return { code: 0, out: r.lines.join('\n') };
 }
 
-module.exports = { startOwnUnit, tellTwice, main, revive, gather, startEnv, refusal, callerRefusal, serverAlive, serverOf, stopServer, systemdRunOf, settleStarts, exited, systemdRunRefused };
+module.exports = { startOwnUnit, unitSettleOf, tellTwice, main, revive, gather, startEnv, refusal, callerRefusal, serverAlive, serverOf, stopServer, systemdRunOf, settleStarts, exited, systemdRunRefused };
 
 if (require.main === module) {
   let r;

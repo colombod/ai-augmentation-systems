@@ -358,7 +358,9 @@ function staleOf(f, { e, open, starts, last, t, team, name, same, forced = false
   const lastTry = tried[tried.length - 1];
   if (older && lastTry && ms(e.last_seen) > ms(lastTry.at)) st.held = `restarted ${WD.clock(ms(lastTry.at))} onto ${f.installed}, and its session still records ${e.plugin_version}; not tried again`;
   else if (open.status !== 'idle') { st.busy = open.status || 'busy'; st.held = `it is ${st.busy}; it is restarted only when idle between turns`; }
-  else if (last && t - ms(last.at) < START_EVERY_MS) st.held = `started ${WD.clock(ms(last.at))}; the next start is after ${WD.clock(ms(last.at) + START_EVERY_MS)} (one start an hour)`;
+  // a start or restart whose unit or process was down within the settle window (a 'failed' row names it)
+  // does not hold the hour: it is retried at the next pass, and the daily cap below still counts it
+  else if (last && !(f.rows || []).some((r) => r.type === 'failed' && r.instance === last.instance && r.start_at === last.at) && t - ms(last.at) < START_EVERY_MS) st.held = `started ${WD.clock(ms(last.at))}; the next start is after ${WD.clock(ms(last.at) + START_EVERY_MS)} (one start an hour)`;
   else if (starts.filter((r) => t - ms(r.at) < DAY).length >= DAILY_CAP) st.held = 'started the most times a day allows';
   if (!unit) st.args = ['remote-control', '--name', name, '--session-id', st.remoteId, ...(st.mode ? ['--permission-mode', st.mode] : [])];
   return st;
@@ -536,7 +538,8 @@ function lines(a, { bin = 'claude', started = null, restarted = null, dryRun = f
     const s = started && started[i.instance];
     if (i.viaUnit) {
       const viaHow = `systemctl --user start ${i.viaUnit}, the plugin's own unit for ${i.roleDir} (it reattaches its recorded session or starts a server that stays up)`;
-      if (s && s.why) out.push(`Missing: ${i.instance} (${why}); not started: ${s.why}.`);
+      if (s && s.failed) out.push(`Failed: ${i.instance} through its user unit ${i.viaUnit}: ${s.why}, so it is not counted as started and is retried at the next pass.`);
+      else if (s && s.why) out.push(`Missing: ${i.instance} (${why}); not started: ${s.why}.`);
       else if (s) out.push(`Started: ${i.instance} through its user unit ${i.viaUnit}: ${viaHow}.`);
       else if (a.go) out.push(`Missing: ${i.instance} (${why}); ${dryRun ? 'would start' : 'start runs'}: ${viaHow}.`);
       else out.push(`Missing: ${i.instance} (${why}); not started now (${a.paused ? 'paused' : !a.inFlight ? 'no work in flight' : 'the open sessions could not be read'}); start would run: ${viaHow}.`);

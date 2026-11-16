@@ -271,6 +271,8 @@ function restart(deps = {}, before, o = {}) {
   const restartUnit = (unit) => run('systemctl', ['--user', 'restart', unit]);
   // a missing role the plugin's own unit serves is started through it (team-revive.js startOwnUnit)
   const startUnit = (unit) => require('./team-revive.js').startOwnUnit(unit, { exec: run });
+  // each unit start or restart is settled as a spawned start is: down after SETTLE_MS, it is a failed start
+  const unitSettle = require('./team-revive.js').unitSettleOf(run, sleep);
   for (const t of before.teams) {
     if (t.manifestUnavailable || !t.team) continue;
     const root = t.root;
@@ -280,7 +282,7 @@ function restart(deps = {}, before, o = {}) {
     refused[root] = {};
     let r;
     try {
-      r = TR.revive(root, t.team, { start: true, cwd: deps.cwd, env: deps.env || process.env, home: deps.home, live: before.live, relist: () => sessionsNow(deps), only: want, ...(force.length ? { force } : {}), restartUnit, startUnit, ...(deps.spawn ? { spawn: deps.spawn } : {}), ...(deps.stop ? { stop: deps.stop } : {}), ...(deps.teamDeps ? deps.teamDeps(root) : {}) });
+      r = TR.revive(root, t.team, { start: true, cwd: deps.cwd, env: deps.env || process.env, home: deps.home, live: before.live, relist: () => sessionsNow(deps), only: want, ...(force.length ? { force } : {}), restartUnit, startUnit, unitSettle, ...(deps.spawn ? { spawn: deps.spawn } : {}), ...(deps.stop ? { stop: deps.stop } : {}), ...(deps.teamDeps ? deps.teamDeps(root) : {}) });
     } catch (err) { for (const i of want) refused[root][i] = `the start failed: ${firstLine(err)}`; for (const i of force) (unforced[root] = unforced[root] || {})[i] = `the restart pass failed: ${firstLine(err)}`; continue; }
     started[root] = {};
     // a start that exited within its settle is recorded failed by the start pass: named, not waited for

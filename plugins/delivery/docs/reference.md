@@ -1733,7 +1733,13 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   still the open one did not take (the unit's run-session found it live and exited 3), so it does not
   hold the next try: once the start caps allow, a later pass or the owner's restart restarts the unit
   again; only a restart that brought up a new session that still records the older version is not
-  tried again for that version, as for every role. Busy on
+  tried again for that version, as for every role. Every start or restart through the plugin's own
+  unit (this one, and a missing role's start) is settled as a spawned start is: the pass waits the same
+  60 seconds and reads `systemctl --user is-active <unit>`; a unit not active by then (inactive, failed,
+  or still activating, as a session that exits within seconds leaves it) gets a `failed` row naming the
+  start, the reply says `Failed`, and the next pass tries again instead of holding the hour; the daily
+  cap still counts it, so a unit that keeps failing stays bounded. An answer that cannot be read is not
+  judged. Busy on
   either read, it is named and left; with that unit not installed for its role directory it is named
   and left, since nothing else restarts it; a unit the plugin did not write on that directory is
   named with its fix, as above, and nothing is restarted. Its server is never stopped and no session
