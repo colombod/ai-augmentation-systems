@@ -2356,3 +2356,84 @@ test('a wake row is stamped at its spawn on the real clock, not at the pass star
   const row = WD.logRows(h.root).filter((r) => r.type === 'wake').pop();
   assert.ok(row && Date.parse(row.at) >= spawnedAt, `the row (${row && row.at}) is stamped at or after the spawn (${new Date(spawnedAt).toISOString()})`);
 });
+
+// 5q3: held messages reached their role cut at 600 characters mid-sentence ("... Do NOT", and on
+// 2026-11-16 "reference.md now describes thi"), unmarked, so the receiver could act against words it never
+// saw. A message is now delivered whole; one too long for a prompt says it was shortened and where the
+// full text is.
+test('5q3: a held message is delivered whole; one past the cap is marked shortened with the file and line holding it', () => {
+  const t0 = '2026-11-16T18:00:00Z';
+  const h = harness({});
+  const IB = require('./lib/inbox.js');
+  session(h, COS, { seen: iso(Date.parse(t0) - 2 * H) });
+  const long = `${'the order is unchanged and holds. '.repeat(30)}reference.md now describes this. Do NOT merge 104 before 107.`;
+  assert.ok(long.length > 600 && long.length < WD.MESSAGE_CHARS);
+  IB.queue(h.root, { to: COS, from: DM, message: long, at: t0 });
+  const spawn = spawner();
+  const bd = memStore(h);
+  const res = at(h, t0, ['run'], { spawn, bd });
+  assert.equal(spawn.list.length, 1, res.out);
+  assert.ok(spawn.list[0].args[5].includes(long), 'a message under the cap arrives whole');
+  assert.doesNotMatch(spawn.list[0].args[5], /shortened/);
+
+  const huge = `${'x'.repeat(WD.MESSAGE_CHARS)} Do NOT merge.`;
+  IB.queue(h.root, { to: COS, from: DM, message: huge, at: iso(Date.parse(t0) + 60e3) });
+  at(h, iso(Date.parse(t0) + 6 * 60e3), ['run'], { spawn, bd });
+  const p = spawn.list[1].args[5];
+  const file = path.join(h.root, '.delivery', 'watchdog', 'inbox', `${COS}.ndjson`);
+  assert.ok(p.includes(`[shortened: ${WD.MESSAGE_CHARS} of ${huge.length} characters; the full text is line 2 of ${file}]`), p.slice(-300));
+  assert.doesNotMatch(p, /Do NOT merge/);
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8').split('\n')[1]).message, huge, 'the file named holds the full text');
+});
+
+test('5q3: the inbox keeps a message whole up to its bound; past it, the real length is kept and the wake says the file holds its start', () => {
+  const t0 = '2026-11-16T18:00:00Z';
+  const h = harness({});
+  const IB = require('./lib/inbox.js');
+  const file = path.join(h.root, '.delivery', 'watchdog', 'inbox', `${COS}.ndjson`);
+  assert.ok(IB.MAX_TEXT > 1200, 'the old 1200-character store is gone');
+  const whole = 'y'.repeat(IB.MAX_TEXT);
+  IB.queue(h.root, { to: COS, from: DM, message: whole, at: t0 });
+  const row1 = JSON.parse(fs.readFileSync(file, 'utf8').split('\n')[0]);
+  assert.equal(row1.message, whole);
+  assert.equal(row1.length, undefined, 'a message within the bound records no length');
+  IB.markDelivered(h.root, COS, 1);
+  IB.queue(h.root, { to: COS, from: DM, message: `${whole}zz`, at: t0 });
+  const row2 = JSON.parse(fs.readFileSync(file, 'utf8').split('\n')[1]);
+  assert.equal(row2.message.length, IB.MAX_TEXT);
+  assert.equal(row2.length, IB.MAX_TEXT + 2);
+  session(h, COS, { seen: iso(Date.parse(t0) - 2 * H) });
+  const spawn = spawner();
+  at(h, t0, ['run'], { spawn, bd: memStore(h) });
+  assert.ok(spawn.list[0].args[5].includes(`[shortened: ${WD.MESSAGE_CHARS} of ${IB.MAX_TEXT + 2} characters; line 2 of ${file} holds its first ${IB.MAX_TEXT}]`), spawn.list[0].args[5].slice(-300));
+});
+
+test('5q3: more than five held messages: the prompt names the lines of the earlier ones', () => {
+  const t0 = '2026-11-16T18:00:00Z';
+  const h = harness({});
+  const IB = require('./lib/inbox.js');
+  session(h, COS, { seen: iso(Date.parse(t0) - 2 * H) });
+  for (let i = 1; i <= 7; i++) IB.queue(h.root, { to: COS, from: DM, message: `note ${i}`, at: t0 });
+  const spawn = spawner();
+  at(h, t0, ['run'], { spawn, bd: memStore(h) });
+  const file = path.join(h.root, '.delivery', 'watchdog', 'inbox', `${COS}.ndjson`);
+  assert.ok(spawn.list[0].args[5].includes(`7 messages arrived; the earlier 2 are lines 1-2 of ${file}; the last 5:`), spawn.list[0].args[5]);
+  assert.doesNotMatch(spawn.list[0].args[5], /note 2\b/);
+  assert.match(spawn.list[0].args[5], /note 7/);
+});
+
+test('5q3: a send-back note is whole up to the cap; a longer one says it was shortened and names the bead holding it', () => {
+  const t0 = Date.parse('2026-11-16T12:30:00Z');
+  const sessions = [sess6(B2, t0 - 60 * 60e3)];
+  const prompt = (note) => {
+    const review = { pr: '151', state: 'sent-back', beads: ['ex-review'], owners: [B2], sentBack: { id: 'rv-151-delivery-lead-9', at: new Date(t0 - 5 * 60e3).toISOString(), reason: 'changes', note } };
+    return WD.stalls({ now: iso(t0), beads: [], sessions, reviews: [review] }).stalls.find((s) => s.kind === 'review').prompt;
+  };
+  const long = `${'B1 safety: the dry run runs with a writable root. '.repeat(20)}Do NOT push until the result.`;
+  assert.ok(long.length > 600 && long.length < WD.MESSAGE_CHARS);
+  assert.ok(prompt(long).includes(long), 'a note under the cap arrives whole');
+  const huge = `${'y'.repeat(WD.MESSAGE_CHARS)} Do NOT push.`;
+  const p = prompt(huge);
+  assert.ok(p.includes(`[shortened: ${WD.MESSAGE_CHARS} of ${huge.length} characters; the full note is on ex-review]`), p.slice(-300));
+  assert.doesNotMatch(p, /Do NOT push/);
+});

@@ -9,7 +9,10 @@ const fs = require('fs');
 const path = require('path');
 
 const REL = path.join('.delivery', 'watchdog', 'inbox');
-const MAX_TEXT = 1200;
+// The file is where a message stays whole: a wake that must shorten one names its line here. It kept
+// only 1200 characters, so the full text was lost before any wake (5q3). The bound now only stops a
+// runaway send; a message past it records its real length, and the wake says the file holds its start.
+const MAX_TEXT = 65536;
 const safe = (s) => String(s || '').replace(/[^A-Za-z0-9._-]/g, '_');
 const file = (root, to) => path.join(root, REL, `${safe(to)}.ndjson`);
 const mark = (root, to) => path.join(root, REL, `${safe(to)}.delivered`);
@@ -20,7 +23,8 @@ function queue(root, { to, from, summary, message, at }) {
   fs.mkdirSync(dir, { recursive: true });
   const ig = path.join(root, '.delivery', 'watchdog', '.gitignore');
   if (!fs.existsSync(ig)) fs.writeFileSync(ig, '*\n');
-  fs.appendFileSync(file(root, to), `${JSON.stringify({ at: at || new Date().toISOString(), from: from || null, summary: summary ? String(summary).slice(0, 200) : null, message: String(message || '').slice(0, MAX_TEXT) })}\n`);
+  const text = String(message || '');
+  fs.appendFileSync(file(root, to), `${JSON.stringify({ at: at || new Date().toISOString(), from: from || null, summary: summary ? String(summary).slice(0, 200) : null, message: text.slice(0, MAX_TEXT), ...(text.length > MAX_TEXT ? { length: text.length } : {}) })}\n`);
   // the host job starts a run now, not at its next pass (lib/kick.js)
   require('./kick.js').kick(root, 'a message');
   return true;
@@ -40,7 +44,8 @@ function pending(root) {
     let rows = [];
     try { rows = fs.readFileSync(path.join(root, REL, f), 'utf8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch (err) { return null; } }).filter(Boolean); } catch (err) { continue; }
     const from = delivered(root, to);
-    if (rows.length > from) out.push({ to, entries: rows.slice(from), upTo: rows.length });
+    // file is where every message stays whole: a wake that must shorten one names it, with the line
+    if (rows.length > from) out.push({ to, entries: rows.slice(from), upTo: rows.length, file: path.join(root, REL, f) });
   }
   return out;
 }
@@ -79,4 +84,4 @@ function resolveTarget(team, name, host) {
   return names.includes(want) ? { to: want, via: null } : { unknown: true, names };
 }
 
-module.exports = { REL, queue, pending, markDelivered, delivered, unreachableTarget, resolveTarget };
+module.exports = { MAX_TEXT, REL, queue, pending, markDelivered, delivered, unreachableTarget, resolveTarget };
