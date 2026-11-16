@@ -245,8 +245,11 @@ function ledger(root) {
 // One start pass at a time per project: the Chief of Staff's `team-revive.js start` and the host job's
 // pass both go through revive(start), and two passes within seconds would each read a ledger without the
 // other's start and open two links in one directory. An exclusive lock file ('wx') beside the ledger
-// holds { pid, at }; a lock older than LOCK_STALE_MS (a pass spawns and records in well under that) or
-// whose pid no longer runs is a pass that died, and is broken. Held: { held: { pid } }; taken: { release }.
+// holds { pid, at }; a lock whose mtime is older than LOCK_STALE_MS, or whose pid no longer runs, is a pass
+// that died, and is broken. A pass can run for minutes (every settle waits SETTLE_MS, one per unit start or
+// restart and one for the spawned starts), so a live pass refreshes its lock's mtime before and after each
+// settle (refresh): its lock never ages past one settle and the work between two, well under the limit,
+// however many settles the pass holds. Held: { held: { pid } }; taken: { release, refresh }.
 const LOCK = 'revive.lock';
 const lockFile = (root) => path.join(root, WD.REL, LOCK);
 const LOCK_STALE_MS = 2 * 60e3;
@@ -254,7 +257,7 @@ function pidRuns(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; }
 }
-function startLock(root, { now = Date.now(), runs = pidRuns } = {}) {
+function startLock(root, { clock = Date.now, now = clock(), runs = pidRuns } = {}) {
   const file = lockFile(root);
   WD.ensureDir(root);
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -271,7 +274,17 @@ function startLock(root, { now = Date.now(), runs = pidRuns } = {}) {
     }
     const token = `${process.pid}-${now}-${Math.random().toString(36).slice(2)}`;
     try { fs.writeSync(fd, JSON.stringify({ pid: process.pid, at: new Date(now).toISOString(), token })); } finally { fs.closeSync(fd); }
+    // the lock's age is its mtime against the clock that judges it
+    try { fs.utimesSync(file, now / 1000, now / 1000); } catch (e) { /* judged by its creation time */ }
     return {
+      // a pass still running: its lock's mtime is now, so it is not judged stale while it settles
+      refresh() {
+        try {
+          if (JSON.parse(fs.readFileSync(file, 'utf8')).token !== token) return;
+          const t = clock() / 1000;
+          fs.utimesSync(file, t, t);
+        } catch (e) { /* gone or broken: the pass ends without it */ }
+      },
       release() {
         // only our own lock: one broken as stale and taken by another pass is that pass's
         try { if (JSON.parse(fs.readFileSync(file, 'utf8')).token === token) fs.unlinkSync(file); } catch (e) { /* gone already */ }

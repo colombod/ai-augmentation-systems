@@ -578,7 +578,16 @@ The Delivery Manager puts the command in the script step with `reality-check.js 
 commands that hold quotes, from a JSON file with `reality-check.js refine <bead> --from <file>`, where the
 file is `{"<criterion>": {"command": ..., "match": ..., "step": <k, default 1>, "as_role": <bool>}}`;
 the whole file is checked (known criteria and steps, known keys, a valid `match`) before anything is
-written. Plan writes steps with actions only, so on a command-line surface a story is neither ready
+written. Each new command is checked without being run (refine runs no product code): it refuses, and
+saves nothing, a command whose `DELIVERY_TEST_FILES` names a path that is not a file under the plugin
+root (a relative path counts only after a `cd` that says where it runs; otherwise name it
+`${DELIVERY_PLUGIN_ROOT}/...`); with `--from`, one refused command keeps every other one in the file from
+being applied, and `--unchecked '<why>'` saves it anyway and keeps the reason on the steps that had the
+problem. A command that ends in a pipe is a warning: its exit is then the last command's alone, so a pass
+rests on the match. `verify-run.js run` checks the same paths before it runs the step, and after it, a
+run of the sealed runner or of `node --test` that reports no test (`# tests 0`, or no test file found):
+either way the command checks nothing, so nothing is recorded and no andon is raised, and the Reality
+Checker is told to have the Delivery Manager refine it. Plan writes steps with actions only, so on a command-line surface a story is neither ready
 (`ready.js` blocks with `reality-check-command`, R-33) nor deployed (`evidence.js state <bead> deployed`
 refuses) while a planned step group has no step carrying a command; both name the criteria still
 without one. A bead with no script yet (one that states its own criteria) is refused deployed on a
@@ -1589,7 +1598,8 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   nor started: the check names it. A start pass holds `revive.lock` in the watchdog directory, so the
   Chief of Staff's `start` and the host job's never start the same instance twice; a pass that finds
   it held starts nothing and names the holder's pid, and a lock older than two minutes or whose pid is
-  gone is broken. Each start is a row in the watchdog directory's `revive.ndjson` (instance, pid,
+  gone is broken. A running pass refreshes its lock around each 60 s settle, so a pass that settles
+  several unit starts keeps its lock however long it runs. Each start is a row in the watchdog directory's `revive.ndjson` (instance, pid,
   time, arguments, the id it reattached), its output in `logs/revive-<instance>-<time>.log` beside it.
   `claude remote-control` takes no prompt, so a session it starts comes up with no turn. The watchdog
   reads these rows: the newest start of an instance, from two minutes to six hours old, whose session

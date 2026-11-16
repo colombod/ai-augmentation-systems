@@ -764,6 +764,72 @@ test('the unit settle check waits the settle window, then reads systemctl --user
   }
 });
 
+// The two real callers wire the settle check in: the owner's restart (host-manager.js restart) and the
+// watchdog's start pass (watchdog.js defaultRevive). Each restarts an older host manager through its unit,
+// the unit is down when the settle reads it, and a 'failed' row names the restart; the wait is the caller's
+// injected sleep, never a real 60 s one.
+const hmUnitDiesOnRestart = () => {
+  const m = machine({ alphaRoles: HM_ROLES });
+  hostManagerUnit(m);
+  runningRole(m, m.alpha, 'host-manager', { pid: 90, version: '1.1.0' });
+  // the restarted unit's session exits at once: is-active answers inactive after the restart
+  m.sd.onRestart = (unit) => { if (unit === HM.UNIT) m.sd.units[HM.UNIT].ActiveState = 'inactive'; };
+  return m;
+};
+const failedRows = (m) => R.ledger(m.alpha.root).filter((x) => x.type === 'failed').map((x) => [x.instance, x.unit, x.via]);
+
+// A start pass with unit settles runs for minutes (each settle waits SETTLE_MS): two units started through
+// their own unit settle for over two minutes, past what the start lock once allowed. The pass keeps its
+// lock all the same: a second pass started during the second settle finds it held and starts nothing.
+test('a start pass whose unit settles run past the old two-minute lock limit keeps its start lock: a second pass started during it is refused as held', () => {
+  const TR = require('./team-revive.js');
+  const m = machine({ beads: WORK });
+  const ownUnit = (i) => `delivery-role-${i}-${tag(m.alpha.root)}.service`;
+  for (const i of ['chief-of-staff', 'builder']) roleUnit(m, m.alpha.dir(i), ownUnit(i), `/usr/bin/env "node" "${path.join(m.alpha.root, '.delivery', 'bin', 'delivery.js')}" "host-manager.js" "run-session" "--project" "${m.alpha.root}" "--instance" "${i}"`);
+  const t0 = Date.now();
+  let t = t0;
+  const clock = () => t;
+  const starts = [];
+  let reads = 0;
+  let inner = null;
+  const opts = () => ({ start: true, cwd: m.base, env: { DELIVERY_HOST: 'pc', PATH: '/usr/bin', DELIVERY_CLAUDE_BIN: NO_CLAUDE }, home: m.home, live: [], relist: () => [], only: ['chief-of-staff', 'builder'], startUnit: (u) => starts.push(u), unitSettle, clock, spawn: () => { throw new Error('no spawn'); }, settle: null, systemdRun: null, ...m.deps().teamDeps(m.alpha.root) });
+  // each settle waits the window and a second for its read, on the injected clock; the second settle's
+  // read is when another pass starts
+  const unitSettle = TR.unitSettleOf(() => { reads++; if (reads === 2) inner = TR.revive(m.alpha.root, m.alpha.team, opts()); return 'active\n'; }, (ms) => { t += ms + 1000; });
+  const outer = TR.revive(m.alpha.root, m.alpha.team, opts());
+  assert.equal(reads, 2);
+  assert.ok(t - t0 > 2 * 60e3, `the pass ran ${t - t0} ms`);
+  assert.deepEqual(starts.length, 2, 'only the first pass started the units');
+  assert.ok(inner, 'a second pass ran during the second settle');
+  assert.deepEqual(inner.started, {});
+  assert.match(inner.lines.join('\n'), new RegExp(`another start pass holds the start lock \\(pid ${process.pid}\\b`));
+  assert.deepEqual(Object.keys(outer.started).sort(), ['builder', 'chief-of-staff']);
+  assert.equal(fs.existsSync(R.lockFile(m.alpha.root)), false, 'released after the pass');
+});
+
+test('the owner\'s restart settles its host manager unit restart: a unit inactive after the settle window is a failed start', () => {
+  const m = hmUnitDiesOnRestart();
+  m.run(['restart']);
+  assert.ok(m.sd.calls.includes(`systemctl --user restart ${HM.UNIT}`), m.sd.calls.join('\n'));
+  assert.ok(m.sd.calls.includes(`systemctl --user is-active ${HM.UNIT}`), m.sd.calls.join('\n'));
+  assert.ok(m.sleeps.includes(R.SETTLE_MS), `the restart's own sleep waits the settle: ${m.sleeps.join(', ')}`);
+  assert.deepEqual(failedRows(m), [['host-manager', HM.UNIT, 'unit']]);
+});
+
+test('the watchdog\'s start pass settles its host manager unit restart through its injected sleep: a unit inactive after the settle window is a failed start', () => {
+  const m = hmUnitDiesOnRestart();
+  const sleeps = [];
+  const lines = watchdog.defaultRevive(m.alpha.root, {
+    team: m.alpha.team, env: { DELIVERY_HOST: 'pc', PATH: '/usr/bin', DELIVERY_CLAUDE_BIN: NO_CLAUDE }, now: m.now, bd: store([]), live: m.live, exec: m.sd.exec,
+    sleep: (ms) => sleeps.push(ms), relist: () => m.live,
+    deps: { home: m.home, spawn: () => { throw new Error('no spawn'); }, stop: () => { throw new Error('no stop'); }, systemdRun: null, ...m.deps().teamDeps(m.alpha.root) },
+  });
+  assert.ok(m.sd.calls.includes(`systemctl --user restart ${HM.UNIT}`), `${m.sd.calls.join('\n')}\n${lines.join('\n')}`);
+  assert.deepEqual(sleeps, [R.SETTLE_MS]);
+  assert.deepEqual(failedRows(m), [['host-manager', HM.UNIT, 'unit']]);
+  assert.ok(lines.some((l) => /was not active 60s after the restart/.test(l)), lines.join('\n'));
+});
+
 test('a role served by a user unit that is down is never started in a scope: the reply names its unit', () => {
   const m = machine({ beads: WORK });
   roleUnit(m, m.alpha.dir('builder'), 'claude-alpha-builder.service');
@@ -1162,7 +1228,7 @@ test('run-session replaces an idle host-manager session running outside its unit
     assert.deepEqual(R.ledger(b.m.alpha.root).filter((x) => /^host-manager-/.test(x.type)), [], label);
   }
   // its server inside the unit, its cgroup unreadable, no Remote Control server, or run-session itself not in the unit: exit 3
-  for (const [label, o] of [['inside the unit, its MainPID', { serverCg: UNIT_CG, mainPid: 3531014 }], ['inside the unit, MainPID unreadable', { serverCg: UNIT_CG }], ['inside the unit, MainPID not a number', { serverCg: UNIT_CG, show: 'garbage\n' }], ['server cgroup unreadable', { serverCg: null }], ['no server', { server: null }], ['ps unreadable', { server: { unreadable: 'ps failed' } }], ['not run by the unit', { selfCg: OTHER_CG }]]) {
+  for (const [label, o] of [['inside the unit, its MainPID', { serverCg: UNIT_CG, mainPid: 3531014 }], ['inside the unit, MainPID unreadable', { serverCg: UNIT_CG }], ['inside the unit, MainPID not a number', { serverCg: UNIT_CG, show: 'garbage\n' }], ['inside the unit, MainPID empty', { serverCg: UNIT_CG, show: ' \n' }], ['server cgroup unreadable', { serverCg: null }], ['no server', { server: null }], ['ps unreadable', { server: { unreadable: 'ps failed' } }], ['not run by the unit', { selfCg: OTHER_CG }]]) {
     const c = setup(o);
     assert.equal(c.r.code, 3, `${label}: ${c.r.out}`);
     assert.match(c.r.out, /already runs as host-manager@pc/, label);
