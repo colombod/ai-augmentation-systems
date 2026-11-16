@@ -1104,7 +1104,7 @@ test('run-session replaces an idle host-manager session running outside its unit
     assert.deepEqual(R.ledger(b.m.alpha.root).filter((x) => /^host-manager-/.test(x.type)), [], label);
   }
   // its server inside the unit, its cgroup unreadable, no Remote Control server, or run-session itself not in the unit: exit 3
-  for (const [label, o] of [['inside the unit, its MainPID', { serverCg: UNIT_CG, mainPid: 3531014 }], ['inside the unit, MainPID unreadable', { serverCg: UNIT_CG }], ['inside the unit, MainPID not a number', { serverCg: UNIT_CG, show: 'garbage\n' }], ['server cgroup unreadable', { serverCg: null }], ['no server', { server: null }], ['ps unreadable', { server: { unreadable: 'ps failed' } }], ['not run by the unit', { selfCg: OTHER_CG }]]) {
+  for (const [label, o] of [['inside the unit, its MainPID', { serverCg: UNIT_CG, mainPid: 3531014 }], ['inside the unit, MainPID unreadable', { serverCg: UNIT_CG }], ['inside the unit, MainPID not a number', { serverCg: UNIT_CG, show: 'garbage\n' }], ['inside the unit, MainPID empty', { serverCg: UNIT_CG, show: ' \n' }], ['server cgroup unreadable', { serverCg: null }], ['no server', { server: null }], ['ps unreadable', { server: { unreadable: 'ps failed' } }], ['not run by the unit', { selfCg: OTHER_CG }]]) {
     const c = setup(o);
     assert.equal(c.r.code, 3, `${label}: ${c.r.out}`);
     assert.match(c.r.out, /already runs as host-manager@pc/, label);
