@@ -1,6 +1,7 @@
 // scripts/stories.test.js — the story command (stories.js, lib/stories.js): every change is checked
 // with the gates' parser and refused naming the field, the file's bytes unchanged. Runs in the sealed
 // suite (scripts/testing/run-tests.js).
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
