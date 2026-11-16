@@ -701,13 +701,8 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
   }
   const who = whoAmI({ cwd, env, project: o.project });
   if (!who.root) return { code: 2, out: 'watchdog.js: no project found; pass --project <root>' };
-<<<<<<< HEAD
-  if (cmd === 'pass') return rolePass(who.root, o, { bd, now, team: who.team, rows, env });
-  if (cmd === 'install') return install(who.root, o, { platform, home, env, exec, has, ...(live !== undefined ? { live } : {}) });
-=======
   if (cmd === 'pass') return rolePass(who.root, o, { bd, now, team: who.team, rows, env, live });
-  if (cmd === 'install') return install(who.root, o, { platform, home, env, exec, has });
->>>>>>> bcc228c (delivery: the pass gives each free builder one admitted builder item, and a builder is told one thing)
+  if (cmd === 'install') return install(who.root, o, { platform, home, env, exec, has, ...(live !== undefined ? { live } : {}) });
   if (cmd === 'uninstall') return uninstall(who.root, { platform, home, env, exec, has });
   const state = { installed: false };
   const go = ({ first = true } = {}) => {
