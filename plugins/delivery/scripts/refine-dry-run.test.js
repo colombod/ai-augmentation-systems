@@ -1,8 +1,9 @@
 require('./testing/role-env.js').clearRoleEnv();
-// scripts/refine-dry-run.test.js — 8l1.4.1.2: refine runs each new check command once on the installed
-// plugin, prints what it saw, and refuses a command whose test files are not under the plugin root or
-// whose test run finds no tests, unless --unchecked gives the reason. The andons it answers
-// (ev-delivery-plugin-planning-8l1.4.1-1..3) came from commands saved without ever running.
+// scripts/refine-dry-run.test.js — 8l1.4.1.2: refine checks each new check command without running it
+// (its lane runs no product code), refuses a command whose test files are not under the plugin root
+// unless --unchecked gives the reason, and warns on a trailing pipe. The run-time checks (no test found)
+// are verify-run.js's, in verify-run.test.js. The andons this answers (ev-delivery-plugin-planning-8l1.4.1-1..3)
+// came from commands saved without ever being checked.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
@@ -60,64 +61,55 @@ test('a command that ends in a pipe is told apart from one that only holds a pip
   assert.equal(CC.endsInPipe('node x'), false);
 });
 
-test('the dry run runs in a scratch directory of its own, removed after, with the role cleared and the plugin root named, under a time cap', () => {
-  const r = CC.dryRun('pwd; echo "root=$DELIVERY_PLUGIN_ROOT role=${DELIVERY_ROLE:-none}"', 'root=', { pluginRoot: PLUGIN_ROOT, env: { PATH: process.env.PATH, DELIVERY_ROLE: 'delivery-lead' } });
-  assert.equal(r.code, 0);
-  assert.equal(r.matched, true);
-  assert.equal(r.tail[1], `root=${PLUGIN_ROOT} role=none`);
-  assert.notEqual(r.tail[0], process.cwd());
-  assert.equal(fs.existsSync(r.tail[0]), false, 'the scratch directory is gone');
-  // inside the sealed runner: its temporary directory is the run's own, never the host's /tmp
-  assert.match(CC.dryRun('echo "tmp=$TMPDIR"', null, { pluginRoot: PLUGIN_ROOT }).tail.join(), /^tmp=\/tmp\/delivery-tests-\w+$/);
-  const slow = CC.dryRun('sleep 5', null, { pluginRoot: PLUGIN_ROOT, minutes: 0.005 });
-  assert.equal(slow.timedOut, true);
-  assert.match(slow.warnings.join(), /did not finish within/);
-  const zero = CC.dryRun('echo "# tests 0"; echo "# pass 0"', null, { pluginRoot: PLUGIN_ROOT });
-  assert.match(zero.problems.join(), /reports zero tests/);
-  assert.deepEqual(CC.dryRun('echo "# tests 12"', null, { pluginRoot: PLUGIN_ROOT }).problems, []);
+test('rv-217 F1 F2: no test found is judged only for a command that runs tests, and a missing test file counts', () => {
+  const runner = `${files(under(BD_TEST))} node ${under('scripts/testing/run-tests.js')}`;
+  assert.equal(CC.zeroTests(runner, '# tests 0\n# pass 0'), true);
+  assert.equal(CC.zeroTests(runner, 'Could not find \'/x/a.test.js\''), true, 'F1: node found no file');
+  assert.equal(CC.zeroTests(runner, 'Error: no test files found'), true);
+  assert.equal(CC.zeroTests('node --test scripts', '# tests 0'), true, 'node --test is a test run too');
+  assert.equal(CC.zeroTests(runner, '# tests 12\n# pass 12'), false);
+  // F2: any other command may print the same words
+  assert.equal(CC.zeroTests('echo "# tests 0"', '# tests 0'), false);
+  assert.equal(CC.zeroTests('grep -c "Could not find" log', 'Could not find'), false);
 });
 
-test('refine --command runs the command once and prints its last lines and whether the match holds', () => {
-  const { dm, step } = setup();
-  const r = dm('refine', ID, '--criterion', '1', '--step', '1', '--command', 'echo one; echo "root=$DELIVERY_PLUGIN_ROOT"', '--match', 'root=/');
+test('refine checks a command without running it: a good one is saved with no warning, a trailing pipe is warned', () => {
+  const { root, dm, step } = setup();
+  const marker = path.join(root, 'ran');
+  // refine runs nothing: a command that would write a file leaves no file
+  const r = dm('refine', ID, '--criterion', '1', '--step', '1', '--command', `touch ${marker}`, '--match', 'x');
   assert.equal(r.code, 0, r.out);
-  assert.match(r.out, /criterion 1 step 1: ran it once on the installed plugin: exit 0, match \/root=\/\/ holds; last lines:\n {2}\| one\n {2}\| root=\//);
-  assert.equal(step().command, 'echo one; echo "root=$DELIVERY_PLUGIN_ROOT"');
+  assert.equal(fs.existsSync(marker), false, 'the command did not run');
+  assert.doesNotMatch(r.out, /warning|ran it/);
+  assert.equal(step().command, `touch ${marker}`);
   assert.equal(step().unchecked, undefined);
-  // what it cannot refuse, it says: a match that does not hold, a failing exit, a trailing pipe
-  const w = dm('refine', ID, '--criterion', '1', '--step', '1', '--command', 'echo nope | tail -1; exit 3', '--match', 'yes');
-  assert.equal(w.code, 0, w.out);
-  assert.match(w.out, /warning: it exits 3 on the installed plugin/);
-  assert.match(w.out, /warning: its output on the installed plugin does not match \/yes\//);
   const pipe = dm('refine', ID, '--criterion', '1', '--step', '1', '--command', 'echo ok | tail -1');
-  assert.match(pipe.out, /warning: the command ends in a pipe/);
+  assert.match(pipe.out, /warning: criterion 1 step 1: the command ends in a pipe/);
 });
 
-test('refine refuses a command whose test files are not under the plugin root, or whose run finds no tests, and saves nothing', () => {
+test('refine refuses a command whose test files are not under the plugin root, and saves nothing', () => {
   const { dm, script } = setup();
   const before = JSON.stringify(script());
   const andon = dm('refine', ID, '--criterion', '1', '--step', '1', '--command', `${files(`checkout/${BD_TEST}`)} node scripts/testing/run-tests.js`, '--match', 'pass');
   assert.equal(andon.code, 1);
   assert.match(andon.out, /^reality-check\.js: criterion 1 step 1: checkout\/scripts\/lib\/bd\.test\.js is relative and no cd before it names where it runs/);
   assert.match(andon.out, /\nFix the command, or save it as it is with --unchecked '<why it cannot be checked here>'$/);
-  const zero = dm('refine', ID, '--criterion', '1', '--step', '1', '--command', 'echo "# tests 0"');
-  assert.equal(zero.code, 1);
-  assert.match(zero.out, /reports zero tests/);
   assert.equal(JSON.stringify(script()), before, 'nothing saved');
 });
 
-test('--unchecked saves a refused command with its reason, and a later checked refine clears it', () => {
+test('--unchecked saves a refused command with its reason, and a later clean refine clears it', () => {
   const { dm, step } = setup();
-  assert.match(dm('refine', ID, '--criterion', '1', '--step', '1', '--command', 'echo "# tests 0"', '--unchecked', '  ').out, /--unchecked needs the reason/);
-  const r = dm('refine', ID, '--criterion', '1', '--step', '1', '--command', 'echo "# tests 0"', '--unchecked', 'the tests it runs ship with this deploy');
+  const bad = `${files(under('scripts/gone.test.js'))} node x`;
+  assert.match(dm('refine', ID, '--criterion', '1', '--step', '1', '--command', bad, '--unchecked', '  ').out, /--unchecked needs the reason/);
+  const r = dm('refine', ID, '--criterion', '1', '--step', '1', '--command', bad, '--unchecked', 'the test it runs ships with this deploy');
   assert.equal(r.code, 0, r.out);
-  assert.match(r.out, /saved unchecked \(the tests it runs ship with this deploy\): criterion 1 step 1: the test run it starts reports zero tests/);
-  assert.equal(step().unchecked, 'the tests it runs ship with this deploy');
-  assert.equal(dm('refine', ID, '--criterion', '1', '--step', '1', '--command', 'echo "# tests 3"').code, 0);
+  assert.match(r.out, /saved unchecked \(the test it runs ships with this deploy\): criterion 1 step 1: \$\{DELIVERY_PLUGIN_ROOT\}\/scripts\/gone\.test\.js is not a file under the plugin root/);
+  assert.equal(step().unchecked, 'the test it runs ships with this deploy');
+  assert.equal(dm('refine', ID, '--criterion', '1', '--step', '1', '--command', 'echo fine').code, 0);
   assert.equal(step().unchecked, undefined);
 });
 
-test('refine --from checks every command before it applies any', () => {
+test('refine --from checks every command before it applies any, and --unchecked marks only the steps that had a problem (rv-217 F3)', () => {
   const { root, dm, script, step } = setup();
   const write = (body) => { const f = path.join(root, 'commands.json'); fs.writeFileSync(f, JSON.stringify(body)); return f; };
   const before = JSON.stringify(script());
@@ -126,10 +118,8 @@ test('refine --from checks every command before it applies any', () => {
   assert.equal(r.code, 1);
   assert.match(r.out, /criterion 2 step 1: \$\{DELIVERY_PLUGIN_ROOT\}\/scripts\/gone\.test\.js is not a file under the plugin root/);
   assert.equal(JSON.stringify(script()), before, 'criterion 1 is not applied either');
-  const ok = dm('refine', ID, '--from', write({ 1: { command: 'echo fine', match: 'fine' } }));
-  assert.equal(ok.code, 0, ok.out);
-  assert.match(ok.out, /criterion 1 step 1: ran it once on the installed plugin: exit 0, match \/fine\/ holds/);
   const forced = dm('refine', ID, '--from', write(bad), '--unchecked', 'criterion 2 ships its test with this deploy');
   assert.equal(forced.code, 0, forced.out);
   assert.equal(step(2).unchecked, 'criterion 2 ships its test with this deploy');
+  assert.equal(step(1).unchecked, undefined, 'the clean step is not marked');
 });

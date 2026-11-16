@@ -422,33 +422,38 @@ function refine(who, id, a, at, cwd, check = {}) {
   if (a.read_on_screen !== undefined) { s.artifact = { ...s.artifact, read_on_screen: a.read_on_screen }; changed.push('version on screen'); }
   if (a.precondition !== undefined) { s.preconditions = [...new Set([...(s.preconditions || []), a.precondition])]; changed.push('preconditions'); }
   if (!changed.length) return { code: 2, out: USAGE };
-  const dry = touched ? checkCommands([{ label: changed[0], step: touched }], a, check) : { lines: [] };
+  const dry = touched ? checkCommands([{ label: changed[0], step: touched }], a, check) : { lines: [], flagged: [] };
   if (dry.refusal) return dry.refusal;
+  if (touched) markUnchecked(touched, a, dry.flagged.includes(0));
   s.refined_by = who.instance;
   s.refined_at = at;
   fs.writeFileSync(path.join(who.root, scriptRel(id)), `${JSON.stringify(s, null, 2)}\n`);
   return { code: 0, out: [`${scriptRel(id)}: ${changed.join(', ')}`, ...dry.lines].join('\n') };
 }
 
-// Each new command runs once on the installed plugin before it is saved (lib/check-command.js): a test
-// file path that is not under the plugin root, or a run of zero tests, refuses the refine unless
-// --unchecked gives the reason; a step saved that way keeps the reason. { lines, refusal }
-function checkCommands(items, a, { env = process.env, pluginRoot = path.join(__dirname, '..'), dryRun = require('./lib/check-command.js').dryRun } = {}) {
+// Each new command is checked before it is saved, without running it (lib/check-command.js): this lane
+// runs no product code, so the run itself is verify-run.js's, in the Reality Checker's lane. A
+// DELIVERY_TEST_FILES path that is not a file under the plugin root refuses the refine unless --unchecked
+// gives the reason, and only the steps that had a problem keep that reason (rv-217 F3); a command that
+// ends in a pipe is a warning. { lines, flagged: [index of each item with a problem], refusal }
+function checkCommands(items, a, { pluginRoot = path.join(__dirname, '..') } = {}) {
   const CC = require('./lib/check-command.js');
   const lines = [];
   const problems = [];
-  for (const { label, step } of items) {
-    const r = dryRun(step.command, step.match, { pluginRoot, env });
-    lines.push(...CC.report(label, r, step.match));
-    for (const p of r.problems) problems.push(`${label}: ${p}`);
-  }
+  const flagged = [];
+  items.forEach(({ label, step }, i) => {
+    const mine = CC.testFileProblems(step.command, pluginRoot);
+    if (mine.length) flagged.push(i);
+    for (const p of mine) problems.push(`${label}: ${p}`);
+    if (CC.endsInPipe(step.command)) lines.push(`warning: ${label}: ${CC.PIPE_WARNING}`);
+  });
   if (problems.length && a.unchecked === undefined) {
     return { refusal: refuse(`${problems.join('; ')}; nothing is saved.\nFix the command, or save it as it is with --unchecked '<why it cannot be checked here>'`) };
   }
-  for (const { step } of items) { if (a.unchecked !== undefined && problems.length) step.unchecked = String(a.unchecked).trim(); else delete step.unchecked; }
   if (problems.length) lines.push(`saved unchecked (${String(a.unchecked).trim()}): ${problems.join('; ')}`);
-  return { lines };
+  return { lines, flagged };
 }
+const markUnchecked = (step, a, isFlagged) => { if (isFlagged && a.unchecked !== undefined) step.unchecked = String(a.unchecked).trim(); else delete step.unchecked; };
 
 // refine --from <file>: { "<criterion>": { command, match, [step], [as_role] } }. Drafted commands hold
 // single quotes, which a lane that refuses quote-escaping cannot pass as --command; a file carries them
@@ -494,7 +499,7 @@ function refineFrom(who, id, s, a, at, cwd = process.cwd(), check = {}) {
     step.match = e.match;
     if (e.as_role === true) step.as_role = true;
     if (e.as_role === false) delete step.as_role;
-    if (a.unchecked !== undefined && dry.lines.some((l) => l.startsWith('saved unchecked'))) step.unchecked = String(a.unchecked).trim(); else delete step.unchecked;
+    markUnchecked(step, a, dry.flagged.includes(plan.findIndex((x) => x.step === step)));
   }
   s.refined_by = who.instance;
   s.refined_at = at;
@@ -505,7 +510,7 @@ function refineFrom(who, id, s, a, at, cwd = process.cwd(), check = {}) {
 // open reality-check beads, for /delivery:team
 const pending = (beads) => (beads || []).filter((b) => (b.labels || []).includes(LABEL) && b.status !== 'closed');
 
-function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRecord, who: given, dryRun, pluginRoot } = {}) {
+function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRecord, who: given, pluginRoot } = {}) {
   const a = parse(argv);
   const [cmd, id] = a._;
   if (!['plan', 'refine', 'show', 'run-record'].includes(cmd) || !id) return { code: 2, out: USAGE };
@@ -518,7 +523,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
   const store = bd || require('./lib/bd.js').makeBd({ cwd: who.root });
   const at = now || new Date().toISOString();
   if (cmd === 'plan') return plan(who, store, id, a, at, verifyRecord);
-  if (cmd === 'refine') return refine(who, id, a, at, cwd, { env, ...(dryRun ? { dryRun } : {}), ...(pluginRoot ? { pluginRoot } : {}) });
+  if (cmd === 'refine') return refine(who, id, a, at, cwd, pluginRoot ? { pluginRoot } : {});
   return runRecord(who, store, id, a, { cwd, env, now: at, verifyRecord });
 }
 

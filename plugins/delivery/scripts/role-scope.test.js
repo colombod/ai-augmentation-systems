@@ -60,7 +60,6 @@ const PROCESS_FILES = {
   'scripts/host-manager.js': 'systemctl and which; it reads the sessions through the watchdog',
   'scripts/lib/andon.js': 'gh, to read CI runs',
   'scripts/lib/bd.js': 'bd, for every bead read and write',
-  'scripts/lib/check-command.js': 'refine\'s dry run of a check command, inside the sealed runner through node',
   'scripts/lib/codemap.js': 'git, for the feature map',
   'scripts/lib/gate-context.js': 'git, to find the project root',
   'scripts/lib/gh-pr.js': 'gh, to read pull requests',

@@ -1,22 +1,21 @@
-// scripts/lib/check-command.js — the first run of a reality-check command, at refine (8l1.4.1.2).
+// scripts/lib/check-command.js — what can be told about a reality-check command before and after it runs
+// (8l1.4.1.2), without running it here.
 //
-// Why: a check command used to be saved without ever running, so its first run was the real check on the
+// Why: a check command was saved without ever running, so its first run was the real check on the
 // deployed build, and a defect in the command itself became an andon on a product that was fine
 // (ev-delivery-plugin-planning-8l1.4.1-1..3: DELIVERY_TEST_FILES named paths that exist only under the
-// plugin root, the sealed runner found no test, and each run exited 1 in under a second). refine now runs
-// each new command once against the installed plugin and refuses, before it is saved:
+// plugin root, the sealed runner found no test, and each run exited 1 in under a second). These checks
+// are pure: refine (the Delivery Manager's, whose lane runs no product code) uses the path check and the
+// pipe warning; verify-run.js (the Reality Checker's, which runs the command) uses the path check before
+// the run and the zero-test check after it, and records neither outcome as a fail.
 //   - a DELIVERY_TEST_FILES path that is not a file under the plugin root (a relative path counts only
 //     after a cd that names where it runs: the check runs the command in another directory);
-//   - a test run that reports zero tests.
-// What it ran, its last lines, and whether the match holds are printed either way. A command that ends in
-// a pipe passes or fails on the last command's exit alone, so that is a warning.
+//   - a test run that reports zero tests;
+//   - a command that ends in a pipe passes or fails on the last command's exit alone (a warning).
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 
 const ROOT_ENV = 'DELIVERY_PLUGIN_ROOT';
-const DRY_MINUTES = 10;
-const TAIL_LINES = 8;
 const WORD = String.raw`"([^"]*)"|'([^']*)'|([^\s;&|()<>]+)`;
 const unq = (m, at) => (m[at] !== undefined ? m[at] : m[at + 1] !== undefined ? m[at + 1] : m[at + 2]);
 
@@ -77,54 +76,16 @@ function endsInPipe(command) {
   return lastPipe > lastSep;
 }
 
-// The TAP summary of a node test run says how many tests ran
-const zeroTests = (text) => /^#\s*tests\s+0\s*$/m.test(text);
+// whether the command runs tests: the plugin's sealed runner, or node's own test runner (rv-217 F2: only
+// then can an empty run mean the command is wrong; any other command may print what it likes)
+const RUNS_TESTS = /\brun-tests\.js\b|\bnode\b[^;&|\n]*\s--test\b/;
+const runsTests = (command) => RUNS_TESTS.test(String(command));
 
-const shq = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
+// whether such a run found no test: the TAP summary says # tests 0, or node says it found no test file
+// (rv-217 F1: "Could not find" a test file, or no test files)
+const NONE_FOUND = /^#\s*tests\s+0\s*$|Could not find\b|\bno test files\b/im;
+const zeroTests = (command, text) => runsTests(command) && NONE_FOUND.test(String(text));
 
-// Runs the command once: in a scratch directory of its own, inside the plugin's sealed runner (a check
-// command often runs tests, and a test run outside the seal leaves its fixtures in the host's shared
-// /tmp), with the role's variables cleared and DELIVERY_PLUGIN_ROOT naming the installed plugin, as
-// verify-run.js runs it, under a time cap. The runner clears every DELIVERY_ variable, so the root is
-// exported in the shell line it runs. { code, timedOut, stdout, stderr, matched, zero, tail, problems, warnings }
-function dryRun(command, match, { pluginRoot, env = process.env, minutes = DRY_MINUTES, spawn = require('child_process').spawnSync } = {}) {
-  const problems = testFileProblems(command, pluginRoot);
-  const warnings = [];
-  if (endsInPipe(command)) warnings.push('the command ends in a pipe, so its exit is the last command\'s alone and a pass rests on the match');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rc-dry-'));
-  let r;
-  try {
-    const clean = require('../review-run.js').cleanEnv(env);
-    // inside a seal already (this plugin's own tests), the runner must know it, or it opens a second
-    // sandbox the host refuses: that is this process's fact, whatever env the caller passed
-    if (process.env.DELIVERY_SEAL_ACTIVE && !clean.DELIVERY_SEAL_ACTIVE) clean.DELIVERY_SEAL_ACTIVE = process.env.DELIVERY_SEAL_ACTIVE;
-    const runner = path.join(pluginRoot, 'scripts', 'testing', 'run-tests.js');
-    const line = `${ROOT_ENV}=${shq(pluginRoot)}; export ${ROOT_ENV}\n${command}`;
-    r = spawn(process.execPath, [runner, '--', line], { cwd: dir, env: clean, encoding: 'utf8', timeout: minutes * 60e3, maxBuffer: 16 * 1024 * 1024 });
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-  const stdout = String(r.stdout || '');
-  const stderr = String(r.stderr || '');
-  const timedOut = !!(r.error && r.error.code === 'ETIMEDOUT');
-  const code = r.status === null || r.status === undefined ? null : r.status;
-  let matched = null;
-  if (match) { try { matched = new RegExp(match).test(stdout); } catch (err) { matched = null; } }
-  const zero = zeroTests(`${stdout}\n${stderr}`);
-  if (zero) problems.push('the test run it starts reports zero tests (# tests 0): its test file paths are not where it runs them');
-  if (timedOut) warnings.push(`it did not finish within ${minutes} minutes`);
-  else if (code !== 0) warnings.push(`it exits ${code === null ? 'by a signal' : code} on the installed plugin`);
-  if (matched === false) warnings.push(`its output on the installed plugin does not match /${match}/`);
-  const tail = (stdout.trim() ? stdout : stderr).trimEnd().split('\n').slice(-TAIL_LINES);
-  return { code, timedOut, stdout, stderr, matched, zero, tail, problems, warnings };
-}
+const PIPE_WARNING = 'the command ends in a pipe, so its exit is the last command\'s alone and a pass rests on the match';
 
-// The lines refine prints for one dry run
-function report(label, r, match) {
-  const lines = [`${label}: ran it once on the installed plugin: ${r.timedOut ? 'stopped at the time cap' : `exit ${r.code === null ? 'by a signal' : r.code}`}${match ? `, match /${match}/ ${r.matched ? 'holds' : 'does not hold'}` : ''}; last lines:`];
-  for (const l of r.tail) lines.push(`  | ${l}`);
-  for (const w of r.warnings) lines.push(`  warning: ${w}`);
-  return lines;
-}
-
-module.exports = { dryRun, report, testFileProblems, endsInPipe, zeroTests, DRY_MINUTES };
+module.exports = { testFileProblems, endsInPipe, zeroTests, runsTests, PIPE_WARNING, ROOT_ENV };
