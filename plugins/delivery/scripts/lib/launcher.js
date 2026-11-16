@@ -75,6 +75,9 @@ const root = resolveInstalledRoot({ project: PROJECT, atInstall: AT_INSTALL, con
 if (!root) { console.error('delivery launcher: the delivery plugin is not installed'); process.exit(2); }
 const script = path.join(root, 'scripts', name);
 if (!fs.existsSync(script)) { console.error('delivery launcher: the delivery plugin at ' + root + ' has no scripts/' + name); process.exit(2); }
+// the script replaces this process (node 22.15 and later), so a service that runs it through here holds
+// the script as its main process, and whatever the script execs in turn; a stop of the service reaches it
+if (typeof process.execve === 'function') process.execve(process.execPath, [process.execPath, script, ...process.argv.slice(3)], process.env);
 const r = require('child_process').spawnSync(process.execPath, [script, ...process.argv.slice(3)], { stdio: 'inherit' });
 process.exit(r.status === null ? 1 : r.status);
 `;

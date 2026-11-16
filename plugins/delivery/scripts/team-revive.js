@@ -263,7 +263,7 @@ function restartStale(root, f, a, { env, bin, spawn, stop, relist, systemdRun = 
         out[i.instance] = { why: `systemctl --user restart ${st.unit} failed: ${why}` };
         continue;
       }
-      R.record(root, { type: 'restart', at, instance: i.instance, unit: st.unit, via: 'unit', session_id: st.remoteId, from: st.version, to: st.installed, ...forced });
+      R.record(root, { type: 'restart', at, instance: i.instance, unit: st.unit, via: 'unit', session_id: st.remoteId, from_session: st.session, from: st.version, to: st.installed, ...forced });
       out[i.instance] = { unit: st.unit };
       continue;
     }

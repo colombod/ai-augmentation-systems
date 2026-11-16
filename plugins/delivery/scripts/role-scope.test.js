@@ -109,6 +109,8 @@ const UNIT_STARTS = {
   'scripts/team-revive.js#startOwnUnit': 'a unit start through systemctl: reset-failed, then start of the plugin\'s own role unit; it starts no session itself, the unit does',
   'scripts/host-manager.js#installRole': 'a unit start through systemctl: daemon-reload, then enable (with --now only when no session of the role is live) of the plugin\'s own role unit',
   'scripts/host-manager.js#execve': 'the unit\'s own session: run-session replaces itself with claude (process.execve), so the session is the unit\'s main process in the unit\'s cgroup, under its TasksMax',
+  'scripts/watchdog.js#defaultRevive': 'a unit restart through systemctl: restart of the plugin\'s own unit (the host manager\'s, on an older plugin and idle on a fresh read), handed to the start pass as restartUnit; it starts no session itself, the unit does',
+  'scripts/lib/launcher.js#execve': 'the launcher replaces itself with the plugin script it was asked to run (node, never claude), so a unit that runs run-session through it holds that script and the claude it execs as its main process',
 };
 const ALLOWED = {
   'scripts/host-manager.js#execFileSync(cmd, args': 'the host manager\'s systemctl runner: its cmd is a parameter, only systemctl and which; the file names claude elsewhere',
@@ -289,6 +291,13 @@ test('the starts through a user unit are listed with their reasons, and each is 
   const rs = body('scripts/host-manager.js', 'runSession');
   assert.equal([...rs.matchAll(/\bex\(/g)].length, 1);
   assert.match(rs, /process\.execve/);
+  // the watchdog's start pass restarts a unit only as systemctl --user restart of the unit it is given
+  const dr = body('scripts/watchdog.js', 'defaultRevive');
+  assert.deepEqual([...dr.matchAll(/runner\(exec\)\(([^;]*)\);/g)].map((m) => m[1]), ["'systemctl', ['--user', 'restart', unit]"]);
+  // the launcher's exec runs node on a plugin script, never claude or a command it was handed
+  const lb = require('./lib/launcher.js').launcherBody('/p', null, null);
+  assert.deepEqual([...lb.matchAll(/process\.execve\(([^\n]*)\);\n/g)].map((m) => m[1]), ['process.execPath, [process.execPath, script, ...process.argv.slice(3)], process.env']);
+  assert.match(lb, /const script = path\.join\(root, 'scripts', name\);/);
   // and the role unit carries the task limit a unit that holds one session needs
   const HMS = require('./host-manager.js');
   const SL = require('./lib/service-limits.js');
