@@ -2,6 +2,7 @@
 // The plugin's units in the owner's service directory (dec-chief-of-staff-000485): each is registered as
 // the plugin's own, kept fresh by heartbeats, removed when gone, and read before any start, stop or restart.
 // Every request goes to a fake directory: no test opens a socket.
+require('../testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
