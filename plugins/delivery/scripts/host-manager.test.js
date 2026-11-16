@@ -707,6 +707,43 @@ test('the unit settle check waits the settle window, then reads systemctl --user
   }
 });
 
+// The two real callers wire the settle check in: the owner's restart (host-manager.js restart) and the
+// watchdog's start pass (watchdog.js defaultRevive). Each restarts an older host manager through its unit,
+// the unit is down when the settle reads it, and a 'failed' row names the restart; the wait is the caller's
+// injected sleep, never a real 60 s one.
+const hmUnitDiesOnRestart = () => {
+  const m = machine({ alphaRoles: HM_ROLES });
+  hostManagerUnit(m);
+  runningRole(m, m.alpha, 'host-manager', { pid: 90, version: '1.1.0' });
+  // the restarted unit's session exits at once: is-active answers inactive after the restart
+  m.sd.onRestart = (unit) => { if (unit === HM.UNIT) m.sd.units[HM.UNIT].ActiveState = 'inactive'; };
+  return m;
+};
+const failedRows = (m) => R.ledger(m.alpha.root).filter((x) => x.type === 'failed').map((x) => [x.instance, x.unit, x.via]);
+
+test('the owner\'s restart settles its host manager unit restart: a unit inactive after the settle window is a failed start', () => {
+  const m = hmUnitDiesOnRestart();
+  m.run(['restart']);
+  assert.ok(m.sd.calls.includes(`systemctl --user restart ${HM.UNIT}`), m.sd.calls.join('\n'));
+  assert.ok(m.sd.calls.includes(`systemctl --user is-active ${HM.UNIT}`), m.sd.calls.join('\n'));
+  assert.ok(m.sleeps.includes(R.SETTLE_MS), `the restart's own sleep waits the settle: ${m.sleeps.join(', ')}`);
+  assert.deepEqual(failedRows(m), [['host-manager', HM.UNIT, 'unit']]);
+});
+
+test('the watchdog\'s start pass settles its host manager unit restart through its injected sleep: a unit inactive after the settle window is a failed start', () => {
+  const m = hmUnitDiesOnRestart();
+  const sleeps = [];
+  const lines = watchdog.defaultRevive(m.alpha.root, {
+    team: m.alpha.team, env: { DELIVERY_HOST: 'pc', PATH: '/usr/bin', DELIVERY_CLAUDE_BIN: NO_CLAUDE }, now: m.now, bd: store([]), live: m.live, exec: m.sd.exec,
+    sleep: (ms) => sleeps.push(ms), relist: () => m.live,
+    deps: { home: m.home, spawn: () => { throw new Error('no spawn'); }, stop: () => { throw new Error('no stop'); }, systemdRun: null, ...m.deps().teamDeps(m.alpha.root) },
+  });
+  assert.ok(m.sd.calls.includes(`systemctl --user restart ${HM.UNIT}`), `${m.sd.calls.join('\n')}\n${lines.join('\n')}`);
+  assert.deepEqual(sleeps, [R.SETTLE_MS]);
+  assert.deepEqual(failedRows(m), [['host-manager', HM.UNIT, 'unit']]);
+  assert.ok(lines.some((l) => /was not active 60s after the restart/.test(l)), lines.join('\n'));
+});
+
 test('a role served by a user unit that is down is never started in a scope: the reply names its unit', () => {
   const m = machine({ beads: WORK });
   roleUnit(m, m.alpha.dir('builder'), 'claude-alpha-builder.service');
