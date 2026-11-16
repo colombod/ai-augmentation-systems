@@ -44,7 +44,7 @@ const beadOfKey = (k) => { const m = /^(assigned|quiet|evidence):([^:]+)/.exec(S
 // drift item, a spike) nor an epic
 const BUILDER_LABELS = ['story', 'bug', 'security'];
 const OTHER_LANES = ['reality-check', 'phase-review', 'drift', 'spike'];
-function pass({ now, dm = 'delivery-lead', staffing = 'staffing', chief = 'chief-of-staff', cap, builders = [], beads = [], ready = [], sessions = [], wakes = [], prs = [], handoffs = [], messages = [], stallHours = 2, alive = () => false, caps = W.capsOf, live, prefix = null, claimable = () => true } = {}) {
+function pass({ now, dm = 'delivery-lead', staffing = 'staffing', chief = 'chief-of-staff', cap, builders = [], beads = [], ready = [], sessions = [], wakes = [], prs = [], handoffs = [], messages = [], stallHours = 2, alive = () => false, caps = W.capsOf, live, prefix = null, claimable = () => true, claimProblem = null } = {}) {
   const t = ms(now || new Date().toISOString());
   const byId = new Map(beads.filter(Boolean).map((b) => [b.id, b]));
   const G = require('./gates.js');
@@ -130,7 +130,16 @@ function pass({ now, dm = 'delivery-lead', staffing = 'staffing', chief = 'chief
     x.action = actionOf(x, { free, top, dm });
     if (x.action && x.action.to && free.includes(x.action.to)) free.splice(free.indexOf(x.action.to), 1);
   }
-  const p0 = ready.filter((b) => b && Number(b.priority) === 0 && !b.assignee && typeOf(b) !== 'epic' && !shipped(b));
+  // the claim check, asked once per item: an item it cannot read is reported by name and not offered,
+  // never a thrown pass (rv-221)
+  const claimErrors = [];
+  const admits = (b, taken = []) => {
+    try { return Boolean(claimable(b, taken)); } catch (err) {
+      if (!claimErrors.some((x) => x.bead === b.id)) claimErrors.push({ bead: b.id, error: String(err && err.message ? err.message : err).split('\n')[0] });
+      return false;
+    }
+  };
+  const p0 = ready.filter((b) => b && Number(b.priority) === 0 && !b.assignee && typeOf(b) !== 'epic' && !shipped(b) && admits(b));
   const holdingBuilders = instances.filter((x) => builders.includes(x.instance));
   // hjx.1.6.12.1: every free builder is paired with a ready item of its own, highest priority first (bd
   // ready's order within a priority), P0 or not; an epic, a spike (the Spike Researcher's), an assigned or
@@ -138,11 +147,18 @@ function pass({ now, dm = 'delivery-lead', staffing = 'staffing', chief = 'chief
   const prio = (b) => (Number.isFinite(Number(b.priority)) && b.priority !== null && b.priority !== '' ? Number(b.priority) : 4);
   const has = (b, l) => (b.labels || []).includes(l);
   const offer = ready.filter((b) => b && b.status !== 'closed' && !b.assignee && typeOf(b) !== 'epic' && !shipped(b)
-    && BUILDER_LABELS.some((l) => has(b, l)) && !OTHER_LANES.some((l) => has(b, l)) && claimable(b))
+    && BUILDER_LABELS.some((l) => has(b, l)) && !OTHER_LANES.some((l) => has(b, l)) && admits(b))
     .map((b, i) => ({ b, i })).sort((x, y) => prio(x.b) - prio(y.b) || x.i - y.i).map((x) => x.b);
+  // each pair is admitted with the ones before it counted as started, as the hook budgets several
+  // starts in one command (bd-guard projected): the pass never gives out more than the hook lets start
+  const given = [];
+  for (const b of offer) {
+    if (given.length >= free.length) break;
+    if (!given.length || admits(b, given)) given.push(b);
+  }
   let team = null;
-  if (offer.length && free.length) {
-    const pairs = free.slice(0, offer.length).map((to, k) => ({ bead: offer[k].id, to, priority: prio(offer[k]) }));
+  if (given.length && free.length) {
+    const pairs = given.map((b, k) => ({ bead: b.id, to: free[k], priority: prio(b) }));
     team = { kind: 'assign', bead: pairs[0].bead, to: pairs[0].to, pairs,
       why: `${pairs.map((x) => `${x.bead} to ${x.to}`).join(', ')}: ready, and ${pairs.length === 1 ? 'that builder holds' : 'those builders hold'} no work`,
       command: `${pairs.map((x) => `bd update ${x.bead} --assignee <actor>/${x.to}`).join('; ')}, then message each (--record does both)` };
@@ -157,7 +173,8 @@ function pass({ now, dm = 'delivery-lead', staffing = 'staffing', chief = 'chief
     else team = { kind: 'add-builder', bead: p0[0].id, count: builders.length + 1, to: staffing,
       why, command: `Message ${staffing} to add one with its roster command (approved, dec-chief-of-staff-000265; the owner is not asked): node \${CLAUDE_PLUGIN_ROOT}/scripts/team-role.js add builder --count ${builders.length + 1}; then assign ${p0[0].id} to the new builder (--record queues the message; the pass after the builder registers assigns it)` };
   }
-  return { at: new Date(t).toISOString(), dm, own, instances, team, liveUnknown: liveUnknown && !team && offer.length > 0 };
+  return { at: new Date(t).toISOString(), dm, own, instances, team, liveUnknown: liveUnknown && !team && offer.length > 0,
+    claimProblem: claimProblem || null, claimErrors };
 }
 
 // the one action for an instance that fails a check, most specific first
@@ -227,6 +244,9 @@ function lines(res) {
   }
   if (res.team) out.push(`3. Team: ${res.team.kind}: ${res.team.why}. ${res.team.command}`);
   else if (res.liveUnknown) out.push('3. Team: ready work waits, but no builder is called free: the open sessions could not be read (`claude agents --json`); check them, then pass again.');
+  // the claim check could not be built: nothing is offered, and the pass says why (rv-221)
+  if (res.claimProblem) out.push(`   No ready item is offered: the claim check could not be read (${res.claimProblem}); check it with plan.js today, then pass again.`);
+  for (const e of res.claimErrors || []) out.push(`   ${e.bead} is not offered: the claim check could not read it (${e.error}).`);
   return out;
 }
 

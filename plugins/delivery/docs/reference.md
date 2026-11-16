@@ -1376,10 +1376,16 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
      it; not stopped on the usage limit) is paired with a ready, unassigned builder item of its own (a story,
      a bug or a security bead, never another role's reality check, phase review, drift item or spike, never
      an epic or a shipped item, and only what the claim check admits, as the plan does: in a stopped area
-     only its linked fixes), highest priority first, P0 or not (`assign`, all pairs in one pass). A builder
+     only its linked fixes, nothing resting on an external-host assumption not yet observed, no later wave
+     that would leave the current one half-built, no start the owner-set budget cannot finish, no new area
+     near the limit), highest priority first, P0 or not (`assign`, all pairs in one pass). The pairs of one
+     pass are budgeted against each other, as the claim check budgets several starts in one command: each
+     counts as started for the next, so a pass gives out no more than could all start. A builder
      named as a reassign target is taken out of the free ones first, so no builder is told two items; when
-     the session list cannot be read no builder is called free, and the pass says so; with none free,
-     every builder failing and top-priority work ready, `add-builder` names `team-role.js add builder --count
+     the session list cannot be read no builder is called free, and the pass says so; when the claim check
+     itself cannot be read nothing is offered and the pass says why, and an item it cannot read is named
+     and left out; with none free,
+     every builder failing and top-priority work the claim check admits ready, `add-builder` names `team-role.js add builder --count
      <n+1>` for Staffing to run. A builder whose only failure is work waiting on the manager is not
      stuck (that wait is the manager's), so it never adds a builder. At `budget.builders_cap`, where the
      roster command refuses, `raise-cap` asks the Chief of Staff instead, for the owner to raise the cap.

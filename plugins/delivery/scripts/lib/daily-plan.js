@@ -79,22 +79,39 @@ function ownerQuestions(root, pending) {
 // only its linked fixes, a red main only its fixes), the assumption gate, and the area pause on a refuted
 // external assumption, each story read against its own initiative (Copilot 778). The plan and the
 // Delivery Manager's pass (lib/role-watch.js) offer only what this admits, so neither offers a claim the
-// hook refuses, nor hides recovery work the hook allows (Copilot 459). Returns (bead) => boolean.
+// hook refuses, nor hides recovery work the hook allows (Copilot 459). The waves, budget and new-area
+// refusals (waves.js claimFindings: wave-half-built, area-unchecked, new-area-near-limit, new-area) are
+// the hook's too (rv-221). Returns (bead, taken = []) => boolean, where taken lists the beads already
+// given out in the same pass: as the hook budgets the starts earlier in one command (bd-guard projected),
+// each counts as in progress and its share comes off the free budget, so one pass never hands out more
+// than the hook would let start.
 function claimAdmission(root, { bd, team, now, stories, beadOf, ctx, ci, verifyRecord } = {}) {
   const W = require('./waves.js');
   const A = require('./assumptions.js');
   const AN = require('./andon.js');
+  const B = require('./budget.js');
   const all = stories || bd.list({ label: 'story', all: true }) || [];
   const known = new Map(all.map((b) => [b.id, b]));
   const show = beadOf || ((id) => known.get(id) || safe(() => bd.show(id), null));
   const c = ctx || W.contextFor(root, { bd, team, beads: all, now, verifyRecord });
   const ciState = ci || AN.ciState(root, { team });
   const regs = A.registers(root, { bd, verifyRecord });
-  return (b) => {
+  const base = c.budget || { set: false };
+  // the share a start holds, as the hook projects it: none for a story already built
+  const shareOf = (b) => (base.set && !W.built(b) ? B.estimate(b, { t: base.table, team }).units * (1 + base.table.reserve) : 0);
+  const waveBlocks = (b, taken) => {
+    const ids = new Set(taken.map((x) => x.id));
+    const seen = all.map((s) => (ids.has(s.id) ? { ...s, status: 'in_progress' } : s));
+    const extra = taken.reduce((n, x) => n + shareOf(x), 0);
+    const st = base.set && extra ? { ...base, inflightNeed: base.inflightNeed + extra, free: base.free - extra, nearLimit: base.free - extra < base.table.units.S * (1 + base.table.reserve) } : base;
+    return W.claimFindings(b, { ...c, beads: seen, budget: st, fix: c.fixOf(b), reason: c.reasonOf(G.areaOf(b)) });
+  };
+  return (b, taken = []) => {
     if (!b) return false;
     const blocks = [...AN.claimFindings(b, { root, parent: b.parent ? show(b.parent) : null, fix: c.fixOf(b), stories: all, beadOf: show, team, now, ci: ciState }),
       ...(G.isStoryBead(b) ? A.forStory(root, b, { bd, team, verifyRecord, atClaim: true, regs }).findings : []),
-      ...(G.isStoryBead(b) ? [A.areaAndon(b, all, (s) => regs.rowsFor(G.initiativeOf(s)))].filter(Boolean) : [])].filter((x) => x.level === 'block');
+      ...(G.isStoryBead(b) ? [A.areaAndon(b, all, (s) => regs.rowsFor(G.initiativeOf(s)))].filter(Boolean) : []),
+      ...waveBlocks(b, taken)].filter((x) => x.level === 'block');
     return !blocks.length;
   };
 }

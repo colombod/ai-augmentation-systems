@@ -231,6 +231,8 @@ test('TR-6: every builder stuck and a top-priority bead ready: the pass adds a b
   assert.equal(moving.team, null);
   // no top-priority work ready: no builder is added
   assert.equal(RW.pass(facts({ now, ready: [{ ...ready[0], priority: 1 }], wakes: nightWakes(now) })).team, null);
+  // top-priority work the claim check refuses: no builder is added for it either (rv-221)
+  assert.equal(RW.pass(facts({ now, ready, wakes: nightWakes(now), claimable: () => false })).team, null);
 });
 
 test('a session stopped on the usage limit is reported with its resume time, not restarted; its top-priority work moves only to a free builder', () => {
@@ -454,11 +456,113 @@ test('hjx.1.6.12.1: the offer holds only builder items the claim check admits', 
   assert.deepEqual(ok.team.pairs.map((p) => p.bead), ['ex-stopped']);
 });
 
-test('hjx.1.6.12.1: the pass reads the claim check from the record: an item in a stopped area is not offered, its linked fix is', () => {
-  const { claimAdmission } = require('./lib/daily-plan.js');
-  assert.equal(typeof claimAdmission, 'function', 'the plan and the pass share one admission');
-  const RWsrc = fs.readFileSync(path.join(__dirname, 'lib', 'role-watch.js'), 'utf8');
-  assert.match(RWsrc, /claimAdmission\(/, 'role-watch reads its offer through the same admission');
+// rv-221 (2): the claim check the pass reads is the record's own, through read(); each case runs both ways
+const GF = require('./testing/gate-fixture.js');
+const { goalProject, ownerSets } = require('./testing/goal-fixture.js');
+const A = require('./lib/assumptions.js');
+const Gt = require('./lib/gates.js');
+const Goal = require('./lib/goal.js');
+const B = require('./lib/budget.js');
+const NOW12 = '2026-11-03T02:00:00Z';
+// read() on the project, then the pass on the night's builders with the claim check read() built
+function passOn(root, stories, ready) {
+  const store = GF.memBd(stories);
+  const f = RW.read(root, { bd: { ...store, list: store.list, show: store.show, ready: () => ready }, now: NOW12, live: undefined });
+  assert.equal(f.unreadable, undefined, f.unreadable);
+  assert.equal(f.claimProblem, null, f.claimProblem);
+  return RW.pass(facts12({ now: NOW12, ready, builders: four, sessions: fourLive(NOW12), wakes: nightWakes(NOW12), claimable: f.claimable }));
+}
+const offered = (res) => (res.team && res.team.pairs ? res.team.pairs.map((p) => p.bead) : []);
+const open12 = (id, metadata, labels = []) => GF.storyBead({ id, status: 'open', assignee: '', labels: ['roadmap', 'phase-1', 'story', ...labels], metadata: { story_file: 'vault-0n9-3.md', ...metadata } });
+
+test('hjx.1.6.12.1: read then pass: a story in an area stopped on a failed check is not offered; with no stop it is', () => {
+  // the same shipped story in both projects: its check failed and stopped the area, or it passed. An
+  // earlier story's passing check is in both, so the area counts as checked (R-33) and only the stop differs.
+  const id = 'ex-vault-imp-1';
+  const shippedIn = (root, result, sid = id) => {
+    const b = GF.storyBead({ id: sid, title: 'Import by file drop', status: 'closed', assignee: '', metadata: { area: 'import', story: sid.replace('ex-vault-', ''), deployed_sha: 'd478aa11' } });
+    b.labels.push(Gt.STATE.merged, Gt.STATE.deployed);
+    b.metadata.evidence_head = Gt.appendEvidence(root, sid, { type: 'row', criterion: 1, result, by: 'reality-checker', via: 'reality-check', surface: 'S1', sha: 'd478aa11', actor: 'x', at: '2026-10-17T21:04:00Z' }).head;
+    return b;
+  };
+  const stopped = GF.makeProject();
+  const failed = shippedIn(stopped, 'fail');
+  assert.equal(Goal.pauseOnTrigger({ root: stopped, who: { roleId: 'delivery-lead', instance: 'delivery-lead' }, trigger: `andon:ev-${id}-1`, bead: failed }).ok, true);
+  const next = open12('ex-vault-imp-2', { area: 'import' });
+  const elsewhere = open12('ex-vault-col-2', { area: 'collection' });
+  const earlier = (root) => shippedIn(root, 'pass', 'ex-vault-imp-0');
+  assert.deepEqual(offered(passOn(stopped, [earlier(stopped), failed, next, elsewhere], [next, elsewhere])), ['ex-vault-col-2'], 'the stopped area offers nothing; another area still does');
+  // the other direction: the check passed, no stop, and the same story is offered
+  const calm = GF.makeProject();
+  assert.deepEqual(offered(passOn(calm, [earlier(calm), shippedIn(calm, 'pass'), next, elsewhere], [next, elsewhere])), ['ex-vault-imp-2', 'ex-vault-col-2']);
+});
+
+const HANDOFF = 'The ChatGPT app passes an attached file to the tool as an https download link';
+const register = (rows) => `# Assumptions: vault\n\n## Register\n\n${A.HEADER}\n| :-- | :-- | :-- | :-- | :-- | :-- | :-- |\n${rows}`;
+test('hjx.1.6.12.1: read then pass: a story resting on an external-host assumption not yet observed is not offered; with none it is', () => {
+  const intake = open12('ex-vault-0n9-3', { area: 'collection', story: 'vault-0n9-3' });
+  const unsettled = GF.makeProject();
+  fs.writeFileSync(A.fileOf(unsettled, 'vault'), register(`| A-8 | ${HANDOFF} | external-host | vault-0n9-3#1 vault-0n9-3#2 | assumed |  | PM |\n`));
+  assert.deepEqual(offered(passOn(unsettled, [intake], [intake])), [], 'the claim hook refuses it (D4), so the pass does not offer it');
+  const none = GF.makeProject();
+  fs.writeFileSync(A.fileOf(none, 'vault'), register(''));
+  assert.deepEqual(offered(passOn(none, [intake], [intake])), ['ex-vault-0n9-3']);
+});
+
+// waves and the budget: an owner-set weekly budget, stories with their area, wave and size
+function budgeted(weekly) {
+  const t = goalProject();
+  ownerSets(t, 'budget.weekly_units', weekly);
+  fs.mkdirSync(path.join(t.root, '.delivery', 'stories'), { recursive: true });
+  return t.root;
+}
+const waved = (id, area, w, { status = 'open', size = 'M' } = {}) => ({ id: `x-${id}`, title: id, status, assignee: status === 'in_progress' ? 'dev@pc/builder-1' : '', parent: 'x-ph1',
+  labels: ['story', `size-${size}`, ...(w ? [`wave-${w}`] : [])], metadata: { story: id, area, ...(w ? { wave: w } : {}) } });
+
+test('hjx.1.6.12.1: read then pass: a later wave that would leave the current one half-built is not offered; with room it is', () => {
+  // wave 1 of library is under way (w1a built, w1b still to do); wave 2 is ready
+  const stories = [waved('w1a', 'library', 1, { status: 'in_progress' }), waved('w1b', 'library', 1), waved('w2a', 'library', 2, { size: 'L' })];
+  const later = stories[2];
+  // free enough for wave 2 alone (no budget-short), not for wave 2 and the rest of wave 1 together
+  const t = B.table(null);
+  const need = (b) => B.estimate(b, { t }).units * (1 + t.reserve);
+  const inflight = B.stillNeeds(stories[0], B.estimate(stories[0], { t }), t);
+  const weekly = Math.round(inflight + need(later) + need(stories[1]) / 2);
+  assert.deepEqual(offered(passOn(budgeted(weekly), stories, [later])), [], 'D5 wave-half-built: the hook refuses it');
+  assert.deepEqual(offered(passOn(budgeted(500), stories, [later])), ['x-w2a']);
+});
+
+test('hjx.1.6.12.1: one pass budgets its pairs against each other, as the hook budgets the starts in one command', () => {
+  const a = waved('ua', 'shelf', null, { size: 'L' });
+  const b = waved('ub', 'shelf', null, { size: 'L' });
+  const share = B.estimate(a, { t: B.table(null) }).units * (1 + B.table(null).reserve);
+  // room for one large story, not two: each alone is admitted, both together are not
+  assert.deepEqual(offered(passOn(budgeted(Math.ceil(share * 1.5)), [a, b], [a, b])), ['x-ua'], 'the second start would leave the first short (D5 budget-short)');
+  assert.deepEqual(offered(passOn(budgeted(Math.ceil(share * 3)), [a, b], [a, b])), ['x-ua', 'x-ub']);
+});
+
+// rv-221 (3), (5): a claim check that cannot be read offers nothing and says so; one bead it cannot read is named
+test('hjx.1.6.12.1: an unreadable claim check is shown in the pass, and one unreadable item is named, not thrown', () => {
+  const root = GF.makeProject();
+  const store = GF.memBd([]);
+  const locked = { ...store, list: (o = {}) => { if (o.label === 'story') throw new Error('the store is locked'); return store.list(o); }, ready: () => [], show: store.show };
+  const f = RW.read(root, { bd: locked, now: NOW12, live: undefined });
+  assert.match(String(f.claimProblem), /the store is locked/);
+  const res = RW.pass(facts12({ now: NOW12, ready: [item('ex-a', 0)], builders: four, sessions: fourLive(NOW12), wakes: nightWakes(NOW12), claimable: f.claimable, claimProblem: f.claimProblem }));
+  assert.equal(res.team, null);
+  assert.match(RW.lines(res).join('\n'), /No ready item is offered: the claim check could not be read \(the store is locked\)/);
+  // one item the check cannot read: named, and the rest still offered
+  const some = RW.pass(facts12({ now: NOW12, ready: [item('ex-bad', 0), item('ex-ok', 1)], builders: four, sessions: fourLive(NOW12), wakes: nightWakes(NOW12),
+    claimable: (x) => { if (x.id === 'ex-bad') throw new Error('story file unreadable'); return true; } }));
+  assert.deepEqual(offered(some), ['ex-ok']);
+  assert.match(RW.lines(some).join('\n'), /ex-bad is not offered: the claim check could not read it \(story file unreadable\)/);
+});
+
+// rv-221 (4): a builder stopped on its usage limit is not free
+test('hjx.1.6.12.1: a free builder stopped on its usage limit is not given work; the next free one is', () => {
+  const sessions = fourLive(NOW12).map((s) => (s.instance === 'builder-3' ? { ...s, limit: { at: NOW12, resetsAt: '2026-11-03T06:00:00Z' } } : s));
+  const res = RW.pass(facts12({ now: NOW12, ready: [item('ex-a', 0), item('ex-b', 1)], builders: four, sessions, wakes: nightWakes(NOW12) }));
+  assert.deepEqual(res.team.pairs.map((p) => [p.bead, p.to]), [['ex-a', 'builder-4']]);
 });
 
 // rv-203 (3): a builder named as a reassign target is not also given a team item
