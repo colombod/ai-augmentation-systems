@@ -91,6 +91,9 @@ switch (cmd) {
     if (!b) { process.stderr.write(`fake-bd: no such issue ${id}\n`); process.exit(1); }
     if (flags.title) b.title = flags.title;
     if (flags.parent !== undefined) b.parent = flags.parent || null;
+    // real bd copies a parent's labels onto a child it creates (bd 1.1.2, m7y); with this set the fake does
+    // it when a parent is given, so a test sees what a caller must undo
+    if (flags.parent && process.env.BD_FAKE_PARENT_LABELS === '1' && s.issues[flags.parent]) b.labels = [...new Set([...(b.labels || []), ...(s.issues[flags.parent].labels || [])])];
     if (flags['add-label']) for (const l of flags['add-label']) if (!b.labels.includes(l)) b.labels.push(l);
     if (flags['remove-label']) b.labels = b.labels.filter((l) => !flags['remove-label'].includes(l));
     // like bd as it is presumed to behave: --metadata replaces the bead's metadata, so a writer that

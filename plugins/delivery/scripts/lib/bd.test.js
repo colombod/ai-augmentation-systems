@@ -169,3 +169,14 @@ test('rv-216: a timeout is not read again, an error is; show() reads once; a tim
   const warned = makeBd({ env: bdThat('echo "warning: beads.role not configured (GH#2950)." >&2; sleep 5'), timeoutMs: 300 }).lookup('ex-1');
   assert.deepEqual(warned, { error: 'bd did not answer within 300 ms (timed out)' });
 });
+
+test('m7y: create under a parent drops the state labels bd copied from it, and keeps the ones asked for', () => {
+  const env = { ...fakeEnv(), BD_FAKE_PARENT_LABELS: '1' };
+  const bd = makeBd({ env });
+  bd.create({ id: 'ex-p', title: 'parent', type: 'task', labels: ['plugin', 'state-merged', 'state-deployed'] });
+  bd.create({ id: 'ex-p.1', title: 'child', type: 'task', parent: 'ex-p', labels: ['bug'] });
+  assert.deepEqual(bd.show('ex-p.1').labels.sort(), ['bug', 'plugin'], 'the copied state labels are gone, the rest stay');
+  bd.create({ id: 'ex-p.2', title: 'asked', type: 'task', parent: 'ex-p', labels: ['state-merged'] });
+  assert.deepEqual(bd.show('ex-p.2').labels.sort(), ['plugin', 'state-merged'], 'a state label asked for stays');
+  assert.deepEqual(bd.show('ex-p').labels.sort(), ['plugin', 'state-deployed', 'state-merged'], 'the parent is untouched');
+});

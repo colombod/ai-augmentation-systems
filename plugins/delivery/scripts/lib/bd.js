@@ -26,6 +26,20 @@ function lookupBead(store, id) {
   return b ? { bead: b } : { missing: true };
 }
 
+// bd copies a parent's labels onto every child it creates (bd 1.1.2, m7y), so a child of a merged and
+// deployed bead was born state-merged and state-deployed with no pull request, and the watchdog and the
+// plan sent the Delivery Manager to check work that never shipped. A state label is set only by its own
+// record (evidence.js state), so on a new child every state label its creator did not ask for is the
+// parent's and comes off. Returns the labels removed.
+const STATE_LABEL = /^state-/;
+function stripCopiedState(store, id, asked = []) {
+  const want = new Set(asked);
+  const b = store.show(id);
+  const copied = ((b && b.labels) || []).filter((l) => STATE_LABEL.test(l) && !want.has(l));
+  if (copied.length) store.update(id, { removeLabels: copied });
+  return copied;
+}
+
 // The refusal a script gives for a bead it could not read: the bd error by name, never "no bead".
 const lookupProblem = (id, r) => (r.error ? `bead ${id} could not be read: ${r.error}; try again in a moment` : `no bead ${id}`);
 
@@ -101,8 +115,12 @@ function makeBd({ cwd, env, timeoutMs } = {}) {
     if (priority !== undefined) args.push('--priority', String(priority));
     if (description) args.push('--description', description);
     const made = exec(args).trim() || id;
-    // real bd rejects --id together with --parent, so parent is set afterwards
-    if (parent) update(made, { parent });
+    // real bd rejects --id together with --parent, so parent is set afterwards; whatever labels bd then
+    // copied from the parent, the state ones come off
+    if (parent) {
+      update(made, { parent });
+      stripCopiedState({ show, update }, made, labels || []);
+    }
     return made;
   }
 
@@ -145,4 +163,4 @@ function makeBd({ cwd, env, timeoutMs } = {}) {
   return { exec, show, lookup, create, update, depAdd, depRemove, depsOf, list, ready, setTimeout };
 }
 
-module.exports = { makeBd, lookupBead, lookupProblem, readError, NOT_FOUND };
+module.exports = { stripCopiedState, makeBd, lookupBead, lookupProblem, readError, NOT_FOUND };

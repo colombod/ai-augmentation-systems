@@ -19,7 +19,7 @@ const G = require('./lib/gates.js');
 const { tupleOf, sameTuple, describe, TUPLE } = require('./lib/surface.js');
 const { whoAmI, gateInputs, writerProblem, recordChecker, EVIDENCE_WRITERS } = require('./lib/gate-context.js');
 
-const USAGE = 'usage: evidence.js add <bead> --criterion <n> --result pass|fail --surface <id> --sha <sha> [--run <ref>] | state <bead> merged|deployed [--pr <n>|--sha <sha> [--version <v>]] | waive <bead> --criterion <n> --record <dec-...> --risk <text> | cut <bead> --record <dec-...> --reason <text> | list <bead> | check <bead>';
+const USAGE = 'usage: evidence.js audit | add <bead> --criterion <n> --result pass|fail --surface <id> --sha <sha> [--run <ref>] | state <bead> merged|deployed [--pr <n>|--sha <sha> [--version <v>]] | waive <bead> --criterion <n> --record <dec-...> --risk <text> | cut <bead> --record <dec-...> --reason <text> | list <bead> | check <bead>';
 const VALUE = ['--criterion', '--result', '--surface', '--sha', '--run', '--pr', '--record', '--risk', '--reason', '--project', '--host', '--app', '--mode', '--install-artifact', '--version'];
 
 function parse(argv) {
@@ -48,6 +48,26 @@ function done(bead, inp) {
   const cut = G.beadCriteriaDrift(inp.checkStory, bead, inp.checkScript, inp.rows, inp.recordOk);
   if (cut) return { ok: false, criteria: [], problem: `${cut.detail} (D1)` };
   return G.doneCheck({ story: inp.checkStory, bead, rows: inp.rows, surface: inp.surface, noSurface: inp.noSurface, instances: inp.instances, recordOk: inp.recordOk });
+}
+
+// The one-off check of m7y: every bead whose state labels have no record behind them (a merged label with
+// no merged_pr or deployed_sha, a deployed or verified one with no deployed_sha), most of them the labels
+// bd copied from a parent. Read only; the Delivery Manager removes what it lists.
+function unbackedState(b) {
+  const l = b.labels || [];
+  const m = b.metadata || {};
+  const out = [];
+  if (!m.deployed_sha) for (const s of [G.STATE.verified, G.STATE.deployed]) if (l.includes(s)) out.push(s);
+  if (l.includes(G.STATE.merged) && !m.merged_pr && !m.deployed_sha) out.push(G.STATE.merged);
+  return out;
+}
+function audit(store) {
+  let beads;
+  try { beads = store.list({ all: true }) || []; } catch (err) { return { code: 1, out: `evidence.js: the beads could not be listed (${String(err.message || err).split('\n')[0]})` }; }
+  const bad = beads.map((b) => ({ b, labels: unbackedState(b) })).filter((x) => x.labels.length);
+  if (!bad.length) return { code: 0, out: 'evidence.js: every state label has its record behind it' };
+  return { code: 1, out: [`evidence.js: ${bad.length} bead${bad.length > 1 ? 's carry' : ' carries'} state labels with no record behind them; the Delivery Manager removes them:`,
+    ...bad.map(({ b, labels }) => `  ${b.id}: ${labels.join(', ')}${b.parent ? ` (child of ${b.parent})` : ''}`)].join('\n') };
 }
 
 // Append a row and record the new chain head in the bead (evidence_head), so the gate can tell a row
@@ -91,6 +111,11 @@ function unverifiedRecord(who, record, verifyRecord) {
 function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRecord, who: given, via } = {}) {
   const a = parse(argv);
   const [cmd, id, word] = a._;
+  if (cmd === 'audit' && !id) {
+    const who0 = given || whoAmI({ cwd, env, project: a.project });
+    if (!who0.root) return { code: 2, out: 'evidence.js: no project found; pass --project <root>' };
+    return audit(bd || require('./lib/bd.js').makeBd({ cwd: who0.root }));
+  }
   if (!cmd || !id) return { code: 2, out: USAGE };
   const who = given || whoAmI({ cwd, env, project: a.project });
   if (!who.root) return { code: 2, out: 'evidence.js: no project found; pass --project <root>' };
@@ -114,6 +139,9 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
 
   if (cmd === 'state') {
     if (word === 'merged') {
+      // a merged label is written only with the pull request behind it (m7y); a fix that shipped with no
+      // pull request is recorded by its deploy
+      if (!a.pr) return refuse(`${id} is not marked merged: name the merged pull request (evidence.js state ${id} merged --pr <n>), or record the deploy, which needs no pull request (evidence.js state ${id} deployed --sha <full sha>)`);
       // merged_at: when this merge was recorded, so a deploy before it (a follow-up PR on a story already
       // deployed) is told from the deploy of this merge (lib/handoff.js, merge-gate.js handOver)
       const again = a.pr && String(m.merged_pr || '') === String(a.pr) && m.merged_at;

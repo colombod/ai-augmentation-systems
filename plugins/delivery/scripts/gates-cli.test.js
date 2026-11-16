@@ -289,3 +289,21 @@ test('evidence.js: a deploy whose bead cannot be read back after the state write
   // the other direction: with bd answering, the same deploy goes through
   assert.equal(ev('state', ID, 'deployed', '--sha', 'd478aa11').code, 0);
 });
+
+// m7y: a merged label is written only with its pull request; audit lists the labels with no record behind them
+test('evidence.js: state merged without --pr is refused, with it recorded; audit lists state labels with no record', () => {
+  const { bd, ev, bead } = setup();
+  const no = ev('state', ID, 'merged');
+  assert.equal(no.code, 1);
+  assert.match(no.out, /ex-vault-0n9-3 is not marked merged: name the merged pull request \(evidence\.js state ex-vault-0n9-3 merged --pr <n>\)/);
+  assert.equal(G.stateOf(bead()), null);
+  assert.equal(ev('state', ID, 'merged', '--pr', '478').code, 0);
+  assert.equal(bead().metadata.merged_pr, '478');
+  // audit: the story is backed; a child that bd gave its labels is listed, with its parent
+  assert.match(evidence.main(['audit'], { cwd: setup().root, env, bd, now: NOW, who: whoFor(setup().root, 'delivery-lead') }).out, /every state label has its record behind it/);
+  bd.create({ id: 'ex-copied', title: 'a fix', parent: ID, labels: ['state-merged', 'state-deployed'], metadata: {} });
+  const r = evidence.main(['audit'], { cwd: setup().root, env, bd, now: NOW, who: whoFor(setup().root, 'delivery-lead') });
+  assert.equal(r.code, 1);
+  assert.match(r.out, /1 bead carries state labels with no record behind them/);
+  assert.match(r.out, /\n {2}ex-copied: state-deployed, state-merged \(child of ex-vault-0n9-3\)/);
+});

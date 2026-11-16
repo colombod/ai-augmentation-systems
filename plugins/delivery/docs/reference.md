@@ -511,11 +511,17 @@ count, the latest decides: a fail after a pass un-verifies the story. Anything
 else is a side arm or does not count. A waiver counts when recorded before the deploy and a cut counts at all only while its owner record
 still verifies: the gate re-runs `operator.js verify` on it. `evidence.js check <bead>` reports the gate without changing anything.
 
-**States.** `evidence.js state <bead> merged [--pr <n>]` and `evidence.js state <bead> deployed --sha
-<sha> [--version <v>]` set `state-merged` and `state-deployed` (and `deployed_sha`, `deployed_at`, and
-`deployed_version`, the version string the surface shows for that build); `state-verified`
-follows the rows, set when every criterion counts and removed when they no longer do (a new sha, a
-re-recorded criterion). Status words in the briefs come from these labels and the `ev-` ids, never
+**States.** `evidence.js state <bead> merged --pr <n>` and `evidence.js state <bead> deployed --sha
+<sha> [--version <v>]` set `state-merged` (with `merged_pr`) and `state-deployed` (and `deployed_sha`,
+`deployed_at`, and `deployed_version`, the version string the surface shows for that build); a merge is
+refused without its pull request, and a fix that shipped with none is recorded by its deploy.
+`state-verified` follows the rows, set when every criterion counts and removed when they no longer do (a
+new sha, a re-recorded criterion). bd copies a parent's labels onto every child it creates, so a new child
+of a merged or deployed bead would be born with that state and no record: the plugin's own creates, and a
+`bd create --parent` run in a role session (`hooks/scripts/label-strip.js`, after the command), remove
+every state label the creator did not ask for, and say so. `evidence.js audit` lists, read only, every bead
+whose state labels have no record behind them (a merged label with no `merged_pr` or `deployed_sha`, a
+deployed or verified one with no `deployed_sha`) for the Delivery Manager to remove. Status words in the briefs come from these labels and the `ev-` ids, never
 from a session's say-so; closed is not verified, so team status counts closed stories by their labels.
 
 **Reality checks (R-33).** A customer surface no test reaches is checked by an agent with browser
