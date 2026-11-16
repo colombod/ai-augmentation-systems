@@ -105,10 +105,12 @@ function checkLines(res) {
 
 // The Delivery Manager's pass: read-only unless --record, which keeps the pass row and notes each
 // action on the bead it names. Unreadable data is a line that says so, never a healthy team.
-function rolePass(root, o, { bd, now, team, rows, env = {} }) {
+function rolePass(root, o, { bd, now, team, rows, env = {}, live }) {
   const RW = require('./lib/role-watch.js');
   const store = bd || require('./lib/bd.js').makeBd({ cwd: root, timeoutMs: 10000 });
-  const facts = RW.read(root, { bd: store, now, team, rows });
+  // the sessions open on this host decide which builders are live (lib/one-session.js liveOf)
+  const open = live !== undefined ? live : liveSessions(env.DELIVERY_CLAUDE_BIN || 'claude', env);
+  const facts = RW.read(root, { bd: store, now, team, rows, live: open });
   // the record notes, assigns and messages as the manager: a role session of another instance only reads
   // the pass (the lane refuses it too; this holds for a lane that runs any command)
   if (o.record && env.DELIVERY_ROLE && !facts.unreadable && env.DELIVERY_ROLE !== facts.dm) return { code: 1, out: `watchdog.js: pass --record is ${facts.dm}'s; ${env.DELIVERY_ROLE} runs watchdog.js pass to read it and messages ${facts.dm}` };
@@ -703,7 +705,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
   }
   const who = whoAmI({ cwd, env, project: o.project });
   if (!who.root) return { code: 2, out: 'watchdog.js: no project found; pass --project <root>' };
-  if (cmd === 'pass') return rolePass(who.root, o, { bd, now, team: who.team, rows, env });
+  if (cmd === 'pass') return rolePass(who.root, o, { bd, now, team: who.team, rows, env, live });
   if (cmd === 'install') return install(who.root, o, { platform, home, env, exec, has, ...(live !== undefined ? { live } : {}) });
   if (cmd === 'uninstall') return uninstall(who.root, { platform, home, env, exec, has });
   const state = { installed: false };
