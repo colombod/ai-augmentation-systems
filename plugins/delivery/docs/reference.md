@@ -1589,7 +1589,8 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   nor started: the check names it. A start pass holds `revive.lock` in the watchdog directory, so the
   Chief of Staff's `start` and the host job's never start the same instance twice; a pass that finds
   it held starts nothing and names the holder's pid, and a lock older than two minutes or whose pid is
-  gone is broken. Each start is a row in the watchdog directory's `revive.ndjson` (instance, pid,
+  gone is broken. A running pass refreshes its lock around each 60 s settle, so a pass that settles
+  several unit starts keeps its lock however long it runs. Each start is a row in the watchdog directory's `revive.ndjson` (instance, pid,
   time, arguments, the id it reattached), its output in `logs/revive-<instance>-<time>.log` beside it.
   `claude remote-control` takes no prompt, so a session it starts comes up with no turn. The watchdog
   reads these rows: the newest start of an instance, from two minutes to six hours old, whose session

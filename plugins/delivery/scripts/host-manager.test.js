@@ -721,6 +721,35 @@ const hmUnitDiesOnRestart = () => {
 };
 const failedRows = (m) => R.ledger(m.alpha.root).filter((x) => x.type === 'failed').map((x) => [x.instance, x.unit, x.via]);
 
+// A start pass with unit settles runs for minutes (each settle waits SETTLE_MS): two units started through
+// their own unit settle for over two minutes, past what the start lock once allowed. The pass keeps its
+// lock all the same: a second pass started during the second settle finds it held and starts nothing.
+test('a start pass whose unit settles run past the old two-minute lock limit keeps its start lock: a second pass started during it is refused as held', () => {
+  const TR = require('./team-revive.js');
+  const m = machine({ beads: WORK });
+  const ownUnit = (i) => `delivery-role-${i}-${tag(m.alpha.root)}.service`;
+  for (const i of ['chief-of-staff', 'builder']) roleUnit(m, m.alpha.dir(i), ownUnit(i), `/usr/bin/env "node" "${path.join(m.alpha.root, '.delivery', 'bin', 'delivery.js')}" "host-manager.js" "run-session" "--project" "${m.alpha.root}" "--instance" "${i}"`);
+  const t0 = Date.now();
+  let t = t0;
+  const clock = () => t;
+  const starts = [];
+  let reads = 0;
+  let inner = null;
+  const opts = () => ({ start: true, cwd: m.base, env: { DELIVERY_HOST: 'pc', PATH: '/usr/bin', DELIVERY_CLAUDE_BIN: NO_CLAUDE }, home: m.home, live: [], relist: () => [], only: ['chief-of-staff', 'builder'], startUnit: (u) => starts.push(u), unitSettle, clock, spawn: () => { throw new Error('no spawn'); }, settle: null, systemdRun: null, ...m.deps().teamDeps(m.alpha.root) });
+  // each settle waits the window and a second for its read, on the injected clock; the second settle's
+  // read is when another pass starts
+  const unitSettle = TR.unitSettleOf(() => { reads++; if (reads === 2) inner = TR.revive(m.alpha.root, m.alpha.team, opts()); return 'active\n'; }, (ms) => { t += ms + 1000; });
+  const outer = TR.revive(m.alpha.root, m.alpha.team, opts());
+  assert.equal(reads, 2);
+  assert.ok(t - t0 > 2 * 60e3, `the pass ran ${t - t0} ms`);
+  assert.deepEqual(starts.length, 2, 'only the first pass started the units');
+  assert.ok(inner, 'a second pass ran during the second settle');
+  assert.deepEqual(inner.started, {});
+  assert.match(inner.lines.join('\n'), new RegExp(`another start pass holds the start lock \\(pid ${process.pid}\\b`));
+  assert.deepEqual(Object.keys(outer.started).sort(), ['builder', 'chief-of-staff']);
+  assert.equal(fs.existsSync(R.lockFile(m.alpha.root)), false, 'released after the pass');
+});
+
 test('the owner\'s restart settles its host manager unit restart: a unit inactive after the settle window is a failed start', () => {
   const m = hmUnitDiesOnRestart();
   m.run(['restart']);
