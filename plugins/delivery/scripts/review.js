@@ -62,9 +62,10 @@ function ghFor(who, gh, repo) {
 function beadsOf(store, ids) {
   const out = [];
   for (const id of ids) {
-    let b = null;
-    try { b = store.show(id); } catch (err) { b = null; }
-    if (!b) return { missing: id };
+    const found = require('./lib/bd.js').lookupBead(store, id);
+    if (found.error) return { unreadable: id, error: found.error };
+    if (!found.bead) return { missing: id };
+    const b = found.bead;
     out.push(b);
     if (b.parent && !(b.labels || []).includes('story')) { try { const p = store.show(b.parent); if (p) out.push(p); } catch (err) { /* the bead alone */ } }
   }
@@ -155,6 +156,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, gh, now, who: 
     const ids = [...new Set([...R.refsOf(view.body), ...a.bead])];
     if (!ids.length) return refuse(`PR ${pr} names no bead (\`Refs <bead id>\` in its body), so its author cannot be checked`, `Ask its owner to add the line, or name it: ${R.cmd('review.js', `request ${pr} --reviewer ${a.reviewer} --bead <id>`)}`);
     const got = beadsOf(store(), ids);
+    if (got.unreadable) return refuse(require('./lib/bd.js').lookupProblem(got.unreadable, { error: got.error }));
     if (got.missing) return refuse(`no bead ${got.missing}`, `Check the pull request's \`Refs\` line: \`bd show ${got.missing}\``);
     const bound = bindAuthor(pr, branch, got.beads, ids);
     if (bound.why) return refuse(bound.why, bound.fix);

@@ -62,7 +62,8 @@ switch (cmd) {
   case 'show': {
     const id = pos[0] || flags.id;
     const b = s.issues[id];
-    if (!b) { process.stderr.write(`fake-bd: no such issue ${id}\n`); process.exit(1); }
+    // real bd's words for an unknown id: lib/bd.js tells a missing bead from a failed read by them
+    if (!b) { process.stderr.write(`Error fetching ${id}: no issue found matching "${id}"\n`); process.exit(1); }
     if (flags.json) out([view(b)]); else process.stdout.write(`${b.id}: ${b.title}\n`);
     break;
   }
@@ -92,7 +93,9 @@ switch (cmd) {
     if (flags.parent !== undefined) b.parent = flags.parent || null;
     if (flags['add-label']) for (const l of flags['add-label']) if (!b.labels.includes(l)) b.labels.push(l);
     if (flags['remove-label']) b.labels = b.labels.filter((l) => !flags['remove-label'].includes(l));
-    if (flags.metadata) Object.assign(b.metadata, JSON.parse(flags.metadata));
+    // like bd as it is presumed to behave: --metadata replaces the bead's metadata, so a writer that
+    // sends only its own keys erases the rest (rv-205), and the tests see it
+    if (flags.metadata) b.metadata = JSON.parse(flags.metadata);
     for (const k of flags['unset-metadata'] || []) delete b.metadata[k];
     if (flags['append-notes']) b.notes = b.notes ? `${b.notes}\n${flags['append-notes']}` : flags['append-notes'];
     if (flags.status) b.status = flags.status;

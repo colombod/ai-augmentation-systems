@@ -791,14 +791,49 @@ function log(root, row) {
   return row;
 }
 
-// alive, and still a wake supervisor: a pid the system gave to another program since is not ours
-function pidAlive(pid) {
+// What the system says about a pid: whether it exists, its command line, and when it started (ms), each
+// null when it cannot be read. /proc first (Linux); ps for the command elsewhere. hjx.1.6.20: on one host
+// `ps -p` printed nothing for a pid that /proc showed, so ps alone is not trusted to say "unknown".
+const START_SLACK_MS = 60e3;
+// wake-run.js stops its group at the timeout, then waits the kill grace before SIGKILL, and lives until
+// the group is gone: an unreadable supervisor may be alive that long after its row
+const KILL_GRACE_MS = Number(process.env.DELIVERY_WAKE_KILL_GRACE_MS) || 30e3;
+const procReads = {
+  exists(pid) { try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; } },
+  cmdline(pid) {
+    try { const c = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').join(' ').trim(); if (c) return c; } catch (err) { /* no /proc */ }
+    try { const c = require('child_process').execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 }).trim(); return c || null; } catch (err) { return null; }
+  },
+  startedMs(pid) {
+    try {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+      const ticks = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19]);
+      const btime = Number((/^btime (\d+)$/m.exec(fs.readFileSync('/proc/stat', 'utf8')) || [])[1]);
+      // clock ticks are 100 a second on every Linux this runs on (USER_HZ)
+      return Number.isFinite(ticks) && btime ? btime * 1000 + ticks * 10 : null;
+    } catch (err) { return null; }
+  },
+};
+
+// A wake pid is a running wake only while it is that wake: alive, a wake supervisor (lib/wake-run.js),
+// and, given the wake row's time (since), started no later than the row (a supervisor is spawned, then
+// its row written). A pid the system gave to another program after the wake ended is not ours, nor is
+// a later wake on the same pid. When neither the command nor the start can be read, the pid is kept
+// only within the wake timeout plus the kill grace of its row (wake-run.js may live that long), so an
+// unreadable pid never holds installs and wakes with no end (hjx.1.6.20: a reused pid held every install
+// for 91 hours). With no row time, as before.
+function pidAlive(pid, { since = null, now = Date.now(), proc = procReads } = {}) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
-  try { process.kill(pid, 0); } catch (err) { if (err.code !== 'EPERM') return false; }
-  try {
-    const cmd = require('child_process').execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 });
-    return !cmd.trim() || /wake-run\.js/.test(cmd);
-  } catch (err) { return true; }
+  if (!proc.exists(pid)) return false;
+  const at = since ? ms(since) : NaN;
+  const cmd = proc.cmdline(pid);
+  if (cmd) {
+    if (!/wake-run\.js/.test(cmd)) return false;
+    const started = proc.startedMs(pid);
+    return !(Number.isFinite(at) && Number.isFinite(started) && started > at + START_SLACK_MS);
+  }
+  if (!Number.isFinite(at)) return true;
+  return (typeof now === 'number' ? now : ms(now)) - at <= WAKE_TIMEOUT_H * 3600e3 + KILL_GRACE_MS;
 }
 
 // a message and a handoff (lib/handoff.js) are the team's handovers, not stalls: woken by the message rules
@@ -816,7 +851,7 @@ const handoffsOf = (stalls) => stalls.filter((s) => s.kind === 'handoff').map((s
 
 // The wakes due now, one per target session, carrying the stall lines it may still be woken for.
 // { wakes: [{ target, keys, lines, prompt }], waiting: [stall], held: [{ target, lines, reason }] }
-function plan(res, { root, now, alive = pidAlive } = {}) {
+function plan(res, { root, now, alive = (pid, since) => pidAlive(pid, { since, now }) } = {}) {
   const t = ms(now || new Date().toISOString());
   const rows = logRows(root).filter((r) => r.type === 'wake');
   // a session on its own usage limit is woken for nothing before its reset (Copilot 416)
@@ -851,7 +886,7 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
     // row (a merge's deploy, a deploy's check) is never held by a daily cap: merges and deploys bound it.
     const day = (f) => mine.filter((r) => f(r) && t - ms(r.at) < 24 * 3600e3);
     const handover = (items) => {
-      if (last && alive(last.pid)) return { go: [], holds: [{ items, why: 'its last wake is still running; it is woken again when that wake ends' }] };
+      if (last && alive(last.pid, last.at)) return { go: [], holds: [{ items, why: 'its last wake is still running; it is woken again when that wake ends' }] };
       if (items.every(standing) && last && t - ms(last.at) < MESSAGE_EVERY_MS) return { go: [], holds: [{ items, why: `woken at ${clock(ms(last.at))}; assigned work waits ${MESSAGE_EVERY_MS / 60000} min between wakes` }] };
       const holds = [];
       // the message day counts every wake but those for assigned work alone (6z5)
@@ -886,7 +921,7 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
     // so they spend none of the stall budget either (rv-190)
     const stallRows = mine.filter((r) => (r.keys || []).some((k) => !/^(message|handoff|assigned|review|started|unclaimed):/.test(String(k))));
     const lastStall = stallRows[stallRows.length - 1];
-    if (last && alive(last.pid)) reason = 'its last wake is still running';
+    if (last && alive(last.pid, last.at)) reason = 'its last wake is still running';
     else if (lastStall && t - ms(lastStall.at) < WAKE_EVERY_MS) reason = `woken at ${clock(ms(lastStall.at))}; one wake an hour`;
     else if (stallRows.filter((r) => t - ms(r.at) < 24 * 3600e3).length >= cap.daily) reason = `woken ${cap.daily} times in a day; alarm only until the count falls`;
     // each stall waits 1, 2, 4 ... hours after each wake that carried it. A handover (message, handoff,
@@ -937,10 +972,20 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
 // (delivery-plugin-planning-8wz). A wake still running is never stopped; the next one starts fresh.
 const FRESH_ABOVE = 120000;
 // prefix: the team's bead prefix; the fresh session is named <instance>@<team> (lib/session-name.js)
-function wakeCommand(s, prompt, live, mode = 'auto', { freshAbove = FRESH_ABOVE, installed = null, prefix = null } = {}) {
+// unit: the user unit that serves the role directory (lib/team-revive.js remoteControlUnitFor), or none.
+// Such a role is started only by its unit: a wake that would start a session (resume, continue, fresh) is
+// a second start path beside it, so it is skipped; a live session still gets the wake as a message.
+function wakeCommand(s, prompt, live, mode = 'auto', { freshAbove = FRESH_ABOVE, installed = null, prefix = null, unit = null } = {}) {
   const m = mode && mode !== 'default' ? ['--permission-mode', mode] : [];
-  const r = wakeArgs(s, prompt, live, { prefix });
   const older = Boolean(installed) && require('./plugin-version.js').compare(s && s.pluginVersion, installed) === -1;
+  // the host manager's session is its unit's (delivery-host-manager.service): on an older plugin it is
+  // moved onto the installed one only by a restart of that unit when idle (team-revive's stale-session
+  // restart), never woken in place, as a message, a resume or a fresh session beside the unit
+  if (older && s && require('./manifest.js').canonicalRoleId(s.role || s.instance) === 'host-manager') {
+    return { skip: `it runs the delivery plugin ${s.pluginVersion} and ${installed} is installed: the host manager is moved onto it only by a restart of its unit ${require('./host-manager.js').UNIT} (when idle), never woken in place` };
+  }
+  const r = wakeArgs(s, prompt, live, { prefix });
+  if (unit && r.args) return { skip: `it is served by the user unit ${unit}, which starts it; no wake session is started beside it, and the wake goes to its session as a message once it is live` };
   if (r.mode === 'resume' && (older || (freshAbove > 0 && Number.isFinite(s.context) && s.context > freshAbove))) {
     // named like every role session (start.js --name), so peers reach it by name (team rule 13)
     const name = require('./session-name.js').sessionName(s.instance, prefix);
@@ -988,4 +1033,4 @@ function wakeArgs(s, prompt, live, { prefix = null } = {}) {
   return { mode: 'resume', args: ['--resume', s.session, '-p', prompt] };
 }
 
-module.exports = { reviveStarts, START_SETTLE_MIN, START_FRESH_H, MANAGER_STEP, managerPrs, refusedInstalls, MANAGER_DAILY_CAP, MANAGER_MESSAGE_DAILY_CAP, ASSIGNED_DAILY_CAP, MANAGER_ASSIGNED_DAILY_CAP, reviewFacts, capsOf, ASSIGNED_IDLE_MIN, WAKE_OPENING, wakePrompt, withA3s, FRESH_ABOVE, contextOf, MESSAGE_EVERY_MS, MESSAGE_DAILY_CAP, WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };
+module.exports = { KILL_GRACE_MS, START_SLACK_MS, procReads, reviveStarts, START_SETTLE_MIN, START_FRESH_H, MANAGER_STEP, managerPrs, refusedInstalls, MANAGER_DAILY_CAP, MANAGER_MESSAGE_DAILY_CAP, ASSIGNED_DAILY_CAP, MANAGER_ASSIGNED_DAILY_CAP, reviewFacts, capsOf, ASSIGNED_IDLE_MIN, WAKE_OPENING, wakePrompt, withA3s, FRESH_ABOVE, contextOf, MESSAGE_EVERY_MS, MESSAGE_DAILY_CAP, WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };

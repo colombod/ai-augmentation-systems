@@ -210,6 +210,40 @@ test('R-43 and R-42: idle with ready work wakes the Delivery Manager; a busy ses
   assert.deepEqual(fresh('beta-'), ['--name', `${sessions[0].instance}@beta`]);
 });
 
+test('hjx.1.6.10.1.2.1: a role a user unit serves is never woken by a session the watchdog starts; a live one still gets the wake as a message', () => {
+  const now = Date.parse('2026-10-12T10:20:00Z');
+  const s = { instance: COS, role: COS, session: 's-cos', roleDir: os.tmpdir(), lastActive: now - H };
+  const down = WD.wakeCommand(s, 'go', [], 'auto', { unit: 'claude-rc-chief-of-staff.service' });
+  assert.equal(down.args, undefined, 'nothing is started beside the unit');
+  assert.match(down.skip, /served by the user unit claude-rc-chief-of-staff\.service, which starts it; no wake session is started beside it/);
+  // a fresh wake (context or an older plugin) is a start too
+  assert.equal(WD.wakeCommand({ ...s, context: WD.FRESH_ABOVE + 1 }, 'go', [], 'auto', { unit: 'u.service' }).args, undefined);
+  const idle = WD.wakeCommand(s, 'go', [{ sessionId: 's-cos', status: 'idle', pid: 77 }], 'auto', { unit: 'u.service' });
+  assert.equal(idle.mode, 'message');
+});
+
+test('hjx.1.6.10.1.2.1: the wake pass reads the unit that serves the role directory and starts no session for that role', () => {
+  const t0 = '2026-10-12T22:00:00Z';
+  const beads = { 'ex-p0': { id: 'ex-p0', status: 'open', priority: 0, created_at: iso(Date.parse(t0) - H) } };
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wd-home-'));
+  const units = path.join(home, '.config', 'systemd', 'user');
+  fs.mkdirSync(units, { recursive: true });
+  const run = (withUnit) => {
+    const h = harness({ beads });
+    session(h, DM, { seen: t0 });
+    if (withUnit) fs.writeFileSync(path.join(units, 'dm.service'), `[Service]\nWorkingDirectory=${h.roleDir(DM)}\nExecStart=/opt/x/claude remote-control\n`);
+    const spawn = spawner();
+    const store = memStore(h);
+    const out = every15(t0, 2).map((now) => at(h, now, ['run'], { spawn, bd: store, home }).out).join('\n');
+    return { r: { out }, spawn };
+  };
+  const plain = run(false);
+  assert.ok(plain.spawn.list.length >= 1, plain.r.out);
+  const served = run(true);
+  assert.deepEqual(served.spawn.list, [], served.r.out);
+  assert.match(served.r.out, /Not woken: delivery-lead: it is served by the user unit dm\.service/);
+});
+
 test('R-04: a bead in progress is stalled only when neither the bead nor its holder\'s session moved for stall_hours', () => {
   const now = Date.parse('2026-10-12T12:00:00Z');
   const beads = [{ id: 'ex-1', status: 'in_progress', assignee: 'dev@pc/builder-1', updated_at: iso(now - 3 * H) }];
@@ -2288,4 +2322,37 @@ test('hjx.1.6.17: a live session that does not take the wake is reported and lef
   assert.match(rd.out, /^Woke builder-1 \(message to its live session sess-builder-1 .*\) \(it runs twice: /m);
   assert.deepEqual(to, ['/r/cc-socks/1.sock']);
   assert.deepEqual(spawn.list, []);
+});
+
+// rv-202: a wake whose start ran nothing (systemd-run refused the scope, and the role had a live session
+// by then) was still logged as woken, and its messages were marked delivered
+test('a wake that started nothing is no wake: no wake row, and its messages stay waiting for the next pass', () => {
+  const t0 = '2026-11-14T14:00:00Z';
+  const h = harness({});
+  const IB = require('./lib/inbox.js');
+  session(h, 'builder-1', { seen: iso(Date.parse(t0) - 2 * H) });
+  IB.queue(h.root, { to: 'builder-1', from: DM, message: 'merge main into your branch', at: t0 });
+  const seen = [];
+  const r = at(h, t0, ['run'], { spawn: (bin, args, o) => { seen.push(typeof o.stillMissing); return null; }, bd: memStore(h), live: [] });
+  assert.deepEqual(seen, ['function'], 'the spawner is given the live re-check for its plain retry');
+  assert.match(r.out, /^Not woken: builder-1: its start ran nothing \(systemd-run refused the scope; log \S+\); its messages stay waiting\./m);
+  assert.equal(WD.logRows(h.root).filter((x) => x.type === 'wake').length, 0, 'no wake row');
+  assert.equal(IB.pending(h.root).length, 1, 'the message is still waiting');
+});
+
+// rv-204: a wake row is stamped at its spawn on the real clock, not at the pass start: the running-wake
+// check reads the supervisor's start against the row, and a pass's reads and earlier spawns take real
+// time. Every other case injects its clock; this one runs on the real one.
+test('a wake row is stamped at its spawn on the real clock, not at the pass start', () => {
+  const t = Date.now();
+  const h = harness({});
+  session(h, 'builder-1', { seen: iso(t - 9 * H) });
+  require('./lib/inbox.js').queue(h.root, { to: 'builder-1', from: DM, summary: 'PR 75', message: 'merge main into your branch', at: iso(t - 60e3) });
+  let spawnedAt = null;
+  // a spawn that takes a while, as a real one can: the row must not carry the time from before it
+  const spawn = (bin, args, o) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 120); spawnedAt = Date.now(); return 999999999; };
+  watchdog.main(['run'], { cwd: h.root, env: fakeEnv(h), live: [], bd: memStore(h), spawn, sweep: () => ({ removed: [], failed: [] }), revive: () => [] });
+  assert.ok(spawnedAt, 'the wake was spawned');
+  const row = WD.logRows(h.root).filter((r) => r.type === 'wake').pop();
+  assert.ok(row && Date.parse(row.at) >= spawnedAt, `the row (${row && row.at}) is stamped at or after the spawn (${new Date(spawnedAt).toISOString()})`);
 });

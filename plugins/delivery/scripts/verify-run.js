@@ -111,8 +111,9 @@ function run(who, store, bead, a, { cwd, env, now, spawn, verifyRecord }) {
   if (wp) return refuse(wp.replace("the Delivery Manager's", "the Reality Checker's"));
   const n = Number(a.criterion);
   if (!Number.isInteger(n) || n < 1) return { code: 2, out: USAGE };
-  const b = store.show(bead);
-  if (!b) return refuse(`no bead ${bead}`);
+  const found = require('./lib/bd.js').lookupBead(store, bead);
+  if (!found.bead) return refuse(require('./lib/bd.js').lookupProblem(bead, found));
+  const b = found.bead;
   const m = b.metadata || {};
   const sha = String(m.deployed_sha || '');
   if (!SHA.test(sha)) return refuse(`${bead} has no full deployed sha (it has "${sha || 'none'}"): a check runs on a deploy recorded with the full sha (evidence.js state ${bead} deployed --sha <full sha>)`);
@@ -195,9 +196,9 @@ function probe(who, store, id, a, { env, now, spawn }) {
   if (wp) return refuse(wp.replace("the Delivery Manager's", "the Reality Checker's"));
   const minutes = a.minutes === undefined ? PROBE_MINUTES : Number(a.minutes);
   if (!(minutes > 0)) return { code: 2, out: USAGE };
-  let b = null;
-  try { b = store.show(id); } catch (err) { b = null; }
-  if (!b) return refuse(`no bead ${id}`);
+  const found = require('./lib/bd.js').lookupBead(store, id);
+  if (!found.bead) return refuse(require('./lib/bd.js').lookupProblem(id, found));
+  const b = found.bead;
   if (!isSpike(b)) return refuse(`${id} is not a spike bead: a story is checked with verify-run.js run ${id} --criterion <n>`);
   const m = b.metadata || {};
   const slug = G.initiativeOf(b);
