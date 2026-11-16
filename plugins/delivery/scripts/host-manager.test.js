@@ -2042,6 +2042,94 @@ test('restart --down-only and the tick read a host job unit\'s directory entry b
   assert.match(t.out, new RegExp(`^Not back: alpha's host job, still silent: its timer runs but no pass since .*, and delivery-watchdog-${ka}\\.service was not started: the service directory lists delivery-watchdog-${ka}\\.service as owned by "colombod"`, 'm'), t.out);
 });
 
+// team-revive.js start (the host manager's lane runs it) starts a role's own unit only after the unit's
+// service-directory entry is read, as every other path does, even with no unit start handed to it.
+test('team-revive.js start reads a role unit\'s directory entry before starting it: a free one is started; one another owner holds, or one the plugin registered that someone removed, is not', () => {
+  const TR = require('./team-revive.js');
+  const SC = 'systemctl --user';
+  const ownExec = (m) => `/usr/bin/env "node" "${path.join(m.alpha.root, '.delivery', 'bin', 'delivery.js')}" "host-manager.js" "run-session" "--project" "${m.alpha.root}" "--instance" "chief-of-staff"`;
+  const own = (m) => `delivery-role-chief-of-staff-${tag(m.alpha.root)}.service`;
+  const go = (dir) => {
+    const m = machine({ beads: WORK });
+    if (dir) m.dir = dir(m);
+    roleUnit(m, m.alpha.dir('chief-of-staff'), own(m), ownExec(m));
+    m.sd.units[own(m)] = loaded(false);
+    const r = TR.main(['start', '--project', m.alpha.root], { cwd: m.base, env: { DELIVERY_HOST: 'pc', PATH: '/usr/bin', DELIVERY_CLAUDE_BIN: NO_CLAUDE }, home: m.home, live: [], relist: () => [], only: ['chief-of-staff'], spawn: () => 4242, settle: null, systemdRun: null, unitExec: m.sd.exec, sdFetch: m.dir.fetch, who: { root: m.alpha.root, team: m.alpha.team, roleId: null }, ...m.deps().teamDeps(m.alpha.root) });
+    return { m, r, started: m.sd.calls.includes(`${SC} start ${own(m)}`), refused: R.ledger(m.alpha.root).filter((x) => x.type === 'start-refused') };
+  };
+  const free = go();
+  assert.ok(free.started, free.m.sd.calls.join('\n'));
+  assert.equal(free.m.dir.entry(own(free.m)).owner, 'delivery plugin', 'registered first');
+  const held = go((m) => fakeDirectory({ entries: [{ name: own(m), url: 'http://x', owner: 'colombod' }] }));
+  assert.ok(!held.started, held.m.sd.calls.join('\n'));
+  assert.equal(held.refused.length, 1);
+  assert.match(held.refused[0].why, /owned by "colombod", not by the delivery plugin, so the plugin does not start it/);
+  const removed = go((m) => fakeDirectory({ entries: [SD.entryFor(HM.TICK_TIMER)], registered: [own(m), HM.TICK_TIMER] }));
+  assert.ok(!removed.started, removed.m.sd.calls.join('\n'));
+  assert.equal(removed.m.dir.entry(own(removed.m)), null, 'not registered again');
+  assert.match(removed.refused[0].why, /was removed from the service directory/);
+});
+
+// An install never brings back a name the owner removed from the directory: it is not posted, and the
+// start after it is refused, so the unit is enabled only. A name that expired is registered and started.
+test('install does not register again a unit whose entry the plugin registered and someone removed, and does not start it; an expired one is registered and started', () => {
+  const SC = 'systemctl --user';
+  const roles = [{ id: 'chief-of-staff', host: 'pc' }, { id: 'host-manager', host: 'pc' }];
+  const m = machine({ alphaRoles: roles });
+  m.dir = fakeDirectory({ entries: [SD.entryFor(HM.TICK_TIMER)], registered: [HM.UNIT, HM.TICK_TIMER] });
+  const r = m.run(['install', '--project', m.alpha.root]);
+  assert.equal(r.code, 0, r.out);
+  assert.equal(m.dir.entry(HM.UNIT), null, 'not registered again');
+  assert.match(r.out, /^Not registered with the service directory again, its entry removed since the plugin registered it \(the owner may have taken it out of the plugin's hands\): delivery-host-manager\.service$/m, r.out);
+  assert.ok(!m.sd.calls.includes(`${SC} enable --now ${HM.UNIT}`), m.sd.calls.join('\n'));
+  assert.match(r.out, /^Not started now: the entry the delivery plugin registered for delivery-host-manager\.service was removed from the service directory.*; delivery-host-manager\.service is enabled only\.$/m, r.out);
+  const x = machine({ alphaRoles: roles });
+  x.dir = fakeDirectory({ entries: [SD.entryFor(HM.TICK_TIMER)], registered: [HM.UNIT, HM.TICK_TIMER], registeredAt: new Date(Date.now() - 2 * 3600e3).toISOString() });
+  const rx = x.run(['install', '--project', x.alpha.root]);
+  assert.equal(x.dir.entry(HM.UNIT).owner, 'delivery plugin', 'expired: registered again');
+  assert.ok(x.sd.calls.includes(`${SC} enable --now ${HM.UNIT}`), rx.out);
+  // the watchdog's own install: a removed job unit is not posted again either
+  const w = machine();
+  const t = watchdog.tagOf(w.alpha.root);
+  const d = fakeDirectory({ entries: [SD.entryFor(HM.TICK_TIMER)], registered: [`delivery-watchdog-${t}.path`, HM.TICK_TIMER] });
+  const rw = watchdog.main(['install', '--apply', '--project', w.alpha.root], { cwd: w.alpha.root, env: { PATH: '/usr/bin', DELIVERY_HOST: 'pc' }, home: w.home, platform: 'linux', exec: w.sd.exec, has: () => true, live: [], hostUnit: { sdFetch: d.fetch } });
+  assert.equal(d.entry(`delivery-watchdog-${t}.path`), null);
+  assert.match(rw.out, new RegExp(`^Not registered with the service directory again, .*: delivery-watchdog-${t}\\.path$`, 'm'), rw.out);
+  assert.equal(d.entry(`delivery-watchdog-${t}.timer`).owner, 'delivery plugin');
+});
+
+// A directory that lost every entry (reset, or restarted empty after a host restart) does not lock the
+// plugin's units out: its missing names are registered again and the changes go ahead.
+test('a directory that lost every entry: the next pass registers the missing names again and the owner\'s restart goes ahead; one up since before still refuses a removed name', () => {
+  const SC = 'systemctl --user';
+  const m = machine({ beads: WORK });
+  const a = tag(m.alpha.root);
+  const b = tag(m.beta.root);
+  m.run(['restart']);
+  const restarts = (u) => m.sd.calls.filter((c) => c === `${SC} restart ${u}`).length;
+  assert.equal(restarts(`delivery-watchdog-${a}.timer`), 1);
+  // the directory comes back empty
+  m.dir.entries = [];
+  m.run(['restart']);
+  assert.equal(restarts(`delivery-watchdog-${a}.timer`), 2, 'restarted again');
+  assert.equal(restarts(`delivery-watchdog-${b}.timer`), 2);
+  assert.equal(m.dir.entry(`delivery-watchdog-${a}.timer`).owner, 'delivery plugin', 'registered again');
+  // empty again: the watchdog pass registers the units it finds
+  m.dir.entries = [];
+  const line = watchdog.directoryPass(m.alpha.root, { home: m.home, exec: m.sd.exec, sdFetch: m.dir.fetch });
+  assert.match(line, /^service directory: registered /, line);
+  assert.doesNotMatch(line, /not registered again/, line);
+  // a restart registers again what that pass did not reach (beta's job, last seen before the loss)
+  m.run(['restart']);
+  assert.equal(restarts(`delivery-watchdog-${b}.timer`), 3);
+  // up since then (the plugin's other entries listed): a name removed after it was seen again is refused
+  m.dir.entries = m.dir.entries.filter((e) => e.name !== `delivery-watchdog-${b}.timer`);
+  m.run(['restart']);
+  assert.equal(restarts(`delivery-watchdog-${b}.timer`), 3, 'not restarted');
+  assert.equal(restarts(`delivery-watchdog-${a}.timer`), 4);
+  assert.equal(m.dir.entry(`delivery-watchdog-${b}.timer`), null, 'not registered again');
+});
+
 // the watchdog's own install registers the job's units, which are the plugin's
 test('watchdog.js install registers the job\'s service, timer and path units with the service directory, and not a name another owner holds', () => {
   const m = machine();
@@ -2134,6 +2222,11 @@ test('a role scope a start path creates is registered with the service directory
   assert.equal(r3.pid, 77, 'the start runs all the same');
   assert.ok(!RSheld.posted, 'no POST for a scope name another owner holds');
   assert.match(r3.directoryHeld, /owned by "colombod", not by the delivery plugin/);
+  // the wake's start takes the pass's directory (one bounded request path per pass), not a fetch of its own
+  const wd = fakeDirectory();
+  const pid = watchdog.spawnWake('claude', ['-p', 'go'], { cwd: m.base, env: { DELIVERY_ROLE: 'builder' }, logPath: log, systemdRun: '/usr/bin/systemd-run', spawn: fake, settle: () => new Set(), stillMissing: () => true, sdFetch: wd.fetch });
+  assert.equal(pid, 77);
+  assert.equal(wd.entries.filter((e) => /^delivery-role-builder-\d+\.scope$/.test(e.name)).length, 1, 'registered through the fetch it was handed');
 });
 
 test('host-manager.js directory lists this node\'s entries and their health, the plugin\'s own first, in any role session; it writes nothing', () => {

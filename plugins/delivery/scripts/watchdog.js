@@ -142,8 +142,8 @@ const defaultDeliver = (socket, text) => require('./lib/session-message.js').del
 // --scope execs its command, so the pid is still the supervisor's.
 // Returns the supervisor's pid, or null when nothing started (systemd-run refused the scope and the role
 // had a live session by then, or the sessions could not be listed again): no wake to log.
-function spawnWake(bin, args, { cwd, env, logPath, systemdRun, spawn, settle, stillMissing }) {
-  const r = require('./lib/role-scope.js').startRole(process.execPath, [path.join(__dirname, 'lib', 'wake-run.js'), String(wakeLimitMs(env)), bin, ...args], { instance: env.DELIVERY_ROLE, env, cwd, logPath, systemdRun, spawn, settle, stillMissing });
+function spawnWake(bin, args, { cwd, env, logPath, systemdRun, spawn, settle, stillMissing, sdFetch }) {
+  const r = require('./lib/role-scope.js').startRole(process.execPath, [path.join(__dirname, 'lib', 'wake-run.js'), String(wakeLimitMs(env)), bin, ...args], { instance: env.DELIVERY_ROLE, env, cwd, logPath, systemdRun, spawn, settle, stillMissing, sdFetch });
   if (!r.pid && r.refused) { try { fs.appendFileSync(logPath, `watchdog: systemd-run refused scope ${r.refused}, and no plain start followed: ${r.why}\n`); } catch (e) { /* the log is best effort */ } }
   if (r.directoryHeld) { try { fs.appendFileSync(logPath, `watchdog: scope ${r.unit} is not registered with the service directory: ${r.directoryHeld}\n`); } catch (e) { /* the log is best effort */ } }
   return r.pid;
@@ -214,7 +214,7 @@ function wakeAlive(ended, now) {
   return (pid, since) => !ended.has(pid) && WD.pidAlive(pid, { since, now });
 }
 
-function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWake, ended = new Set(), deliver = defaultDeliver, stopWake = WD.stopWake, home = os.homedir() }) {
+function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWake, ended = new Set(), deliver = defaultDeliver, stopWake = WD.stopWake, home = os.homedir(), sdFetch }) {
   const at = now || new Date().toISOString();
   if (res.unreadable || res.paused) return [];
   // a wake row is stamped at its spawn, not at the pass start: the check reads the supervisor's start
@@ -277,7 +277,7 @@ function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWa
     // DELIVERY_WAKE_KICK: the supervisor kicks the next run when this wake ends (lib/kick.js)
     // a plain retry after a refused scope is taken only while the role still has no live session
     const stillMissing = () => { const l = require('./lib/one-session.js').liveOf(w.target, { roleDir: s.roleDir, live: liveSessions(bin, env), prefix: manifest && manifest.team ? manifest.team.prefix : null }); return l === null ? null : l.length === 0; };
-    const pid = spawn(bin, c.args, { cwd: s.roleDir, env: require('./lib/fresh-session-env.js').freshSessionEnv(env, { DELIVERY_ROLE: w.target, DELIVERY_WAKE: c.mode, DELIVERY_WAKE_ID: wakeId, DELIVERY_WAKE_KICK: KICK.dirOf(root), ...HEADLESS_WAIT }), logPath, stillMissing });
+    const pid = spawn(bin, c.args, { cwd: s.roleDir, env: require('./lib/fresh-session-env.js').freshSessionEnv(env, { DELIVERY_ROLE: w.target, DELIVERY_WAKE: c.mode, DELIVERY_WAKE_ID: wakeId, DELIVERY_WAKE_KICK: KICK.dirOf(root), ...HEADLESS_WAIT }), logPath, stillMissing, ...(sdFetch ? { sdFetch } : {}) });
     if (pid === null) {
       // nothing runs: no wake row, and its messages and handoffs stay waiting for the next pass
       lines.push(`Not woken: ${w.target}: its start ran nothing (systemd-run refused the scope; log ${path.relative(root, logPath)}); its messages stay waiting. ${w.lines[0]}`);
@@ -728,7 +728,7 @@ function directoryPass(root, { home = os.homedir(), exec, sdFetch, env } = {}) {
   for (const u of units) {
     if (!ours.has(u)) {
       if (l.entries.some((e) => e && e.name === u)) { done.failed.push(`${u} (listed under another owner, left as it is)`); continue; }
-      if (SD.removedByOther(u, st)) { done.withdrawn.push(u); continue; }
+      if (SD.removedByOther(u, { ...st, entries: l.entries })) { done.withdrawn.push(u); continue; }
       const g = SD.register(u, { ...st, entries: l.entries });
       (g.ok ? done.registered : done.failed).push(g.ok ? u : `${u} (${g.why})`);
       continue;
@@ -763,6 +763,9 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
   if (cmd === 'uninstall') return uninstall(who.root, { platform, home, env, exec, has });
   const state = { installed: false };
   const go = ({ first = true } = {}) => {
+    // one directory for this pass (the wakes' scopes, the host manager's start, the directory pass): after
+    // a request that cannot reach it, the rest of the pass does not wait again
+    const passSd = require('./lib/service-directory.js').passFetch((hostUnit || {}).sdFetch);
     // the kicks that started this run (lib/kick.js) are taken before the record is read: one dropped
     // after this point starts the next pass, so nothing it announces is missed
     const kicked = cmd !== 'check' && !o.dryRun ? KICK.take(who.root) : [];
@@ -819,7 +822,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
     }
     // a held install starts no wake: one started now is another run the install must wait for, and with
     // wakes back to back it never went (delivery-plugin-planning-0ba.6)
-    const woke = [...stoppedLines, ...updated.lines, ...waitingLines, ...(updated.installed ? ['Wakes wait for the next run, which starts under the plugin just installed.'] : updated.held ? [`No new wake starts until ${updated.held} is installed: the running wakes end first.`] : wake(who.root, res, { now, dryRun: o.dryRun, env, live, spawn, home, ended, ...(deliver ? { deliver } : {}), ...(stopWake ? { stopWake } : {}) }))];
+    const woke = [...stoppedLines, ...updated.lines, ...waitingLines, ...(updated.installed ? ['Wakes wait for the next run, which starts under the plugin just installed.'] : updated.held ? [`No new wake starts until ${updated.held} is installed: the running wakes end first.`] : wake(who.root, res, { now, dryRun: o.dryRun, env, live, spawn, home, ended, sdFetch: passSd, ...(deliver ? { deliver } : {}), ...(stopWake ? { stopWake } : {}) }))];
     // every cycle, the test runs' leftovers in the host's temp directory go (dec-chief-of-staff-000211):
     // a server is never left for a restart or a person to clean; a failing sweep never stops the wakes
     // after the wakes, so a role a wake now runs is seen running; never under an install (the next run's)
@@ -843,8 +846,6 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
       if (ug) swept.push(ug);
       // a run inside the sealed test runner never touches the host's own units unless a test hands it fakes
       const sealed = env.DELIVERY_SEAL_ACTIVE || env.DELIVERY_SEALED_RUN;
-      // one directory for this pass: after a request that cannot reach it, the rest of the pass does not wait again
-      const passSd = require('./lib/service-directory.js').passFetch((hostUnit || {}).sdFetch);
       const hm = o.dryRun || hostUnit === false || (!hostUnit && sealed) ? null : ensureHostManager(who.root, { home, exec, now, env, has, ...(live !== undefined ? { live } : {}), ...(hostUnit || {}), sdFetch: passSd });
       if (hm) swept.push(hm);
       // the plugin's units in the owner's service directory: registered, refreshed while active, removed when gone

@@ -11,6 +11,8 @@ const SD = require('./service-directory.js');
 const { fakeDirectory } = require('../testing/fake-service-directory.js');
 
 const HM = 'delivery-host-manager.service';
+// another plugin entry still listed: the directory did not lose everything, so a missing name was removed
+const TICK = 'delivery-host-manager-tick.timer';
 
 test('registration: a plugin unit is posted as the plugin\'s own entry, with a url naming the unit and a ttl', () => {
   const d = fakeDirectory();
@@ -79,7 +81,7 @@ test('heartbeat: a registered entry is refreshed; an expired or missing one is r
   const expired = fakeDirectory({ registered: [HM], registeredAt: '2026-11-16T08:00:00Z' });
   assert.deepEqual(SD.heartbeat(HM, { fetch: expired.fetch, now: '2026-11-16T09:30:00Z' }), { ok: true, registered: true });
   // one it registered within the ttl that is gone was removed by someone: not registered again
-  const removed = fakeDirectory({ registered: [HM], registeredAt: '2026-11-16T09:00:00Z' });
+  const removed = fakeDirectory({ entries: [SD.entryFor(TICK)], registered: [HM, TICK], registeredAt: '2026-11-16T09:00:00Z' });
   const h = SD.heartbeat(HM, { fetch: removed.fetch, now: '2026-11-16T09:30:00Z' });
   assert.equal(h.ok, false);
   assert.equal(h.removed, true);
@@ -128,7 +130,7 @@ test('the watchdog job\'s service, timer and path units are plugin units; a look
 // registered; one it registered that someone removed within its ttl is not: the owner may have taken the
 // unit out of the plugin's hands.
 test('read before change: a missing entry the plugin registered and someone removed is refused and not registered again; one it never registered, or that expired, is registered', () => {
-  const removed = fakeDirectory({ registered: [HM], registeredAt: '2026-11-16T09:00:00Z' });
+  const removed = fakeDirectory({ entries: [SD.entryFor(TICK)], registered: [HM, TICK], registeredAt: '2026-11-16T09:00:00Z' });
   for (const action of ['start', 'stop', 'restart', 'replace']) {
     const r = SD.beforeChange(HM, { action, running: action !== 'start', fetch: removed.fetch, now: '2026-11-16T09:20:00Z' });
     assert.equal(r.ok, false, action);
@@ -146,6 +148,59 @@ test('read before change: a missing entry the plugin registered and someone remo
   assert.deepEqual(SD.beforeChange(HM, { action: 'restart', fetch: expired.fetch, now: '2026-11-16T09:20:00Z' }), { ok: true });
   assert.equal(expired.entry(HM).owner, 'delivery plugin');
   assert.equal(expired.names()[HM].at, '2026-11-16T09:20:00.000Z', 'its time on the list is the new registration');
+});
+
+// A directory that lost every entry (reset, or empty after a host restart) reports no start time, so it
+// is read from what it lists: every fresh name on the plugin's list missing, and none of the plugin's
+// entries listed. Those names were lost, not removed: registered again, and the change goes ahead.
+test('a directory that lost every entry: the missing names are registered again and the change goes ahead; one that still lists the plugin\'s other entries refuses a removed name', () => {
+  const at = '2026-11-16T09:00:00Z';
+  const now = '2026-11-16T09:20:00Z';
+  const reset = fakeDirectory({ entries: [{ name: 'muxplex', url: 'http://x', owner: 'colombod' }], registered: [HM, TICK], registeredAt: at });
+  assert.equal(SD.directoryReset(reset.entries, { fetch: reset.fetch, now }), true);
+  assert.deepEqual(SD.beforeChange(HM, { action: 'restart', fetch: reset.fetch, now }), { ok: true });
+  assert.equal(reset.entry(HM).owner, 'delivery plugin', 'registered again');
+  // once one is back, the directory lists the plugin's again: the next is registered by the same read
+  // (it was read before the first came back), and any later miss is a removal
+  assert.deepEqual(SD.register(TICK, { fetch: reset.fetch, now, entries: [] }), { ok: true });
+  // up since before: the plugin's other entry is listed, so the missing name was removed
+  const up = fakeDirectory({ entries: [SD.entryFor(TICK)], registered: [HM, TICK], registeredAt: at });
+  assert.equal(SD.directoryReset(up.entries, { fetch: up.fetch, now }), false);
+  assert.equal(SD.beforeChange(HM, { action: 'restart', fetch: up.fetch, now }).removed, true);
+  assert.ok(!up.calls.includes('POST /api/services'));
+  // every name on this list missing, but the directory still lists an entry of the plugin's (one written
+  // before the list, or from another home): it did not lose everything, so the names were removed
+  const kept = fakeDirectory({ entries: [SD.entryFor('delivery-role-builder-1.scope')], registered: [HM, TICK], registeredAt: at });
+  assert.equal(SD.directoryReset(kept.entries, { fetch: kept.fetch, now }), false);
+  assert.equal(SD.beforeChange(HM, { action: 'restart', fetch: kept.fetch, now }).removed, true);
+  // not every fresh name missing (one held by another owner now): no reset either
+  const partly = fakeDirectory({ entries: [{ name: TICK, url: 'http://x', owner: 'colombod' }], registered: [HM, TICK], registeredAt: at });
+  assert.equal(SD.directoryReset(partly.entries, { fetch: partly.fetch, now }), false);
+  // nothing fresh on the list: no reset to read (every miss is an expiry)
+  assert.equal(SD.directoryReset([], { fetch: fakeDirectory({ registered: [HM], registeredAt: '2026-11-16T07:00:00Z' }).fetch, now }), false);
+});
+
+// register refuses a removed name as it does a held one: an install or a pass never brings it back
+test('register does not post a name the plugin registered whose entry someone removed; a free or expired name is posted', () => {
+  const now = '2026-11-16T09:20:00Z';
+  const d = fakeDirectory({ entries: [SD.entryFor(TICK)], registered: [HM, TICK], registeredAt: '2026-11-16T09:00:00Z' });
+  const g = SD.register(HM, { fetch: d.fetch, now });
+  assert.equal(g.ok, false);
+  assert.equal(g.removed, true);
+  assert.match(g.why, /was removed from the service directory/);
+  assert.ok(!d.calls.includes('POST /api/services'), 'no POST');
+  const e = fakeDirectory({ entries: [SD.entryFor(TICK)], registered: [HM, TICK], registeredAt: '2026-11-16T08:00:00Z' });
+  assert.deepEqual(SD.register(HM, { fetch: e.fetch, now }), { ok: true }, 'expired: posted');
+  assert.deepEqual(SD.register('delivery-host-manager-tick.service', { fetch: d.fetch, now }), { ok: true }, 'never registered: posted');
+});
+
+test('an ended scope\'s name whose ttl ran out is dropped from the list as the list is written; other names are kept', () => {
+  const d = fakeDirectory({ registered: ['delivery-role-builder-1.scope', HM], registeredAt: '2026-11-16T07:00:00Z' });
+  SD.remember(TICK, { fetch: d.fetch, now: '2026-11-16T09:20:00Z' });
+  assert.deepEqual(Object.keys(d.names()).sort(), [HM, TICK].sort());
+  const f = fakeDirectory({ registered: ['delivery-role-builder-1.scope'], registeredAt: '2026-11-16T09:00:00Z' });
+  SD.remember(TICK, { fetch: f.fetch, now: '2026-11-16T09:20:00Z' });
+  assert.ok('delivery-role-builder-1.scope' in f.names(), 'a fresh scope name is kept');
 });
 
 test('the local list lives under the home it is given, and in the sealed run never under the real home', () => {

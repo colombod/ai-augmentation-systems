@@ -571,14 +571,16 @@ function registerUnits(units, sdFetch, { env, home } = {}) {
   const SD = require('./lib/service-directory.js');
   const done = [];
   const held = [];
+  const removed = [];
   const failed = [];
   const l = SD.local({ fetch: sdFetch });
   for (const n of units) {
     const g = l.unreadable ? { ok: false, why: l.unreadable } : SD.register(n, { fetch: sdFetch, entries: l.entries, env, home });
-    if (g.ok) done.push(n); else if ('held' in g) held.push(`${n} (${g.why})`); else failed.push(g.why);
+    if (g.ok) done.push(n); else if ('held' in g) held.push(`${n} (${g.why})`); else if (g.removed) removed.push(n); else failed.push(g.why);
   }
   return [done.length ? `Registered with the service directory: ${done.join(', ')}` : null,
     held.length ? `Not registered with the service directory, held by another owner: ${held.join('; ')}` : null,
+    removed.length ? `Not registered with the service directory again, its entry removed since the plugin registered it (the owner may have taken it out of the plugin's hands): ${removed.join(', ')}` : null,
     failed.length ? `Not registered with the service directory: ${[...new Set(failed)].join('; ')}; the watchdog's next pass registers them` : null].filter(Boolean);
 }
 // Each `enable --now` of an install starts a unit: its directory entry is read first (lib/service-directory.js

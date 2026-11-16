@@ -86,8 +86,13 @@ function namesFile({ names, fetch, env = process.env, home } = {}) {
   if (!home && (env.DELIVERY_SEAL_ACTIVE || env.DELIVERY_SEALED_RUN)) return path.join(os.tmpdir(), `delivery-directory-names-${process.pid}.json`);
   return path.join(require('./host-manager.js').stateDir(env, home || os.homedir()), 'directory-names.json');
 }
-function registeredNames(o = {}) {
+// the file as written: the names, and LOST_KEY, the time a read found the directory had lost every entry
+const LOST_KEY = '@lost_at';
+function readList(o) {
   try { const x = JSON.parse(fs.readFileSync(namesFile(o), 'utf8')); return x && typeof x === 'object' && !Array.isArray(x) ? x : {}; } catch (err) { return {}; }
+}
+function registeredNames(o = {}) {
+  return Object.fromEntries(Object.entries(readList(o)).filter(([k]) => k !== LOST_KEY));
 }
 function writeNames(o, names) {
   const f = namesFile(o);
@@ -97,16 +102,45 @@ function writeNames(o, names) {
   fs.renameSync(tmp, f);
 }
 const nowMs = (o) => (o.now === undefined ? Date.now() : typeof o.now === 'number' ? o.now : Date.parse(o.now));
-function remember(unit, o = {}) { const n = registeredNames(o); n[unit] = { at: new Date(nowMs(o)).toISOString(), ttl: TTL }; writeNames(o, n); }
-function forget(unit, o = {}) { const n = registeredNames(o); if (!(unit in n)) return; delete n[unit]; writeNames(o, n); }
-// An entry missing although the plugin registered it, and too recent to have expired with its ttl: removed
-// by someone else. One whose ttl ran out since its last registration or heartbeat merely expired.
-function removedByOther(unit, o = {}) {
-  const r = registeredNames(o)[unit];
+// fresh: registered or refreshed within its ttl, so a miss now is not its expiry
+function fresh(r, o) {
   if (!r) return false;
   if (r.ttl === null || r.ttl === undefined) return true;
   const at = Date.parse(r.at);
   return !Number.isFinite(at) || nowMs(o) - at <= Number(r.ttl) * 1000;
+}
+// a scope name whose ttl ran out is dropped as the list is written: a scope's name is never used again
+function remember(unit, o = {}) {
+  const n = readList(o);
+  for (const k of Object.keys(n)) if (k !== LOST_KEY && /\.scope$/.test(k) && !fresh(n[k], o)) delete n[k];
+  n[unit] = { at: new Date(nowMs(o)).toISOString(), ttl: TTL };
+  writeNames(o, n);
+}
+function forget(unit, o = {}) { const n = readList(o); if (!(unit in n)) return; delete n[unit]; writeNames(o, n); }
+// A directory that lost every entry (its registry reset, or a host restart that left it empty): it reports
+// no start time or uptime (GET /api/health and /api/instance-info carry none), so it is read from what it
+// lists: every name on the plugin's list that is still fresh is missing, and it lists no entry of the
+// plugin's at all. The time of that read is kept on the list (LOST_KEY): a name last seen before it was
+// lost, not removed, and is registered again; one registered or refreshed after it is judged as before.
+// o.entries: a read of /api/services/local made just now.
+function directoryReset(entries, o) {
+  if (!Array.isArray(entries)) return false;
+  const n = registeredNames(o);
+  const live = Object.keys(n).filter((k) => fresh(n[k], o));
+  if (!live.length || entries.some((e) => e && e.owner === OWNER)) return false;
+  return live.every((k) => !entries.some((e) => e && e.name === k));
+}
+function lostAt(o) { const t = Date.parse(readList(o)[LOST_KEY]); return Number.isFinite(t) ? t : null; }
+function markLost(o) { try { const n = readList(o); n[LOST_KEY] = new Date(nowMs(o)).toISOString(); writeNames(o, n); } catch (err) { /* read again next time */ } }
+// An entry missing although the plugin registered it, and too recent to have expired with its ttl: removed
+// by someone else, unless it was last seen before the directory lost every entry. One whose ttl ran out
+// since its last registration or heartbeat merely expired.
+function removedByOther(unit, o = {}) {
+  const r = registeredNames(o)[unit];
+  if (!fresh(r, o)) return false;
+  if (directoryReset(o.entries, o)) { markLost(o); return false; }
+  const lost = lostAt(o);
+  return !(lost !== null && Date.parse(r.at) < lost);
 }
 const removedWhy = (unit) => `the entry the delivery plugin registered for ${unit} was removed from the service directory, so the owner may have taken the unit out of the plugin's hands; it is not registered again`;
 const heldWhy = (unit, e) => `the service directory lists ${unit} as ${e.owner ? `owned by "${String(e.owner).slice(0, 80)}"` : 'with no owner'}, not by the ${OWNER}`;
@@ -114,12 +148,15 @@ const remembered = (unit, o) => { try { remember(unit, o); return null; } catch 
 
 // Read before register: o.entries is a read of /api/services/local the caller made just now; without it
 // this reads one. A name listed under another owner is not posted.
-// -> { ok: true } | { ok: false, why, held?: owner }
+// A name the plugin registered whose entry someone removed is not posted either.
+// -> { ok: true } | { ok: false, why, held?: owner, removed?: true }
 function register(unit, o = {}) {
   let entries = o.entries;
   if (!entries) { const l = local(o); if (l.unreadable) return { ok: false, why: l.unreadable }; entries = l.entries; }
   const e = entries.find((x) => x && x.name === unit);
   if (e && e.owner !== OWNER) return { ok: false, held: e.owner || null, why: `${heldWhy(unit, e)}, so the plugin leaves that entry as it is` };
+  // one the plugin registered that someone removed is not posted again either (an install, a pass)
+  if (!e && removedByOther(unit, { ...o, entries })) return { ok: false, removed: true, why: removedWhy(unit) };
   const r = call(o.fetch, 'POST', '/api/services', entryFor(unit, o.description));
   if (r.status !== 200) return { ok: false, why: why(r) };
   const w = remembered(unit, o);
@@ -138,7 +175,7 @@ function heartbeat(unit, o = {}) {
   const r = call(o.fetch, 'POST', `/api/services/${encodeURIComponent(unit)}/heartbeat`);
   if (r.status === 200) { remembered(unit, o); return { ok: true }; }
   if (r.status === 404) {
-    if (removedByOther(unit, o)) return { ok: false, removed: true, why: removedWhy(unit) };
+    // register reads the directory and refuses a removed name itself
     const g = register(unit, o);
     return g.ok ? { ok: true, registered: true } : g;
   }
@@ -179,7 +216,7 @@ function beforeChange(unit, o = {}) {
   }
   let e = l.entries.find((x) => x && x.name === unit);
   if (!e) {
-    if (removedByOther(unit, o)) return { ok: false, removed: true, why: `${removedWhy(unit)}, and the plugin does not ${action} it` };
+    if (removedByOther(unit, { ...o, entries: l.entries })) return { ok: false, removed: true, why: `${removedWhy(unit)}, and the plugin does not ${action} it` };
     const g = register(unit, { ...o, entries: l.entries });
     if (!g.ok) return { ok: false, why: `${unit} has no entry in the service directory, and registering it failed: ${g.why}` };
     l = local({ fetch });
@@ -213,7 +250,7 @@ function unreachableRecorder(root, { now, raisedBy = 'host job' } = {}) {
   };
 }
 
-module.exports = { BASE, OWNER, CATEGORY, TAGS, TTL, HM_UNITS, WATCHDOG_UNIT, isPluginUnit, scopeName, entryFor, describe, defaultFetch, passFetch, namesFile, registeredNames, remember, forget, removedByOther, register, remove, heartbeat, local, health, beforeChange, unreachableRecorder };
+module.exports = { BASE, OWNER, CATEGORY, TAGS, TTL, HM_UNITS, WATCHDOG_UNIT, isPluginUnit, scopeName, entryFor, describe, defaultFetch, passFetch, namesFile, registeredNames, remember, forget, removedByOther, directoryReset, register, remove, heartbeat, local, health, beforeChange, unreachableRecorder };
 
 // The child the default fetch runs: one request, its status and JSON body on stdout.
 if (require.main === module) {

@@ -99,7 +99,8 @@ const sleep = (msec) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0
 // The start of a role's own unit, one the plugin wrote (lib/team-revive.js servingUnits, written): a unit
 // its start limit failed is reset first, which only the plugin's own unit ever is. A unit someone else
 // wrote is never started, reset or changed here.
-function startOwnUnit(unit, { exec = (c, a) => require('child_process').execFileSync(c, a, { encoding: 'utf8', timeout: 20000, stdio: ['ignore', 'pipe', 'pipe'] }) } = {}) {
+const unitCommand = (c, a) => require('child_process').execFileSync(c, a, { encoding: 'utf8', timeout: 20000, stdio: ['ignore', 'pipe', 'pipe'] });
+function startOwnUnit(unit, { exec = unitCommand } = {}) {
   try { exec('systemctl', ['--user', 'reset-failed', unit]); } catch (err) { /* not failed: nothing to reset */ }
   exec('systemctl', ['--user', 'start', unit]);
 }
@@ -401,7 +402,9 @@ function revivePass(root, team, { start = false, dryRun = false, env = process.e
       const at = f.now;
       // a role the plugin's own unit serves is started through that unit, never in a scope beside it
       if (i.viaUnit) {
-        try { (startUnit || startOwnUnit)(i.viaUnit); } catch (err) {
+        // with no start the caller made (team-revive.js start, or any pass that gave none), the start still
+        // reads the unit's service-directory entry first (unitOps): no path starts a plugin unit unread
+        try { (startUnit || unitOps(root, { exec: deps.unitExec || unitCommand, sdFetch: deps.sdFetch, now: at }).startUnit)(i.viaUnit); } catch (err) {
           // refused on the service directory's read (unitOps): no start was made, so no cap counts it
           if (err && err.refused) {
             R.record(root, { type: 'start-refused', at, instance: i.instance, unit: i.viaUnit, why: err.message });
