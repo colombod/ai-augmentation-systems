@@ -1,4 +1,5 @@
 // scripts/lib/transcript.test.js — classify harness records by origin stamp, read incrementally.
+require('../testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');

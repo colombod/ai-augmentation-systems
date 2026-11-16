@@ -1,5 +1,6 @@
 // scripts/testing/sweep.test.js — run through scripts/testing/run-tests.js. The suite's /tmp is the seal's
 // own tmpfs, so the fixtures below sit directly in /tmp, where the sweep reads.
+require('./role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

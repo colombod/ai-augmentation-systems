@@ -1,5 +1,6 @@
 // scripts/skills.test.js — the skills share one conventions file instead of repeating it, every
 // skill keeps its own context-integrity line, and every plugin path a skill names exists.
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

@@ -1,5 +1,6 @@
 // scripts/watch.test.js — the polling budget (R-25), replayed on the Vault's Progress Observer, which polled
 // 30 pull requests every 90 s, through the real lane (testing/role-harness.js) and through main().
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

@@ -1,4 +1,5 @@
 // scripts/lib/session-name.test.js — run with: node scripts/testing/run-tests.js
+require('../testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const SN = require('./session-name.js');

@@ -3,6 +3,7 @@
 // timing; that is an empirical spike (harden-02), not something a unit test
 // can substitute for. Run with: node --test hooks/scripts/record-invocation.test.js
 
+require('../../scripts/testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

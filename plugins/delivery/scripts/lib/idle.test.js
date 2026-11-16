@@ -1,4 +1,5 @@
 // scripts/lib/idle.test.js — R-43: idle with ready work is a defect, replayed on the Vault's 4 idle days.
+require('../testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

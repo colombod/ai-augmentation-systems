@@ -1,6 +1,7 @@
 // scripts/review-publish.test.js — a review or merge row written on one host reaches the project repo's
 // origin, so the merge gate on another host (or after a container restart) reads the same rows.
 // review.js and merge-gate.js run in this process with a real git, a temp bare origin and clones of it.
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

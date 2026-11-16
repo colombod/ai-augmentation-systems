@@ -3,6 +3,7 @@
 // Replays the Vault's file hand-off from refutation to recovery: R1 shows a local path, A-8 is refuted,
 // the Product Manager changes the design through commands only (add, retire, relink, reopen), the
 // Delivery Manager re-records ready, and the story and its area start again.
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

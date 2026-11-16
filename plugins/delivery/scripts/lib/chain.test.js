@@ -1,4 +1,5 @@
 // scripts/lib/chain.test.js — hash chain: canonical JSON, append under lock, verify.
+require('../testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
