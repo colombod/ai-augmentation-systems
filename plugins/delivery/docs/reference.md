@@ -1614,15 +1614,20 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   --restart` is the Reality Checker's only: its lane group `outage-drill` runs it, and every other lane,
   the open ones and the host manager's included, refuses it per command: under the script's name with or
   without a `.js`, `.cjs` or `.mjs` extension or through a glob that could expand to it, through the
-  launcher, `sh -c`, a word the shell builds at run time, or `node -e` code that names the script. Those
-  lanes are also refused a role variable (`DELIVERY_ROLE`, `DELIVERY_ROLE_ID`, `DELIVERY_ROLE_DIR`) naming
-  the Reality Checker, set before a command, through `env` or by `export`. `plan` and a mere mention of
-  the run stay open. A copy of the script under another name, or code that loads it some other way, is not
-  seen by the lane; the script refuses those itself. It takes the role from the role marker found from its
-  own working directory upwards, never from `DELIVERY_ROLE_DIR` or a role a caller passes, and the role
-  variables must agree with that marker (`DELIVERY_ROLE` its instance, `DELIVERY_ROLE_DIR`, when set, its
-  directory). Any role but the Reality Checker's, variables that disagree, or no role session at all are
-  refused. `DELIVERY_HOST`, when set, must name this machine (its short hostname), and `plan` says so when
+  launcher, `sh -c`, `env -S`, a word the shell builds at run time, `node -e` code that names the script,
+  behind `sudo`, `doas`, `nice` and the other wrappers, or fed its arguments through `xargs` (which cannot
+  be read, so any drill run behind it is refused). Those lanes are also refused a role variable
+  (`DELIVERY_ROLE`, `DELIVERY_ROLE_ID`, `DELIVERY_ROLE_DIR`) naming the Reality Checker, set before a
+  command, through `env` or by `export`. `plan` and a mere mention of the run stay open. A copy of the
+  script under another name, or code that loads it some other way, is not seen by the lane. The script
+  also checks its own role: the role marker found from its working directory upwards, never a role a
+  caller passes, with the role variables agreeing with that marker (`DELIVERY_ROLE` its instance,
+  `DELIVERY_ROLE_DIR`, when set, its directory); any role but the Reality Checker's, variables that
+  disagree, or no role session at all are refused. That check guards against a mistake, not against a
+  session set on running the drill: the working directory and the role variables are the caller's to
+  set, so a script of a builder's own can move into the Reality Checker's directory and set them. The
+  control is the consent record, below: without the owner's verified word for this drill on this host,
+  nothing is scheduled or cut. `DELIVERY_HOST`, when set, must name this machine (its short hostname), and `plan` says so when
   it does not. It refuses a record that is not the owner's
   verified word, a cut outside 1 to 30 minutes, a run without `--restart`, and a second drill on the same
   record. The record must be consent to this drill: its scope carries the label `outage-drill:<host>`
@@ -1642,11 +1647,24 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   networking state across a reboot and a restore that failed would otherwise leave the host offline), writes the drill's row to the watchdog directory's `drills.ndjson`, and only then runs
   `nmcli networking off`. The timers are transient system units owned by PID 1, so they outlive the
   session; they and the cut need root, through `sudo -n` by default (`DELIVERY_DRILL_PRIVILEGE` replaces
-  it, for example with `pkexec`, or empty under root). A schedule that fails cuts nothing and stops the
+  it, for example with `pkexec`, or empty under root). The sudoers rule the owner adds for the drill
+  allows only its exact commands, for its own unit names: `systemd-run` with the
+  `delivery-drill-restore-*` and `delivery-drill-restart-*` units, `systemctl stop` of those timers, and
+  `nmcli networking off` and `on`; never a shell, `systemctl` in general or another unit. Because that
+  rule lets those commands run without a password, every lane, the Reality Checker's and the host
+  manager's included, refuses switching the network off (`nmcli networking off` or `nmcli radio ... off`,
+  under any abbreviation), powering the host off or restarting it (`shutdown`, `poweroff`, `reboot`,
+  `halt`, `telinit`, `init 0` or `6`, and `systemctl poweroff`, `reboot`, `halt`, `kexec`, `suspend`,
+  `hibernate`, `rescue` or `isolate` of such a target), with `sudo` or without: the drill's script runs
+  them itself. A schedule that fails cuts nothing and stops the
   timer made before it and the one that reported failing, which may still have been made, the restart
   first. A cut that exits non-zero or times out may still have taken the network down: it stops only the
   restart timer, runs the restore at once through the same privilege, and keeps the restore timer, so
-  the network is back by the end of the cut whatever the cut did; the record stays spent. The
+  the network is back by the end of the cut whatever the cut did; the record stays spent. Each stop is
+  checked: one that exits non-zero, times out or throws is reported as the timer that may still be
+  scheduled, with its unit (after a failed cut, with the time the host would restart).
+  `outage-drill.js stop --record <id>` then stops that drill's restart timer through the same privilege;
+  it never stops the restore, which only brings the network back, so any role may run it. The
   consent is one cut of up to 30 minutes and one restart, so an offline gap longer than the cut is
   not covered and no option stretches it.
 - **A running role session moves onto a newly installed plugin.** Claude Code loads a plugin's hooks when

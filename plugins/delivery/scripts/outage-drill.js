@@ -15,6 +15,9 @@
 //       minutes and the restart a fixed minute after it. Then it writes the drill's row to the watchdog
 //       directory's drills.ndjson, and only then cuts. A cut that fails or times out stops the restart
 //       timer, runs the restore at once and keeps the restore timer. One drill per consent record.
+//   outage-drill.js stop --record <id>
+//       stops that drill's restart timer, through the same privilege: what to run when a run reports
+//       the restart may still be scheduled. It never stops the restore. Any role may run it.
 // Exit codes: 0 ok; 1 refused or failed (the restart never runs after a failure); 2 usage.
 const L = require('./lib/outage-drill.js');
 const { whoAmI, ownerRecord } = require('./lib/gate-context.js');
@@ -27,7 +30,7 @@ function hostMismatch(env, hostname) {
   return env.DELIVERY_HOST && here && env.DELIVERY_HOST !== here ? `DELIVERY_HOST is ${env.DELIVERY_HOST}, but this machine is ${here}` : null;
 }
 
-const USAGE = 'usage: outage-drill.js plan [--cut-minutes <n>] [--record <id>] | outage-drill.js run --record <id> --cut-minutes <n> --restart   (each takes --project <root>)';
+const USAGE = 'usage: outage-drill.js plan [--cut-minutes <n>] [--record <id>] | outage-drill.js run --record <id> --cut-minutes <n> --restart | outage-drill.js stop --record <id>   (each takes --project <root>)';
 const ROLE = 'reality-checker';
 const VALUED = { '--cut-minutes': 'cut', '--record': 'record', '--project': 'project' };
 
@@ -167,19 +170,29 @@ function run(who, o, { env, now, verifyRecord, exec, fs = require('fs'), hostnam
   const made = [];
   // A schedule reported as failed (non-zero, timed out, thrown) may still have made its unit, so the undo
   // also stops the kind that failed. Newest first: the restart is always stopped before the restore.
+  // A stop is checked like any other step: one that exits non-zero, times out or throws leaves its timer
+  // possibly pending, and the reply names that unit instead of saying it was stopped.
+  const stop = (kind) => {
+    let r;
+    try { r = exec(L.stopArgs(kind, o.record, env)); } catch (err) { r = { status: null, error: err.message }; }
+    return !!r && r.status === 0;
+  };
+  const pending = (kind) => `the ${kind} may still be scheduled: ${L.unitName(kind, o.record)}.timer`;
+  // the units whose stop failed, as a sentence for the reply ('' when every stop went through)
   const undo = (failed) => {
-    for (const kind of [...made, ...(failed ? [failed] : [])].reverse()) { try { exec(L.stopArgs(kind, o.record, env)); } catch (err) { /* the timer may be gone */ } }
+    const left = [...made, ...(failed ? [failed] : [])].reverse().filter((kind) => !stop(kind));
     unclaim();
+    return left.length ? ` Stopping did not go through, so ${left.map(pending).join(', and ')}.${left.includes('restart') ? ` Run outage-drill.js stop --record ${o.record} now.` : ''}` : '';
   };
   const steps = [['restore', cut * 60, L.COMMANDS.restore], ['restart', (cut + after) * 60, L.COMMANDS.reboot]];
   for (const [kind, seconds, cmd] of steps) {
     let r;
     try { r = exec(L.timerArgs(kind, o.record, seconds, cmd, env)); } catch (err) { r = { status: null, error: err.message }; }
-    if (!r || r.status !== 0) { undo(kind); return refuse(`could not schedule the ${kind} (${failText(r)}); nothing cut. The timers need the system manager: \`sudo -n\` must run systemd-run, or set DELIVERY_DRILL_PRIVILEGE`); }
+    if (!r || r.status !== 0) { const left = undo(kind); return refuse(`could not schedule the ${kind} (${failText(r)}); nothing cut. The timers need the system manager: \`sudo -n\` must run systemd-run, or set DELIVERY_DRILL_PRIVILEGE.${left}`); }
     made.push(kind);
   }
   const row = { type: 'drill', record: o.record, ...t, cut_minutes: cut, restart_after_minutes: after, units: made.map((k) => `${L.unitName(k, o.record)}.timer`), by: who.actor || null };
-  try { L.append(who.root, row); } catch (err) { undo(); return refuse(`could not write the drill's row (${err.message}); timers stopped, nothing cut`); }
+  try { L.append(who.root, row); } catch (err) { const left = undo(); return refuse(`could not write the drill's row (${err.message}); nothing cut. ${left ? left.trim() : 'The timers are stopped.'}`); }
   let r;
   try { r = exec(L.cutArgs(env)); } catch (err) { r = { status: null, error: err.message }; }
   if (!r || r.status !== 0) {
@@ -188,22 +201,26 @@ function run(who, o, { env, now, verifyRecord, exec, fs = require('fs'), hostnam
     // restart is stopped (first, so the host never restarts on a failed drill); the restore runs at once,
     // through the same privilege, so a half-done cut does not wait out the whole cut length; and the
     // restore timer stays as the backstop, for a restore that fails now or a cut that lands after it.
-    try { exec(L.stopArgs('restart', o.record, env)); } catch (err) { /* the timer may be gone */ }
+    const restartStopped = stop('restart');
     let back;
     try { back = exec(L.restoreArgs(env)); } catch (err) { back = { status: null, error: err.message }; }
     const restored = !!back && back.status === 0;
-    try { L.append(who.root, { type: 'cut_failed', record: o.record, at: now, why: failText(r), restore_now: restored ? 'ok' : 'failed' }); } catch (err) { /* the drill row stands */ }
-    return { code: 1, out: `outage-drill.js: the cut failed (${failText(r)}); the restart timer is stopped and the host does not restart. ${restored ? 'The network restore ran at once' : `The network restore at once failed (${failText(back)})`}, and the restore timer stays: the network comes back by ${t.restore_at} (${row.units[0]}) whatever the cut did. The record is spent (one drill per consent).` };
+    try { L.append(who.root, { type: 'cut_failed', record: o.record, at: now, why: failText(r), restore_now: restored ? 'ok' : 'failed', restart_stopped: restartStopped }); } catch (err) { /* the drill row stands */ }
+    const restartLine = restartStopped ? 'the restart timer is stopped and the host does not restart' : `stopping the restart did not go through, so ${pending('restart')}; run outage-drill.js stop --record ${o.record} now, or the host restarts at ${t.restart_at}`;
+    return { code: 1, out: `outage-drill.js: the cut failed (${failText(r)}); ${restartLine}. ${restored ? 'The network restore ran at once' : `The network restore at once failed (${failText(back)})`}, and the restore timer stays: the network comes back by ${t.restore_at} (${row.units[0]}) whatever the cut did. The record is spent (one drill per consent).` };
   }
   return { code: 0, out: `Network cut at ${t.started_at} for ${cut} minutes: it comes back at ${t.restore_at} (${row.units[0]}) and the host restarts at ${t.restart_at} (${row.units[1]}). The drill's row is in ${require('path').relative(who.root, L.ledgerFile(who.root))}.` };
 }
 
-// The role of the session this process runs in, read from this process alone: the role marker found from
-// its own working directory upwards, never from DELIVERY_ROLE_DIR or what a caller passes (main takes an
-// injected who for its tests, and `node -e` or a script of its own could name itself the Reality Checker).
-// The role variables must agree with that marker: DELIVERY_ROLE names its instance, and DELIVERY_ROLE_DIR,
-// when set, is its directory. null outside any role session; 'unknown' when the marker cannot be read or
-// the variables disagree. Run needs 'reality-checker' (main), so neither of those runs it.
+// The role of the session this process runs in: the role marker found from its working directory upwards,
+// never a role a caller passes (main takes an injected who for its tests, and `node -e` or a script of its
+// own could name itself the Reality Checker). The role variables must agree with that marker:
+// DELIVERY_ROLE names its instance, and DELIVERY_ROLE_DIR, when set, is its directory. null outside any
+// role session; 'unknown' when the marker cannot be read or the variables disagree. Run needs
+// 'reality-checker' (main), so neither of those runs it. This guards against a mistake, not a session set
+// on running the drill: the working directory and the role variables are the caller's to set, so a
+// script of a builder's own can cd into the Reality Checker's directory and export them. The control is
+// the consent record: without the owner's verified word for this drill on this host, nothing is cut.
 function ownRole() {
   const nodePath = require('path');
   const nodeFs = require('fs');
@@ -229,7 +246,17 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, verifyRecord,
   let o;
   try { o = parse(argv); } catch (err) { return { code: 2, out: `outage-drill.js: ${err.message}\n${USAGE}` }; }
   const [cmd] = o._;
-  if (!['plan', 'run'].includes(cmd) || o._.length > 1) return { code: 2, out: USAGE };
+  if (!['plan', 'run', 'stop'].includes(cmd) || o._.length > 1) return { code: 2, out: USAGE };
+  // stop cancels a drill's pending restart, through the same privilege as the run: the step a run that
+  // could not confirm its stop asks for. It never stops the restore, which only brings the network back,
+  // so it is safe for any role to run and needs no consent.
+  if (cmd === 'stop') {
+    if (!o.record) return { code: 2, out: `outage-drill.js: stop needs --record <id>, the drill's consent record\n${USAGE}` };
+    const unit = `${L.unitName('restart', o.record)}.timer`;
+    let r;
+    try { r = exec(L.stopArgs('restart', o.record, env)); } catch (err) { r = { status: null, error: err.message }; }
+    return r && r.status === 0 ? { code: 0, out: `outage-drill.js: stopped ${unit}; the host does not restart for this drill` } : { code: 1, out: `outage-drill.js: could not stop ${unit} (${failText(r)}); it may still restart the host. Message the host's owner` };
+  }
   const at = now || new Date().toISOString();
   const who = given || whoAmI({ cwd, env, project: o.project });
   if (cmd === 'run') {
