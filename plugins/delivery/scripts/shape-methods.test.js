@@ -3,6 +3,7 @@
 // survive in the brief, the one-breath test and the leftover test in the PRD's staging, and the
 // storyboard the owner approves, in their quoted words, before the roadmap starts. These are text
 // checks: they catch a pinned rule removed or reworded, not an agent misreading it; real runs do that.
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

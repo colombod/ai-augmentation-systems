@@ -1,6 +1,7 @@
 // hooks/scripts/leak-gate.test.js — the strategy leak gate: plan passages, the product diff, branch names,
 // the Delivery Manager's writes to the product repository, the allowlist and the Refs exemption.
 // Run with: node --test hooks/scripts/leak-gate.test.js
+require('../../scripts/testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

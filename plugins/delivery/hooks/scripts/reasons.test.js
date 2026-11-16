@@ -1,6 +1,7 @@
 // hooks/scripts/reasons.test.js — R-46: every hook's block or warning reason is at most two lines and
 // its last line names the way out (an exact command, or the role to message). A check on the output
 // format, not on the wording.
+require('../../scripts/testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

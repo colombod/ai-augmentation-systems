@@ -3,6 +3,7 @@
 // hand-off, the R1 probe (10-12 14:09) that showed a local path, the cancelled probe, and #478's twin
 // that was not a recording; and the PR 55 review's attacks on them. Real code paths: materialise's
 // planner, assumptions.js, ready.js, the bd guard's claim, close and delete checks, and the lanes.
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

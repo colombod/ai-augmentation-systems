@@ -1,5 +1,6 @@
 // hooks/scripts/message-checks.test.js — what the CoS and PM tell the owner, replayed on Vault moments
 // (R-03, R-44, R-45). Pure: the judge's answers are passed in.
+require('../../scripts/testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const M = require('./message-checks.js');

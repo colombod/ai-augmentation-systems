@@ -2,6 +2,7 @@
 // dir's settings.json beside whatever else is there, its launcher runs the plugin's guard (or, with no
 // plugin, its own fallback), and the host job installs it every cycle but never from a test run.
 // Every test uses a fixture config dir, never the real one. Run with: scripts/testing/run-tests.js.
+require('../testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

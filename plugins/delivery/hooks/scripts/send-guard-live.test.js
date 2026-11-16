@@ -4,6 +4,7 @@
 // refuses any name with "@". The guard refused those generated names as bare role names, so no message
 // reached a live role session. A name that exactly names a live session running in one of this team's
 // role directories (holding that instance's marker for this project) is that session, whatever it is called.
+require('../../scripts/testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

@@ -1,5 +1,6 @@
 // scripts/review-run.test.js — the reviewer's one runner: the product's own test command, in any
 // language, only inside review/, with the role's variables cleared.
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
@@ -180,4 +181,12 @@ test('review-run: refuses anything but its two forms; a missing clone or product
   const n = capture();
   assert.equal(main(['test', '8'], { env: process.env, cwd: bare.roleDir, roleDir: bare.roleDir, team: bare.team, ...n }), 2);
   assert.match(n.lines.join('\n'), /no test setup found[\s\S]*"test_command" in \.delivery\/team\/team\.json/);
+});
+
+// rv-220 (3): the review runner clears a role's variables by prefix, as the sealed runner does, so the
+// Windows path (which runs the product's command without the sealed runner) sees no BD_ variable either
+test('review-run cleanEnv clears every DELIVERY_, BEADS_ and BD_ variable, keeps the seal marker and the rest', () => {
+  const { cleanEnv } = require('./review-run.js');
+  const out = cleanEnv({ PATH: '/bin', DELIVERY_ROLE: 'x', BEADS_ACTOR: 'a', BD_ACTOR: 'a', BD_NON_INTERACTIVE: '1', BD_ANY_NEW: 'z', DELIVERY_SEAL_ACTIVE: 't', BDX: 'kept', GIT_DIR: '/r' });
+  assert.deepEqual(Object.keys(out).sort(), ['BDX', 'DELIVERY_SEAL_ACTIVE', 'PATH']);
 });

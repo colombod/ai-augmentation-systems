@@ -1,5 +1,6 @@
 // scripts/lib/gates.test.js — the ready and done gates, the surface schema and the warnings ledger,
 // replayed on Vault moments. Pure: no bd, no judge (the judge's answer is passed in).
+require('../testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

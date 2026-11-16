@@ -22,7 +22,8 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const { testCommandOf, FIX } = require('./lib/test-command.js');
 
-const ROLE_VARS = /^(DELIVERY_|BEADS_|BD_ACTOR$)/;
+// by prefix, as the sealed runner clears them (hjx.1.1.3): a role session sets more of them over time
+const ROLE_VARS = /^(DELIVERY_|BEADS_|BD_)/;
 // git variables that would point git at another repository or config than the clone's
 const GIT_REPO_VARS = /^GIT_(DIR|WORK_TREE|INDEX_FILE|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|COMMON_DIR|NAMESPACE|CONFIG|CONFIG_GLOBAL|CONFIG_SYSTEM|CONFIG_COUNT|CONFIG_KEY_\d+|CONFIG_VALUE_\d+|CONFIG_PARAMETERS|CEILING_DIRECTORIES|DISCOVERY_ACROSS_FILESYSTEM)$/;
 const USAGE = 'usage: review-run.js checkout <pr number> <full head sha> | review-run.js test <pr number>';

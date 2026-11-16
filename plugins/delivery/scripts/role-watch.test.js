@@ -1,6 +1,7 @@
 // scripts/role-watch.test.js — the Delivery Manager's pass over the role instances holding work
 // (lib/role-watch.js, `watchdog.js pass`), replayed on a real night: a builder woken every cycle for
 // beads waiting on review, then a review sent back the next morning.
+require('./testing/role-env.js').clearRoleEnv();
 process.env.TZ = 'UTC';
 const test = require('node:test');
 const assert = require('node:assert/strict');

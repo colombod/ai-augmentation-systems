@@ -1,4 +1,5 @@
 // scripts/team-role.test.js — run through scripts/testing/run-tests.js
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

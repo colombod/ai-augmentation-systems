@@ -1,5 +1,6 @@
 // scripts/lib/usage.test.js — what the budget can measure (R-31 probe, R-34): transcript tokens and the
 // status line's weekly reading.
+require('../testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

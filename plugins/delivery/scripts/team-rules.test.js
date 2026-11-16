@@ -1,5 +1,6 @@
 // scripts/team-rules.test.js — the team rules, role briefs and decision skill say what the operator
 // protocol does: records, never relays; and every operator.js command they quote really exists.
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
