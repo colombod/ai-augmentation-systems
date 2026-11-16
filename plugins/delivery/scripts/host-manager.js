@@ -271,6 +271,8 @@ function restart(deps = {}, before, o = {}) {
   const restartUnit = (unit) => run('systemctl', ['--user', 'restart', unit]);
   // a missing role the plugin's own unit serves is started through it (team-revive.js startOwnUnit)
   const startUnit = (unit) => require('./team-revive.js').startOwnUnit(unit, { exec: run });
+  // each unit start or restart is settled as a spawned start is: down after SETTLE_MS, it is a failed start
+  const unitSettle = require('./team-revive.js').unitSettleOf(run, sleep);
   for (const t of before.teams) {
     if (t.manifestUnavailable || !t.team) continue;
     const root = t.root;
@@ -280,7 +282,7 @@ function restart(deps = {}, before, o = {}) {
     refused[root] = {};
     let r;
     try {
-      r = TR.revive(root, t.team, { start: true, cwd: deps.cwd, env: deps.env || process.env, home: deps.home, live: before.live, relist: () => sessionsNow(deps), only: want, ...(force.length ? { force } : {}), restartUnit, startUnit, ...(deps.spawn ? { spawn: deps.spawn } : {}), ...(deps.stop ? { stop: deps.stop } : {}), ...(deps.teamDeps ? deps.teamDeps(root) : {}) });
+      r = TR.revive(root, t.team, { start: true, cwd: deps.cwd, env: deps.env || process.env, home: deps.home, live: before.live, relist: () => sessionsNow(deps), only: want, ...(force.length ? { force } : {}), restartUnit, startUnit, unitSettle, ...(deps.spawn ? { spawn: deps.spawn } : {}), ...(deps.stop ? { stop: deps.stop } : {}), ...(deps.teamDeps ? deps.teamDeps(root) : {}) });
     } catch (err) { for (const i of want) refused[root][i] = `the start failed: ${firstLine(err)}`; for (const i of force) (unforced[root] = unforced[root] || {})[i] = `the restart pass failed: ${firstLine(err)}`; continue; }
     started[root] = {};
     // a start that exited within its settle is recorded failed by the start pass: named, not waited for
@@ -710,20 +712,43 @@ function inNoService(text) {
 // directory; null for anything else (two sessions, no server, a list or cgroup that cannot be read, this
 // run not in the unit, a server in this or any other unit, a hand-written unit on the directory), which
 // leaves the live host manager as it is.
-function outsideUnit(running, { server, cgroupOf, roleDir, home, unitOf } = {}) {
+// A leftover is the other case replaced: a server in this unit's own cgroup that is not the unit's main
+// process. A unit stopped with KillMode=process leaves its processes in its cgroup (a launcher-held unit
+// left the host-manager claude there, the unit inactive with MainPID 0), and run-session found it "inside
+// the unit" for good. Only a server whose cgroup holds this unit and no other service counts, and only
+// when the unit's MainPID is read (systemctl show -p MainPID --value) and is not that server.
+function inThisUnitOnly(text) {
+  if (typeof text !== 'string' || !text.trim()) return null;
+  const paths = text.split('\n').filter((l) => l.trim()).map((l) => l.split(':').slice(2).join(':').trim());
+  return paths.every((p) => { const segs = p.split('/'); return segs.includes(HM.UNIT) && segs.every((seg) => seg === HM.UNIT || !/\.service$/.test(seg) || /^user@\d+\.service$/.test(seg)); });
+}
+function mainPidOf(run) {
+  try {
+    const v = String(run('systemctl', ['--user', 'show', HM.UNIT, '-p', 'MainPID', '--value'])).trim();
+    return /^\d+$/.test(v) ? Number(v) : null;
+  } catch (err) { return null; }
+}
+function outsideUnit(running, { server, cgroupOf, roleDir, home, unitOf, exec } = {}) {
   if (running.length !== 1 || !running[0].sessionId) return null;
   const s = running[0];
   const srv = (server || require('./team-revive.js').serverOf)(s.pid);
   if (!srv || srv.unreadable || !srv.pid || srv.self) return null;
   const read = cgroupOf || readCgroup;
   if (inUnit(read('self')) !== true) return null;
-  if (inNoService(read(srv.pid)) !== true) return null;
+  const cg = read(srv.pid);
+  let leftover = false;
+  if (inNoService(cg) !== true) {
+    if (inThisUnitOnly(cg) !== true) return null;
+    const main = mainPidOf(runner(exec));
+    if (main === null || main === srv.pid) return null;
+    leftover = true;
+  }
   const served = (unitOf || ((d) => R.unitServing(d, { home })))(roleDir);
   if (served && (served.hand || []).length) return null;
-  return { session: s, server: srv.pid };
+  return { session: s, server: srv.pid, leftover };
 }
-// deps (tests): server (team-revive's serverOf), cgroupOf(pid), stop (team-revive's stopServer).
-function runSession(root, o, { env = process.env, home = os.homedir(), hostname, execve, resolveBin, now, live, server, cgroupOf, stop } = {}) {
+// deps (tests): server (team-revive's serverOf), cgroupOf(pid), stop (team-revive's stopServer), exec (systemctl, for the unit's MainPID).
+function runSession(root, o, { env = process.env, home = os.homedir(), hostname, execve, resolveBin, now, live, server, cgroupOf, stop, exec } = {}) {
   let team;
   try { team = M.loadManifest(root).team; } catch (err) { return { code: 1, out: `host-manager.js: the team at ${root} could not be read (${firstLine(err)}); no session started.` }; }
   const host = R.hostOf(env, hostname !== undefined ? hostname : os.hostname());
@@ -754,7 +779,7 @@ function runSession(root, o, { env = process.env, home = os.homedir(), hostname,
   if (running.length) {
     // the one live host-manager session runs outside this unit: replaced only when idle on a fresh read,
     // and only once this run can start claude in its place; anything else is the live host manager left alone
-    const out = outsideUnit(running, { server, cgroupOf, roleDir: a.roleDir, home });
+    const out = outsideUnit(running, { server, cgroupOf, roleDir: a.roleDir, home, exec });
     if (!out || !ex || !fileOf()) return already;
     const again = sessionsNow({ env, live });
     if (!Array.isArray(again)) return already;
@@ -762,8 +787,8 @@ function runSession(root, o, { env = process.env, home = os.homedir(), hostname,
     const others = again.filter((s) => match(s) && s.sessionId !== out.session.sessionId);
     if (!fresh || fresh.status !== 'idle' || others.length) return already;
     if (!(stop || require('./team-revive.js').stopServer)(out.server, out.session.pid)) return { code: 1, out: `host-manager.js: the host-manager session ${out.session.sessionId} runs outside ${HM.UNIT}, and its Remote Control server (pid ${out.server}) did not stop; no session started.` };
-    R.record(root, { type: 'host-manager-replaced', at: now || new Date().toISOString(), instance: hm.instance, server: out.server, pid: out.session.pid || null, session: out.session.sessionId });
-    replaced = `host-manager.js: replaced the host-manager session ${out.session.sessionId}, whose Remote Control server (pid ${out.server}) ran in no unit: stopped while idle, and the unit's own session starts.`;
+    R.record(root, { type: 'host-manager-replaced', at: now || new Date().toISOString(), instance: hm.instance, server: out.server, pid: out.session.pid || null, session: out.session.sessionId, ...(out.leftover ? { leftover: true } : {}) });
+    replaced = `host-manager.js: replaced the host-manager session ${out.session.sessionId}, whose Remote Control server (pid ${out.server}) ${out.leftover ? `ran in ${HM.UNIT}'s cgroup as a leftover, not its main process` : 'ran in no unit'}: stopped while idle, and the unit's own session starts.`;
   }
   if (!ex) return noExec;
   const file = fileOf();
