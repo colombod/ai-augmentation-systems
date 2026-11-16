@@ -2501,6 +2501,10 @@ test('switching the network off and powering off or restarting the host are refu
   ]) assert.equal(hostRefusal(c, 'builder'), null, c);
   // the user-manager scope start the host manager uses to start sessions is not a power refusal
   assert.equal(hostRefusal('systemd-run --user --scope --unit=delivery-role-x node claude', 'host-manager'), null);
+  // but a user-manager systemd-run carrying a power or network-off command is refused even for the host
+  // manager, whose lane is otherwise allowed --user (so the carried-command check, not the --system one)
+  assert.equal(hostRefusal('systemd-run --user --scope nmcli networking off', 'host-manager'), 'power');
+  assert.equal(hostRefusal('systemd-run --user systemctl poweroff', 'host-manager'), 'power');
 });
 
 test('host manager lane: operands after -- must match, value flags are not operands, job modes and --force are refused', () => {
