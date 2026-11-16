@@ -2437,3 +2437,59 @@ test('5q3: a send-back note is whole up to the cap; a longer one says it was sho
   assert.ok(p.includes(`[shortened: ${WD.MESSAGE_CHARS} of ${huge.length} characters; the full note is on ex-review]`), p.slice(-300));
   assert.doesNotMatch(p, /Do NOT push/);
 });
+
+// rv-224: the Delivery Manager's blocked wake carried the holder's blocker note cut at 400 characters,
+// unmarked, the same defect as held messages
+test('5q3: a blocker note reaches the Delivery Manager whole up to the cap; a longer one says it was shortened and names the bead', () => {
+  const now = Date.parse('2026-11-16T12:00:00Z');
+  const prompt = (note) => {
+    const b = { id: 'ex-bk', status: 'in_progress', assignee: `dev@pc/${B2}`, updated_at: iso(now - 3 * H), notes: `2026-11-16 builder-2: Blocked: ${note}` };
+    return WD.stalls({ now: iso(now), beads: [b], sessions: [sess6(B2, now - 30 * 60e3), sess6(DM, now - 5 * 60e3)], stallHours: 2 }).stalls.find((s) => s.kind === 'quiet').prompt;
+  };
+  const long = `${'waits on the review of PR 224 and its round. '.repeat(15)}Do NOT reassign it.`;
+  assert.ok(long.length > 400 && long.length < WD.MESSAGE_CHARS);
+  assert.ok(prompt(long).includes(long), 'a note past the old 400 arrives whole');
+  const huge = `${'z'.repeat(WD.MESSAGE_CHARS)} Do NOT reassign it.`;
+  const p = prompt(huge);
+  assert.match(p, /\[shortened: \d+ of \d+ characters; the full note is on ex-bk\]/);
+  assert.doesNotMatch(p, /Do NOT reassign/);
+});
+
+test('5q3 rv-224: a cut never splits a surrogate pair, and the counts are on the stored text, not the folded one', () => {
+  const smile = '\u{1F600}';
+  const raw = `${'x'.repeat(WD.MESSAGE_CHARS - 1)}${smile} tail`;
+  const out = WD.shorten(raw, raw.length, 'where');
+  assert.ok(out.startsWith('x'.repeat(WD.MESSAGE_CHARS - 1)));
+  assert.doesNotMatch(out, /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/, 'no lone high surrogate');
+  assert.match(out, new RegExp(`\\[shortened: ${WD.MESSAGE_CHARS - 1} of ${raw.length} characters; where\\]`));
+  // runs of whitespace are folded for the prompt only: the counts are the stored text's
+  const spaced = 'a   '.repeat(1500);
+  const s2 = WD.shorten(spaced, spaced.length, 'w');
+  assert.match(s2, new RegExp(`\\[shortened: ${WD.MESSAGE_CHARS} of ${spaced.length} characters; w\\]`));
+  assert.doesNotMatch(s2, / {2}/, 'the prompt folds the whitespace');
+  // and a call site measures the stored note, not the folded one: a send-back note of 6000 stored units
+  // folds to 3000 and would pass whole if measured after folding
+  const t0 = Date.parse('2026-11-16T12:30:00Z');
+  const review = { pr: '151', state: 'sent-back', beads: ['ex-review'], owners: [B2], sentBack: { id: 'rv-151-delivery-lead-9', at: new Date(t0 - 5 * 60e3).toISOString(), reason: 'changes', note: 'b   '.repeat(1500) } };
+  const sb = WD.stalls({ now: iso(t0), beads: [], sessions: [sess6(B2, t0 - 60 * 60e3)], reviews: [review] }).stalls.find((s) => s.kind === 'review').prompt;
+  assert.match(sb, new RegExp(`\\[shortened: ${WD.MESSAGE_CHARS} of 6000 characters; the full note is on ex-review\\]`));
+  // the inbox's own bound steps back the same way
+  const IB = require('./lib/inbox.js');
+  const h = harness({});
+  IB.queue(h.root, { to: COS, from: DM, message: `${'y'.repeat(IB.MAX_TEXT - 1)}${smile}`, at: '2026-11-16T12:00:00Z' });
+  const row = JSON.parse(fs.readFileSync(path.join(h.root, '.delivery', 'watchdog', 'inbox', `${COS}.ndjson`), 'utf8').trim());
+  assert.equal(row.message.length, IB.MAX_TEXT - 1, 'the stored start stops before the pair');
+  assert.equal(row.length, IB.MAX_TEXT + 1, 'and the real length is recorded');
+});
+
+test('5q3 rv-224: a sender is told when a message over the inbox bound was kept only in part', () => {
+  const h = harness({});
+  const RC = require('../hooks/scripts/route-check.js');
+  const IB = require('./lib/inbox.js');
+  const failed = [{ type: 'text', text: JSON.stringify({ success: false, message: "No agent named 'chief-of-staff' is reachable." }) }];
+  session(h, COS, { seen: new Date().toISOString() });
+  const send = (message) => withEnv({ DELIVERY_ROLE: 'builder-1' }, () => RC.check({ tool_name: 'SendMessage', cwd: h.roleDir('builder-1'), tool_input: { to: 'chief-of-staff', message }, tool_response: failed }));
+  const big = send('m'.repeat(IB.MAX_TEXT + 10));
+  assert.match(big.context, new RegExp(`Only its first ${IB.MAX_TEXT} of ${IB.MAX_TEXT + 10} characters were kept`));
+  assert.doesNotMatch(send('short').context, /Only its first/, 'a message within the bound says nothing of the kind');
+});

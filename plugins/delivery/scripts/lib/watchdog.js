@@ -47,7 +47,17 @@ const REL = path.join('.delivery', 'watchdog');
 // is now whole up to this many characters (five messages stay far below Linux's 128 KiB limit on one
 // argument), and one longer ends by saying it was shortened and where its full text is.
 const MESSAGE_CHARS = 4000;
-const shorten = (text, all, where) => (all > MESSAGE_CHARS ? `${text.slice(0, MESSAGE_CHARS)} [shortened: ${MESSAGE_CHARS} of ${all} characters; ${where}]` : text);
+// A cut never splits a character JavaScript keeps in two code units (a surrogate pair): it steps back one.
+const cutAt = (s, n) => { const c = String(s).slice(0, n); return /[\uD800-\uDBFF]$/.test(c) ? c.slice(0, -1) : c; };
+// raw is the stored text and all its real length (rv-224: the counts are on what is stored, not on the text
+// with its whitespace folded); only the prompt folds the whitespace
+const shorten = (raw, all, where) => {
+  const s = String(raw || '');
+  const total = Math.max(Number(all) || 0, s.length);
+  if (total <= MESSAGE_CHARS) return s.replace(/\s+/g, ' ');
+  const c = cutAt(s, MESSAGE_CHARS);
+  return `${c.replace(/\s+/g, ' ').trimEnd()} [shortened: ${c.length} of ${total} characters; ${where}]`;
+};
 const P0_HOURS = 1;
 const WAKE_EVERY_MS = 3600e3;
 const DAILY_CAP = 6;
@@ -503,7 +513,7 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
         line: `Blocked: ${b.id} has a blocker noted and nothing has moved for ${span(waited)}.`,
         plain: `A started item has been blocked for ${span(waited)}; the Delivery Manager clears it.`,
         detail: `in progress with ${h ? h.instance : b.assignee || 'nobody named'}; last note names a blocker`,
-        prompt: `${b.id} has a blocker noted by its holder and has not moved for ${span(waited)}: ${blocker.replace(/\s+/g, ' ').slice(0, 400)} Clear it now (unblock, reassign or release it), or note on the bead what it waits for.` });
+        prompt: `${b.id} has a blocker noted by its holder and has not moved for ${span(waited)}: ${shorten(blocker, blocker.length, `the full note is on ${b.id}`)} Clear it now (unblock, reassign or release it), or note on the bead what it waits for.` });
       continue;
     }
     const last = Math.max(ms(b.updated_at), ms(b.created_at), activeFor(b, h));
@@ -577,12 +587,12 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
     const where = m.file || path.join(REL, 'inbox', `${m.to}.ndjson`);
     const last = m.entries.slice(-5);
     const shown = last.map((e, i) => {
-      const text = String(e.message || '').replace(/\s+/g, ' ');
+      const raw = String(e.message || '');
       const line = first + m.entries.length - last.length + i;
       // a message past the inbox's own bound carries its real length (lib/inbox.js), and the file only its start
-      const all = Number(e.length) > text.length ? Number(e.length) : text.length;
-      const kept = all > text.length ? `line ${line} of ${where} holds its first ${text.length}` : `the full text is line ${line} of ${where}`;
-      return `[from ${e.from || 'unknown'}${e.summary ? `: ${e.summary}` : ''}] ${shorten(text, all, kept)}`;
+      const all = Number(e.length) > raw.length ? Number(e.length) : raw.length;
+      const kept = all > raw.length ? `line ${line} of ${where} holds its first ${raw.length}` : `the full text is line ${line} of ${where}`;
+      return `[from ${e.from || 'unknown'}${e.summary ? `: ${e.summary}` : ''}] ${shorten(raw, all, kept)}`;
     });
     const earlier = m.entries.length - last.length;
     const lead = earlier > 0 ? `${m.entries.length} messages arrived; the earlier ${earlier} ${earlier > 1 ? `are lines ${first}-${first + earlier - 1}` : `is line ${first}`} of ${where}; the last ${last.length}:` : `Message${m.entries.length > 1 ? 's' : ''} sent to you while your session was not running:`;
@@ -606,7 +616,7 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
         line: `Sent back: PR ${r.pr} (${named}) went back to ${owner} at ${clock(ms(r.sentBack.at))}${r.sentBack.reason ? ` (${r.sentBack.reason})` : ''}.`,
         plain: 'A pull request went back to its builder to fix; it is woken to fix it.',
         detail: `PR ${r.pr} sent back to ${owner} (${r.sentBack.id})`,
-        prompt: `PR ${r.pr} was sent back to you (${r.sentBack.id}${r.sentBack.reason ? `, ${r.sentBack.reason}` : ''})${r.sentBack.note ? `: ${(() => { const n = String(r.sentBack.note).replace(/\s+/g, ' '); return shorten(n, n.length, `the full note is on ${named}`); })()}` : ''}. Read the send-back note on ${named}, fix it on your branch, push, and tell the Delivery Manager.` });
+        prompt: `PR ${r.pr} was sent back to you (${r.sentBack.id}${r.sentBack.reason ? `, ${r.sentBack.reason}` : ''})${r.sentBack.note ? `: ${(() => { const n = String(r.sentBack.note); return shorten(n, n.length, `the full note is on ${named}`); })()}` : ''}. Read the send-back note on ${named}, fix it on your branch, push, and tell the Delivery Manager.` });
     }
   }
   // the next step a merge or a deploy handed to a role (lib/handoff.js): a handoff, woken like a message,
@@ -1149,4 +1159,4 @@ function wakeArgs(s, prompt, live, { prefix = null } = {}) {
   return { mode: 'resume', args: ['--resume', s.session, '-p', prompt] };
 }
 
-module.exports = { MESSAGE_CHARS, FINISH_WINDOW_MS, overdueWakes, stopWake, finishStops, waitingRoles, noteWaiting, waitedRoles, chiefOf, KILL_GRACE_MS, START_SLACK_MS, procReads, reviveStarts, START_SETTLE_MIN, START_FRESH_H, MANAGER_STEP, managerPrs, refusedInstalls, MANAGER_DAILY_CAP, MANAGER_MESSAGE_DAILY_CAP, ASSIGNED_DAILY_CAP, MANAGER_ASSIGNED_DAILY_CAP, reviewFacts, capsOf, ASSIGNED_IDLE_MIN, WAKE_OPENING, wakePrompt, withA3s, FRESH_ABOVE, contextOf, MESSAGE_EVERY_MS, MESSAGE_DAILY_CAP, WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };
+module.exports = { MESSAGE_CHARS, shorten, FINISH_WINDOW_MS, overdueWakes, stopWake, finishStops, waitingRoles, noteWaiting, waitedRoles, chiefOf, KILL_GRACE_MS, START_SLACK_MS, procReads, reviveStarts, START_SETTLE_MIN, START_FRESH_H, MANAGER_STEP, managerPrs, refusedInstalls, MANAGER_DAILY_CAP, MANAGER_MESSAGE_DAILY_CAP, ASSIGNED_DAILY_CAP, MANAGER_ASSIGNED_DAILY_CAP, reviewFacts, capsOf, ASSIGNED_IDLE_MIN, WAKE_OPENING, wakePrompt, withA3s, FRESH_ABOVE, contextOf, MESSAGE_EVERY_MS, MESSAGE_DAILY_CAP, WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };

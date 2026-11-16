@@ -24,7 +24,10 @@ function queue(root, { to, from, summary, message, at }) {
   const ig = path.join(root, '.delivery', 'watchdog', '.gitignore');
   if (!fs.existsSync(ig)) fs.writeFileSync(ig, '*\n');
   const text = String(message || '');
-  fs.appendFileSync(file(root, to), `${JSON.stringify({ at: at || new Date().toISOString(), from: from || null, summary: summary ? String(summary).slice(0, 200) : null, message: text.slice(0, MAX_TEXT), ...(text.length > MAX_TEXT ? { length: text.length } : {}) })}\n`);
+  // the stored start never splits a surrogate pair (one character in two code units): it steps back one
+  const start = text.slice(0, MAX_TEXT);
+  const stored = /[\uD800-\uDBFF]$/.test(start) ? start.slice(0, -1) : start;
+  fs.appendFileSync(file(root, to), `${JSON.stringify({ at: at || new Date().toISOString(), from: from || null, summary: summary ? String(summary).slice(0, 200) : null, message: stored, ...(text.length > stored.length ? { length: text.length } : {}) })}\n`);
   // the host job starts a run now, not at its next pass (lib/kick.js)
   require('./kick.js').kick(root, 'a message');
   return true;
