@@ -1375,7 +1375,9 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
      team's session name in `claude agents --json`; holding nothing in progress and no open item assigned to
      it; not stopped on the usage limit) is paired with a ready, unassigned builder item of its own (a story,
      a bug or a security bead, never another role's reality check, phase review, drift item or spike, never
-     an epic or a shipped item, and only what the claim check admits, as the plan does: in a stopped area
+     an epic or a shipped item, and only what the claim check admits, as the plan does: nothing whose
+     criteria changed since it was made ready, with an unknown surface or no planned reality-check script,
+     no child naming a criterion its story lacks; in a stopped area
      only its linked fixes, nothing resting on an external-host assumption not yet observed, no later wave
      that would leave the current one half-built, no start the owner-set budget cannot finish, no new area
      near the limit), highest priority first, P0 or not (`assign`, all pairs in one pass). The pairs of one

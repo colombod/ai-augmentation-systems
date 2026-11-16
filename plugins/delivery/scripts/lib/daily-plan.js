@@ -111,6 +111,10 @@ function claimAdmission(root, { bd, team, now, stories, beadOf, ctx, ci, verifyR
     const blocks = [...AN.claimFindings(b, { root, parent: b.parent ? show(b.parent) : null, fix: c.fixOf(b), stories: all, beadOf: show, team, now, ci: ciState }),
       ...(G.isStoryBead(b) ? A.forStory(root, b, { bd, team, verifyRecord, atClaim: true, regs }).findings : []),
       ...(G.isStoryBead(b) ? [A.areaAndon(b, all, (s) => regs.rowsFor(G.initiativeOf(s)))].filter(Boolean) : []),
+      // the claim check's own ready gate (bd-guard readyFindings and claimDivergence: criteria changed
+      // since ready, an unknown or missing surface, no planned check script, a child naming a criterion
+      // its story lacks), as waves.rank reads it for the plan (rv-221 round 2)
+      ...(c.gateBlocks ? c.gateBlocks(b) : []),
       ...waveBlocks(b, taken)].filter((x) => x.level === 'block');
     return !blocks.length;
   };

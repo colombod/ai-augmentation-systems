@@ -491,9 +491,12 @@ test('hjx.1.6.12.1: read then pass: a story in an area stopped on a failed check
   const next = open12('ex-vault-imp-2', { area: 'import' });
   const elsewhere = open12('ex-vault-col-2', { area: 'collection' });
   const earlier = (root) => shippedIn(root, 'pass', 'ex-vault-imp-0');
+  // each ready story has its reality-check script planned, as materialise writes it (R-33)
+  const planned = (root) => { for (const b of [next, elsewhere]) GF.planCheck(root, b); return root; };
+  planned(stopped);
   assert.deepEqual(offered(passOn(stopped, [earlier(stopped), failed, next, elsewhere], [next, elsewhere])), ['ex-vault-col-2'], 'the stopped area offers nothing; another area still does');
   // the other direction: the check passed, no stop, and the same story is offered
-  const calm = GF.makeProject();
+  const calm = planned(GF.makeProject());
   assert.deepEqual(offered(passOn(calm, [earlier(calm), shippedIn(calm, 'pass'), next, elsewhere], [next, elsewhere])), ['ex-vault-imp-2', 'ex-vault-col-2']);
 });
 
@@ -507,6 +510,16 @@ test('hjx.1.6.12.1: read then pass: a story resting on an external-host assumpti
   const none = GF.makeProject();
   fs.writeFileSync(A.fileOf(none, 'vault'), register(''));
   assert.deepEqual(offered(passOn(none, [intake], [intake])), ['ex-vault-0n9-3']);
+});
+
+// rv-221 round 2: the claim check's ready gate (D1, criteria changed since the story was made ready)
+test('hjx.1.6.12.1: read then pass: a story whose criteria changed since ready is not offered; one whose ready hash matches is', () => {
+  const root = GF.makeProject();
+  const hash = Gt.storyHash(require('./lib/gate-context.js').readStory(root, open12('ex-vault-0n9-3', { area: 'collection' })));
+  const stale = open12('ex-vault-0n9-3', { area: 'collection', ready_hash: 'stale-hash' });
+  assert.deepEqual(offered(passOn(root, [stale], [stale])), [], 'the hook refuses it (D1 criteria-changed)');
+  const agreed = open12('ex-vault-0n9-3', { area: 'collection', ready_hash: hash });
+  assert.deepEqual(offered(passOn(root, [agreed], [agreed])), ['ex-vault-0n9-3']);
 });
 
 // waves and the budget: an owner-set weekly budget, stories with their area, wave and size
