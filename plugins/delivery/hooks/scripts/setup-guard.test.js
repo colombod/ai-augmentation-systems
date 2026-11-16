@@ -1,6 +1,7 @@
 // hooks/scripts/setup-guard.test.js — the setup guard binds every session on the host: temp-location
 // changes are refused (record or not), other ruled-on machine setup is refused naming its record, and
 // the refusal never sends the session to the operator. Run with: scripts/testing/run-tests.js.
+require('../../scripts/testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

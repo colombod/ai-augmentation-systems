@@ -4,6 +4,7 @@
 // require('./watchdog.js').liveSessions) got the half-built exports: every host job run logged "the missing
 // role sessions were not checked (require(...).liveSessions is not a function)" and no session came back.
 
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

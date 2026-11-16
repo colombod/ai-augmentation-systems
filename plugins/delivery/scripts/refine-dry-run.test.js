@@ -123,3 +123,71 @@ test('refine --from checks every command before it applies any, and --unchecked 
   assert.equal(step(2).unchecked, 'criterion 2 ships its test with this deploy');
   assert.equal(step(1).unchecked, undefined, 'the clean step is not marked');
 });
+
+// hjx.1.7 (A3 a3-reality-checker-11, -12, -26): three failed rows were script defects. A match written as
+// text with regex characters ('Kicked: 1 (a message)', '... (a refined touch leaves no file) ...') was read
+// as a pattern, and one ('incident') named text the step's output never prints. Refine now says which a
+// match is, refuses one with regex characters until told, names both forms, and checks --sample.
+const KICKED = 'Kicked: 1 (a message)';
+const TOUCHED = 'RD-C1 HOLDS: refine runs nothing (a refined touch leaves no file), refuses test paths outside the plugin root';
+test('refine: a match with regex characters is refused until --literal or --regex says which, naming both forms; the incident matches are refused cases', () => {
+  const { dm, step } = setup();
+  const at = (...extra) => dm('refine', ID, '--criterion', '1', '--step', '1', '--command', 'echo x', ...extra);
+  for (const m of [KICKED, TOUCHED]) {
+    const before = JSON.stringify(step());
+    const r = at('--match', m);
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /holds regex characters \(.*\): it is matched as literal text by default\. Say which it is: add --literal to match it as written, or --regex with the pattern/);
+    assert.ok(r.out.includes(`"${m.replace(/[()]/g, '\\$&')}"`), `the escaped form is named: ${r.out}`);
+    assert.equal(JSON.stringify(step()), before, 'nothing saved');
+  }
+  // --literal stores it as text, --regex as a pattern; the output names the mode
+  const lit = at('--match', KICKED, '--literal');
+  assert.equal(lit.code, 0, lit.out);
+  assert.match(lit.out, /match \(literal\): Kicked: 1 \(a message\)/);
+  assert.deepEqual([step().match, step().match_mode], [KICKED, 'literal']);
+  const re = at('--match', 'Kicked: 1 \\(a message\\)', '--regex');
+  assert.equal(re.code, 0, re.out);
+  assert.match(re.out, /match \(regex\): \/Kicked: 1 \\\(a message\\\)\//);
+  assert.equal(step().match_mode, 'regex');
+  // text with no regex characters is literal without a flag
+  assert.equal(at('--match', 'imported 212 cards').code, 0);
+  assert.equal(step().match_mode, 'literal');
+  // both flags, a pattern that does not parse, and a flag without --match are refused
+  assert.match(at('--match', 'x', '--literal', '--regex').out, /--regex and --literal both given/);
+  assert.match(at('--match', '(', '--regex').out, /--match is not a valid regular expression/);
+  assert.match(dm('refine', ID, '--criterion', '1', '--step', '1', '--regex').out, /go with --match/);
+});
+
+test('refine --sample: a match not found in the sample is refused; one found is saved, in its own mode', () => {
+  const { dm, step } = setup();
+  const at = (...extra) => dm('refine', ID, '--criterion', '1', '--step', '1', '--command', 'echo x', ...extra);
+  // the be9.1 incident: 'incident' appears in no TAP line of the claim-stop test run
+  const tap = 'ok 4 - a final message that sends the operator into another session blocks once with the relay reason\n# tests 1\n# pass 1\n# fail 0\n';
+  const before = JSON.stringify(step());
+  const r = at('--match', 'incident', '--sample', tap);
+  assert.equal(r.code, 1);
+  assert.match(r.out, /--match "incident" \(literal\) is not found in --sample: the run would fail on that output/);
+  assert.equal(JSON.stringify(step()), before, 'nothing saved');
+  assert.equal(at('--match', 'blocks once with the relay reason', '--sample', tap).code, 0);
+  // a pattern is checked as a pattern, literal text as text
+  assert.equal(at('--match', 'ok \\d+ - a final message', '--regex', '--sample', tap).code, 0);
+  assert.equal(at('--match', 'ok \\d+ - a final message', '--literal', '--sample', tap).code, 1);
+  assert.equal(at('--match', KICKED, '--literal', '--sample', `x ${KICKED} y`).code, 0);
+});
+
+test('refine --from: match_mode says how each match is read; a match with regex characters and no mode is refused, and a sample is checked', () => {
+  const { root, dm, step } = setup();
+  const write = (body) => { const f = path.join(root, 'cmds.json'); fs.writeFileSync(f, JSON.stringify(body)); return f; };
+  const before = JSON.stringify(step());
+  const bad = dm('refine', ID, '--from', write({ 1: { command: 'echo x', match: KICKED } }));
+  assert.equal(bad.code, 1);
+  assert.match(bad.out, /criterion 1: match "Kicked: 1 \(a message\)" holds regex characters .*add "match_mode": "literal" to match it as written, or "match_mode": "regex"/);
+  assert.equal(JSON.stringify(step()), before);
+  assert.match(dm('refine', ID, '--from', write({ 1: { command: 'echo x', match: 'x', match_mode: 'text' } })).out, /match_mode is literal or regex/);
+  assert.match(dm('refine', ID, '--from', write({ 1: { command: 'echo x', match: 'incident', sample: 'no such word' } })).out, /criterion 1: match "incident" \(literal\) is not found in sample/);
+  const ok = dm('refine', ID, '--from', write({ 1: { command: 'echo x', match: KICKED, match_mode: 'literal', sample: `[${KICKED}]` } }));
+  assert.equal(ok.code, 0, ok.out);
+  assert.match(ok.out, /criterion 1 step 1 match \(literal\): Kicked: 1 \(a message\)/);
+  assert.deepEqual([step().match, step().match_mode], [KICKED, 'literal']);
+});

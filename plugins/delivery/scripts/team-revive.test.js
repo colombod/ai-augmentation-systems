@@ -2,6 +2,7 @@
 // links while work is in flight (dec-chief-of-staff-000279): the rules with injected sessions, beads, pull
 // requests and spawn (never a real claude), the guards both ways, the roster's remote id, the lane, and
 // the watchdog run that calls it.
+require('./testing/role-env.js').clearRoleEnv();
 process.env.TZ = 'UTC';
 const test = require('node:test');
 const assert = require('node:assert/strict');

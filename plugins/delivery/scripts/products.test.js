@@ -1,4 +1,5 @@
 // scripts/products.test.js — the per-product view of work in flight (products.js, lib/product-view.js)
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

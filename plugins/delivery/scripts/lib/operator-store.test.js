@@ -1,5 +1,6 @@
 // scripts/lib/operator-store.test.js — the private operator store: where records live, how they travel,
 // and that the user's own checkout is never touched (the B1-B3, I4-I7 review matrix).
+require('../testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');

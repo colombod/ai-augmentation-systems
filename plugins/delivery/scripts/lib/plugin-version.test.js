@@ -1,6 +1,7 @@
 // scripts/lib/plugin-version.test.js — run through scripts/testing/run-tests.js
 // delivery-plugin-planning-8wz: after a plugin install, a role session resumed by the watchdog kept the
 // old version's script paths and the new lane refused them; the owner had to restart sessions by hand.
+require('../testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

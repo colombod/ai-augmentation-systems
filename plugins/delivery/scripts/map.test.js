@@ -2,6 +2,7 @@
 // The feature map (owner's ask, 2026-10-24): what a repository ships and what a change reaches, from the
 // feature's side, before code. Any project, any language: the fixture mixes a Claude plugin, JS, Python,
 // Go, a declared feature and files no rule reads.
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

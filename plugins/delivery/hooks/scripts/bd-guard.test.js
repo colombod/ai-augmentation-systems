@@ -1,4 +1,5 @@
 // hooks/scripts/bd-guard.test.js
+require('../../scripts/testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { parseBd, decideBd, gateChecks } = require('./bd-guard.js');

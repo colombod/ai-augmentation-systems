@@ -1,5 +1,6 @@
 // scripts/reality-check.test.js — the Reality Checker (R-33, R-05, R-07) replayed on Vault moments:
 // vault-0n9.3 (the chat-drop import, #478) on S1, ChatGPT web in plain chat, which no test reaches.
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
@@ -734,7 +735,7 @@ test('refine --from applies a file of criterion -> command and match, all or not
   const script = () => fs.readFileSync(path.join(root, rc.scriptRel(ID)), 'utf8');
   const write = (name, body) => { const f = path.join(root, name); fs.writeFileSync(f, typeof body === 'string' ? body : JSON.stringify(body)); return f; };
   const quoted = "node -e 'console.log(\"ok\")'";
-  const good = write('commands.json', { 1: { command: quoted, match: 'ok\\n' }, 2: { command: 'echo two', match: '^two', step: 1 } });
+  const good = write('commands.json', { 1: { command: quoted, match: 'ok\\n', match_mode: 'regex' }, 2: { command: 'echo two', match: '^two', match_mode: 'regex', step: 1 } });
   const r = dm('refine', ID, '--from', 'commands.json');
   assert.equal(r.code, 0, r.out);
   assert.match(r.out, /criterion 1 step 1, criterion 2 step 1/);
@@ -745,7 +746,7 @@ test('refine --from applies a file of criterion -> command and match, all or not
   const before = script();
   for (const [body, why] of [
     [{ 1: { command: 'echo a', match: 'a' }, 9: { command: 'echo b', match: 'b' } }, /criterion 9 is not in the script/],
-    [{ 1: { command: 'echo a', match: '(' } }, /criterion 1: match is not a valid regular expression/],
+    [{ 1: { command: 'echo a', match: '(', match_mode: 'regex' } }, /criterion 1: match is not a valid regular expression/],
     [{ 1: { command: 'echo a' } }, /criterion 1: command and match must both be non-empty strings/],
     [{ 1: { command: 'echo a', match: 'a', shell: 'x' } }, /criterion 1: unknown key shell/],
     [{ 1: { command: 'echo a', match: 'a', step: 5 } }, /criterion 1 has no step 5/],

@@ -2,6 +2,7 @@
 // and bd-guard hook processes with real role markers (testing/role-harness.js) and a fake gh, replayed
 // on the Vault: #478 (the chat-drop import, vault-0n9.3), #471 merged before its verdict existed
 // (10-12 23:32), #393 whose conflict resolution reached main on an older review, #272 at 3,790 lines.
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
