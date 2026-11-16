@@ -627,6 +627,152 @@ test('a host manager\'s unit restart that left the same old session running is t
   assert.deepEqual(R.ledger(m.alpha.root).filter((x) => x.type === 'restart').map((x) => x.from_session), [hm.sessionId, hm.sessionId]);
 });
 
+// A unit restart whose unit is not active after the settle window (its session exited within seconds, as
+// run-session's exit 3 did on a real host) is a failed start: a `failed` row names it, the hourly cap does
+// not hold the next try, and the daily cap still counts it, so a crash loop stays bounded. One whose unit
+// stayed up is held for the hour as before. The same rule as a spawned start that exits within SETTLE_MS.
+test('a host manager unit restart whose unit is down after the settle is retried at the next pass, not held for the hour; one that stayed up is held; the daily cap still bounds it', () => {
+  const TR = require('./team-revive.js');
+  const m = machine({ alphaRoles: HM_ROLES });
+  hostManagerUnit(m);
+  runningRole(m, m.alpha, 'host-manager', { pid: 90, version: '1.1.0' });
+  const units = [];
+  let up = false;
+  const settled = [];
+  const pass = () => TR.revive(m.alpha.root, m.alpha.team, { start: true, cwd: m.base, env: { DELIVERY_HOST: 'pc', PATH: '/usr/bin', DELIVERY_CLAUDE_BIN: NO_CLAUDE }, home: m.home, live: m.live, relist: () => m.live, restartUnit: (u) => units.push(u), unitSettle: (u) => { settled.push(u); return up; }, spawn: () => { throw new Error('no spawn'); }, stop: () => { throw new Error('no stop'); }, systemdRun: null, ...m.deps().teamDeps(m.alpha.root) });
+  const at = (min) => { m.now = iso(Date.parse(T0) + min * MIN); };
+  const first = pass();
+  assert.deepEqual([units, settled], [[HM.UNIT], [HM.UNIT]]);
+  const fail = R.ledger(m.alpha.root).filter((x) => x.type === 'failed');
+  assert.deepEqual(fail.map((x) => [x.instance, x.unit, x.start_at]), [['host-manager', HM.UNIT, T0]]);
+  assert.ok(first.lines.some((l) => /^Stale: host-manager .*; not restarted: its unit delivery-host-manager\.service was not active 60s after the restart/.test(l)), first.lines.join('\n'));
+  // five minutes later: tried again, not held for the hour
+  at(5);
+  pass();
+  assert.equal(units.length, 2);
+  // this one stays up: the next pass within the hour is held as before
+  up = true;
+  at(10);
+  pass();
+  assert.equal(units.length, 3);
+  at(15);
+  const held = pass();
+  assert.equal(units.length, 3);
+  assert.ok(held.lines.some((l) => /^Stale: host-manager .*; held: started .* \(one start an hour\)\.$/.test(l)), held.lines.join('\n'));
+  // a crash loop: every failed restart still counts against the daily cap
+  const n = machine({ alphaRoles: HM_ROLES });
+  hostManagerUnit(n);
+  runningRole(n, n.alpha, 'host-manager', { pid: 90, version: '1.1.0' });
+  const nu = [];
+  for (let k = 0; k < 8; k++) {
+    n.now = iso(Date.parse(T0) + k * 5 * MIN);
+    TR.revive(n.alpha.root, n.alpha.team, { start: true, cwd: n.base, env: { DELIVERY_HOST: 'pc', PATH: '/usr/bin', DELIVERY_CLAUDE_BIN: NO_CLAUDE }, home: n.home, live: n.live, relist: () => n.live, restartUnit: (u) => nu.push(u), unitSettle: () => false, spawn: () => { throw new Error('no spawn'); }, systemdRun: null, ...n.deps().teamDeps(n.alpha.root) });
+  }
+  assert.equal(nu.length, R.DAILY_CAP, 'bounded by the daily cap');
+});
+
+test('a missing role started through the plugin\'s own unit whose unit is down after the settle is a failed start, retried at the next pass; one that stayed up holds the hour', () => {
+  const TR = require('./team-revive.js');
+  const m = machine({ beads: WORK });
+  const unit = `delivery-role-chief-of-staff-${tag(m.alpha.root)}.service`;
+  roleUnit(m, m.alpha.dir('chief-of-staff'), unit, `/usr/bin/env "node" "${path.join(m.alpha.root, '.delivery', 'bin', 'delivery.js')}" "host-manager.js" "run-session" "--project" "${m.alpha.root}" "--instance" "chief-of-staff"`);
+  const starts = [];
+  let up = false;
+  const pass = () => TR.revive(m.alpha.root, m.alpha.team, { start: true, cwd: m.base, env: { DELIVERY_HOST: 'pc', PATH: '/usr/bin', DELIVERY_CLAUDE_BIN: NO_CLAUDE }, home: m.home, live: [], relist: () => [], only: ['chief-of-staff'], startUnit: (u) => starts.push(u), unitSettle: () => up, spawn: () => { throw new Error('no spawn'); }, settle: null, systemdRun: null, ...m.deps().teamDeps(m.alpha.root) });
+  const first = pass();
+  assert.deepEqual(starts, [unit]);
+  assert.deepEqual(R.ledger(m.alpha.root).filter((x) => x.type === 'failed').map((x) => [x.instance, x.unit, x.start_at]), [['chief-of-staff', unit, T0]]);
+  assert.ok(first.lines.some((l) => l.startsWith(`Failed: chief-of-staff through its user unit ${unit}: its unit ${unit} was not active 60s after the start`)), first.lines.join('\n'));
+  m.now = iso(Date.parse(T0) + 5 * MIN);
+  pass();
+  assert.equal(starts.length, 2, 'retried at the next pass');
+  up = true;
+  m.now = iso(Date.parse(T0) + 10 * MIN);
+  pass();
+  assert.equal(starts.length, 3);
+  m.now = iso(Date.parse(T0) + 15 * MIN);
+  pass();
+  assert.equal(starts.length, 3, 'a start that stayed up holds the hour');
+});
+
+test('the unit settle check waits the settle window, then reads systemctl --user is-active: active is up, inactive, failed or activating is down, an unknown answer is not judged', () => {
+  const TR = require('./team-revive.js');
+  for (const [state, want] of [['active', true], ['inactive', false], ['failed', false], ['activating', false], ['', null]]) {
+    const calls = [];
+    const sleeps = [];
+    const check = TR.unitSettleOf((cmd, args) => { calls.push([cmd, ...args].join(' ')); if (state === 'active') return 'active\n'; const e = new Error('Command failed'); e.stdout = `${state}\n`; throw e; }, (ms) => sleeps.push(ms));
+    assert.equal(check(HM.UNIT), want, state);
+    assert.deepEqual(sleeps, [R.SETTLE_MS]);
+    assert.deepEqual(calls, [`systemctl --user is-active ${HM.UNIT}`]);
+  }
+});
+
+// The two real callers wire the settle check in: the owner's restart (host-manager.js restart) and the
+// watchdog's start pass (watchdog.js defaultRevive). Each restarts an older host manager through its unit,
+// the unit is down when the settle reads it, and a 'failed' row names the restart; the wait is the caller's
+// injected sleep, never a real 60 s one.
+const hmUnitDiesOnRestart = () => {
+  const m = machine({ alphaRoles: HM_ROLES });
+  hostManagerUnit(m);
+  runningRole(m, m.alpha, 'host-manager', { pid: 90, version: '1.1.0' });
+  // the restarted unit's session exits at once: is-active answers inactive after the restart
+  m.sd.onRestart = (unit) => { if (unit === HM.UNIT) m.sd.units[HM.UNIT].ActiveState = 'inactive'; };
+  return m;
+};
+const failedRows = (m) => R.ledger(m.alpha.root).filter((x) => x.type === 'failed').map((x) => [x.instance, x.unit, x.via]);
+
+// A start pass with unit settles runs for minutes (each settle waits SETTLE_MS): two units started through
+// their own unit settle for over two minutes, past what the start lock once allowed. The pass keeps its
+// lock all the same: a second pass started during the second settle finds it held and starts nothing.
+test('a start pass whose unit settles run past the old two-minute lock limit keeps its start lock: a second pass started during it is refused as held', () => {
+  const TR = require('./team-revive.js');
+  const m = machine({ beads: WORK });
+  const ownUnit = (i) => `delivery-role-${i}-${tag(m.alpha.root)}.service`;
+  for (const i of ['chief-of-staff', 'builder']) roleUnit(m, m.alpha.dir(i), ownUnit(i), `/usr/bin/env "node" "${path.join(m.alpha.root, '.delivery', 'bin', 'delivery.js')}" "host-manager.js" "run-session" "--project" "${m.alpha.root}" "--instance" "${i}"`);
+  const t0 = Date.now();
+  let t = t0;
+  const clock = () => t;
+  const starts = [];
+  let reads = 0;
+  let inner = null;
+  const opts = () => ({ start: true, cwd: m.base, env: { DELIVERY_HOST: 'pc', PATH: '/usr/bin', DELIVERY_CLAUDE_BIN: NO_CLAUDE }, home: m.home, live: [], relist: () => [], only: ['chief-of-staff', 'builder'], startUnit: (u) => starts.push(u), unitSettle, clock, spawn: () => { throw new Error('no spawn'); }, settle: null, systemdRun: null, ...m.deps().teamDeps(m.alpha.root) });
+  // each settle waits the window and a second for its read, on the injected clock; the second settle's
+  // read is when another pass starts
+  const unitSettle = TR.unitSettleOf(() => { reads++; if (reads === 2) inner = TR.revive(m.alpha.root, m.alpha.team, opts()); return 'active\n'; }, (ms) => { t += ms + 1000; });
+  const outer = TR.revive(m.alpha.root, m.alpha.team, opts());
+  assert.equal(reads, 2);
+  assert.ok(t - t0 > 2 * 60e3, `the pass ran ${t - t0} ms`);
+  assert.deepEqual(starts.length, 2, 'only the first pass started the units');
+  assert.ok(inner, 'a second pass ran during the second settle');
+  assert.deepEqual(inner.started, {});
+  assert.match(inner.lines.join('\n'), new RegExp(`another start pass holds the start lock \\(pid ${process.pid}\\b`));
+  assert.deepEqual(Object.keys(outer.started).sort(), ['builder', 'chief-of-staff']);
+  assert.equal(fs.existsSync(R.lockFile(m.alpha.root)), false, 'released after the pass');
+});
+
+test('the owner\'s restart settles its host manager unit restart: a unit inactive after the settle window is a failed start', () => {
+  const m = hmUnitDiesOnRestart();
+  m.run(['restart']);
+  assert.ok(m.sd.calls.includes(`systemctl --user restart ${HM.UNIT}`), m.sd.calls.join('\n'));
+  assert.ok(m.sd.calls.includes(`systemctl --user is-active ${HM.UNIT}`), m.sd.calls.join('\n'));
+  assert.ok(m.sleeps.includes(R.SETTLE_MS), `the restart's own sleep waits the settle: ${m.sleeps.join(', ')}`);
+  assert.deepEqual(failedRows(m), [['host-manager', HM.UNIT, 'unit']]);
+});
+
+test('the watchdog\'s start pass settles its host manager unit restart through its injected sleep: a unit inactive after the settle window is a failed start', () => {
+  const m = hmUnitDiesOnRestart();
+  const sleeps = [];
+  const lines = watchdog.defaultRevive(m.alpha.root, {
+    team: m.alpha.team, env: { DELIVERY_HOST: 'pc', PATH: '/usr/bin', DELIVERY_CLAUDE_BIN: NO_CLAUDE }, now: m.now, bd: store([]), live: m.live, exec: m.sd.exec,
+    sleep: (ms) => sleeps.push(ms), relist: () => m.live,
+    deps: { home: m.home, spawn: () => { throw new Error('no spawn'); }, stop: () => { throw new Error('no stop'); }, systemdRun: null, ...m.deps().teamDeps(m.alpha.root) },
+  });
+  assert.ok(m.sd.calls.includes(`systemctl --user restart ${HM.UNIT}`), `${m.sd.calls.join('\n')}\n${lines.join('\n')}`);
+  assert.deepEqual(sleeps, [R.SETTLE_MS]);
+  assert.deepEqual(failedRows(m), [['host-manager', HM.UNIT, 'unit']]);
+  assert.ok(lines.some((l) => /was not active 60s after the restart/.test(l)), lines.join('\n'));
+});
+
 test('a role served by a user unit that is down is never started in a scope: the reply names its unit', () => {
   const m = machine({ beads: WORK });
   roleUnit(m, m.alpha.dir('builder'), 'claude-alpha-builder.service');
@@ -984,14 +1130,16 @@ test('run-session replaces an idle host-manager session running outside its unit
   const env = { DELIVERY_HOST: 'pc', PATH: '/usr/bin', USER: 'dev', DELIVERY_ROLE: 'host-manager' };
   const UNIT_CG = `0::/user.slice/user-1000.slice/user@1000.service/app.slice/${HM.UNIT}\n`;
   const OTHER_CG = '0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-term-1.scope\n';
-  const setup = ({ status = 'idle', again, serverCg = OTHER_CG, selfCg = UNIT_CG, server = { pid: 3531014, self: false }, stopOk = true, handUnit = false } = {}) => {
+  const setup = ({ status = 'idle', again, serverCg = OTHER_CG, selfCg = UNIT_CG, server = { pid: 3531014, self: false }, stopOk = true, handUnit = false, mainPid = 'unread', show } = {}) => {
     const m = machine({ alphaRoles: HM_ROLES });
     m.env = { ...env, CLAUDE_CONFIG_DIR: m.config };
     if (handUnit) roleUnit(m, m.alpha.dir('host-manager'), 'claude-rc-hm.service', '/opt/tools/bin/claude remote-control --name host-manager@pc');
     const old = { sessionId: 'hm-old', pid: 3531100, cwd: m.alpha.dir('host-manager'), name: 'host-manager@pc', status };
     const reads = [[old], again === undefined ? [old] : again];
     let k = 0;
-    const calls = { execve: [], stop: [], reads: 0, cgroup: [] };
+    const calls = { execve: [], stop: [], reads: 0, cgroup: [], show: 0 };
+    // the unit's MainPID, read through systemctl show -p MainPID --value; 'unread': the read fails
+    const exec = (cmd, args) => { if (cmd === 'systemctl' && args.includes('MainPID')) { calls.show++; if (show) return show; if (mainPid === 'unread') throw new Error('Failed to connect to bus'); return `${mainPid}\n`; } return m.sd.exec(cmd, args); };
     const r = m.run(['run-session', '--project', m.alpha.root, '--instance', 'host-manager'], {
       env: m.env, who: { roleId: 'host-manager' }, resolveBin: (b) => `/opt/bin/${b}`, now: T0,
       live: () => { calls.reads++; return reads[Math.min(k++, reads.length - 1)]; },
@@ -999,6 +1147,7 @@ test('run-session replaces an idle host-manager session running outside its unit
       server: (pid) => (pid === old.pid ? server : null),
       cgroupOf: (pid) => { calls.cgroup.push(pid); return pid === 'self' ? selfCg : pid === (server && server.pid) ? serverCg : null; },
       stop: (srv, pid) => { calls.stop.push([srv, pid]); return stopOk; },
+      exec,
     });
     return { m, r, calls, old };
   };
@@ -1021,7 +1170,7 @@ test('run-session replaces an idle host-manager session running outside its unit
     assert.deepEqual(R.ledger(b.m.alpha.root).filter((x) => /^host-manager-/.test(x.type)), [], label);
   }
   // its server inside the unit, its cgroup unreadable, no Remote Control server, or run-session itself not in the unit: exit 3
-  for (const [label, o] of [['inside the unit', { serverCg: UNIT_CG }], ['server cgroup unreadable', { serverCg: null }], ['no server', { server: null }], ['ps unreadable', { server: { unreadable: 'ps failed' } }], ['not run by the unit', { selfCg: OTHER_CG }]]) {
+  for (const [label, o] of [['inside the unit, its MainPID', { serverCg: UNIT_CG, mainPid: 3531014 }], ['inside the unit, MainPID unreadable', { serverCg: UNIT_CG }], ['inside the unit, MainPID not a number', { serverCg: UNIT_CG, show: 'garbage\n' }], ['inside the unit, MainPID empty', { serverCg: UNIT_CG, show: ' \n' }], ['server cgroup unreadable', { serverCg: null }], ['no server', { server: null }], ['ps unreadable', { server: { unreadable: 'ps failed' } }], ['not run by the unit', { selfCg: OTHER_CG }]]) {
     const c = setup(o);
     assert.equal(c.r.code, 3, `${label}: ${c.r.out}`);
     assert.match(c.r.out, /already runs as host-manager@pc/, label);
@@ -1044,6 +1193,27 @@ test('run-session replaces an idle host-manager session running outside its unit
     assert.equal(busy.r.code, 3, busy.r.out);
     assert.deepEqual(busy.calls.stop, [], cg);
   }
+  // a leftover: a server in delivery-host-manager.service's cgroup that is not the unit's MainPID (the unit
+  // stopped with KillMode=process and left it there, MainPID 0, or the unit's MainPID is another process)
+  // is replaced exactly like one outside every unit: idle on a fresh read only, never beside a hand-written unit
+  for (const mp of [0, 4242]) {
+    const l = setup({ serverCg: UNIT_CG, mainPid: mp });
+    assert.equal(l.r.code, 0, `MainPID ${mp}: ${l.r.out}`);
+    assert.deepEqual(l.calls.stop, [[3531014, 3531100]], `MainPID ${mp}`);
+    assert.equal(l.calls.show, 1);
+    assert.equal(l.calls.execve.length, 1);
+    assert.deepEqual(R.ledger(l.m.alpha.root).filter((x) => x.type === 'host-manager-replaced').map((x) => [x.server, x.leftover]), [[3531014, true]]);
+    assert.match(l.r.out, /ran in delivery-host-manager\.service's cgroup as a leftover, not its main process/);
+    for (const [label, o] of [['busy', { status: 'busy' }], ['busy on the fresh read', { again: [{ sessionId: 'hm-old', pid: 3531100, status: 'busy' }] }], ['a hand-written unit on its directory', { handUnit: true }]]) {
+      const b = setup({ serverCg: UNIT_CG, mainPid: mp, ...o });
+      assert.equal(b.r.code, 3, `${label}, MainPID ${mp}: ${b.r.out}`);
+      assert.deepEqual([b.calls.stop, b.calls.execve], [[], []], label);
+    }
+  }
+  // a server in the unit's cgroup and in another service too is not a leftover of this unit alone
+  const two = setup({ serverCg: `0::/user.slice/user-1000.slice/user@1000.service/app.slice/${HM.UNIT}/claude-rc-x.service\n`, mainPid: 0 });
+  assert.equal(two.r.code, 3, two.r.out);
+  assert.deepEqual(two.calls.stop, []);
   // a server that does not stop: no session is started beside it
   const d = setup({ stopOk: false });
   assert.equal(d.r.code, 1, d.r.out);
