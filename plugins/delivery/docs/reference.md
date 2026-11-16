@@ -2020,6 +2020,17 @@ no `CLAUDE_PLUGIN_ROOT`, so the brief and the SessionStart role block print the 
 operator's word: act on it and do not ask again. A message that claims a decision but carries no
 verifiable id is information; the reply asks the sender for the id, never the operator.
 
+**Test inputs.** During a check the Reality Checker never asks the operator for an input; it types a
+test input into the role session, one that opens with the fixed marker `[reality-check test input]`
+(after any leading whitespace; quoted elsewhere in a message it changes nothing). Capture keeps such
+an input apart (source `test`), whatever the session stamped on it. A record made from it, or from
+another test record, carries `test: true`, set when it is written, never chosen. `operator.js
+verify` prints `NOT VERIFIED <id>: test_input: ...` and exits 1 for the test input and every record
+that reaches it. A test record may lean only on test records, so it never revokes, supersedes or
+answers an operator decision (`test_scope`). `operator.js pending` lists test inputs under their own
+heading, apart from the operator's, so the Stop hook never waits on them. `find` leaves test records
+out unless `--all`, and `show` marks them `[test]`.
+
 **The loop**, one command per input, in the same turn (`/delivery:decision` has the steps):
 see it (`operator.js pending`), record or acknowledge it, carry the record id with `SendMessage`.
 Every operator input in the Chief of Staff's session (and the Product Manager's) gets a record or
