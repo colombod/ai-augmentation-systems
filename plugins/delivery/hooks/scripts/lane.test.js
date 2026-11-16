@@ -2396,6 +2396,118 @@ test('claude remote-control is refused to every lane but the Chief of Staff\'s a
   for (const role of ['chief-of-staff', 'host-manager']) assert.doesNotMatch(String(d('claude remote-control --name x@y --spawn session', policyOf(role)).reason), /starting role sessions is/, role);
 });
 
+// The outage drill's run cuts this host's network and restarts it: the Reality Checker's alone. The open
+// lanes (lane_bash: any) would otherwise run it, so it is refused per command, as team-revive.js start is,
+// in every spelling; plan, which only reads, stays open to every lane that runs node, and a mention of the
+// run (a test run, a grep, a cat, a commit message, a bead note) is no run.
+test('outage-drill.js run is refused to every lane but the Reality Checker\'s, in every spelling; plan and a mention are not', () => {
+  const { hostRefusal } = require('./lane.js');
+  const rd = fs.mkdtempSync(path.join(os.tmpdir(), 'drill-lane-'));
+  const PR = PLUGIN_ROOT;
+  const drill = `node ${PR}/scripts/outage-drill.js`;
+  const launcher = path.join('/p', ['.', 'delivery'].join(''), 'bin', 'delivery.js');
+  const policyOf = (role) => loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: `delivery/${role}` });
+  const d = (command, role) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: policyOf(role), roleDir: rd, groups: GROUPS, pluginRoot: PLUGIN_ROOT, cwd: rd });
+  const RUN = 'run --record dec-x-1 --cut-minutes 30 --restart';
+  const spellings = [
+    `${drill} ${RUN}`, `${drill} r''un --record dec-x-1 --cut-minutes 30 --restart`, `${drill} "ru"n --record dec-x-1`, `${drill} --project /p ${RUN}`,
+    `cd /tmp && ${drill} ${RUN}`, `bash -c "${drill} ${RUN}"`, `env A=1 ${drill} ${RUN}`, `node ${launcher} outage-drill.js ${RUN}`,
+    `${drill} $CMD --record dec-x-1`, `node -e "require('${PR}/scripts/outage-drill.js').main(['run','--record','dec-x-1','--cut-minutes','30','--restart'])"`,
+    `echo $(${drill} ${RUN})`,
+    // behind the privilege wrappers, whose -n, -S and -k take no value (rv-218: -n swallowed node)
+    `sudo -n ${drill} ${RUN}`, `sudo -S -k ${drill} ${RUN}`, `sudo -n -u root ${drill} ${RUN}`, `doas -n ${drill} ${RUN}`,
+    `nice -n 5 ${drill} ${RUN}`, `env -S "${drill} ${RUN}"`, `env --split-string="${drill} ${RUN}"`,
+    // fed through xargs, whose arguments come from standard input and cannot be read
+    `echo ${RUN} | xargs ${drill}`, `xargs -n 9 ${drill} < args.txt`, `xargs -a args.txt ${drill}`,
+    // and behind the other wrappers the review named (rv-218)
+    `pkexec ${drill} ${RUN}`, `run0 ${drill} ${RUN}`, `flock /tmp/l ${drill} ${RUN}`, `strace -f ${drill} ${RUN}`, `watch -n 5 ${drill} ${RUN}`,
+    `su -c "${drill} ${RUN}"`, `runuser -u x -- ${drill} ${RUN}`, `script -qc "${drill} ${RUN}" /dev/null`, `time -p ${drill} ${RUN}`,
+    // the script word built by the shell while an argument is run
+    `node $SCRIPT ${RUN}`, 'node `echo x` run --record dec-x-1 --restart',
+  ];
+  for (const role of ['builder', 'spike-researcher', 'delivery-lead', 'chief-of-staff', 'host-manager']) {
+    for (const c of spellings) {
+      const r = d(c, role);
+      assert.equal(r.allow, false, `${role}: ${c}`);
+      assert.match(r.reason, /the outage drill's run cuts this host's network and restarts it: it is the Reality Checker's/, `${role}: ${c}`);
+    }
+  }
+  // the Reality Checker runs it; the refusal is never the Reality Checker's
+  assert.equal(d(`${drill} ${RUN}`, 'reality-checker').allow, true, d(`${drill} ${RUN}`, 'reality-checker').reason);
+  assert.equal(hostRefusal(`${drill} ${RUN}`, 'reality-checker'), null);
+  for (const role of ['builder', 'delivery-lead', 'host-manager']) assert.equal(hostRefusal(`${drill} ${RUN}`, role), 'drill', role);
+  // plan stays open to the builder and the Reality Checker, and is not this refusal for any lane
+  for (const role of ['builder', 'spike-researcher', 'reality-checker']) {
+    for (const c of [`${drill} plan`, `${drill} plan --record dec-x-1 --cut-minutes 20`]) assert.equal(d(c, role).allow, true, `${role}: ${c}: ${d(c, role).reason}`);
+  }
+  for (const role of ['builder', 'spike-researcher']) assert.equal(d(`node ${launcher} outage-drill.js plan --record dec-x-1`, role).allow, true, role);
+  for (const role of ['delivery-lead', 'host-manager']) assert.equal(hostRefusal(`${drill} plan --record dec-x-1`, role), null, role);
+  // stop only cancels a drill's restart: the Reality Checker's lane runs it, and so does an open lane
+  for (const role of ['reality-checker', 'builder']) assert.equal(d(`${drill} stop --record dec-x-1`, role).allow, true, `${role}: ${d(`${drill} stop --record dec-x-1`, role).reason}`);
+  // plan behind a wrapper is still plan; the Reality Checker's run behind xargs is still its own
+  for (const c of [`sudo -n ${drill} plan`, `nice -n 5 ${drill} plan`]) assert.equal(hostRefusal(c, 'builder'), null, c);
+  assert.equal(hostRefusal(`echo ${RUN} | xargs ${drill}`, 'reality-checker'), null);
+  // a mention is no run
+  const rel = ['plugins', 'delivery', 'scripts'].join('/');
+  for (const c of [
+    `DELIVERY_TEST_FILES=${PR}/scripts/outage-drill.test.js node ${PR}/scripts/testing/run-tests.js`,
+    'grep -rn "outage-drill.js run" plugins/delivery', `cat ${rel}/outage-drill.js`, `git diff origin/main -- ${rel}/outage-drill.js`,
+    'git commit -m "outage-drill.js run is the Reality Checker\'s"', 'bd update x-1 --append-notes "next: node outage-drill.js run --record dec-x-1"',
+  ]) assert.equal(d(c, 'builder').allow, true, `${c}: ${d(c, 'builder').reason}`);
+});
+
+// Once the host lets the drill's commands run without a password, a lane could switch the network off or
+// the host off itself, past the drill's consent check. Those commands are refused to every role, the
+// Reality Checker's and the host manager's included; reads and the other direction stay open.
+test('switching the network off and powering off or restarting the host are refused to every role, wrapped or not; reads and network on are not', () => {
+  const { hostRefusal } = require('./lane.js');
+  const rd = fs.mkdtempSync(path.join(os.tmpdir(), 'power-lane-'));
+  const policyOf = (role) => loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: `delivery/${role}` });
+  const d = (command, role) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: policyOf(role), roleDir: rd, groups: GROUPS, pluginRoot: PLUGIN_ROOT, cwd: rd });
+  const refused = [
+    'sudo -n nmcli networking off', 'nmcli networking off', 'nmcli n off', 'nmcli net of', 'nmcli -t networking off', 'nmcli -w 5 networking off',
+    'nmcli radio all off', 'nmcli r wifi off', 'nmcli $OBJ off', 'sudo -n systemctl reboot', 'systemctl poweroff', 'systemctl --no-wall halt',
+    'systemctl kexec', 'systemctl soft-reboot', 'systemctl suspend', 'systemctl isolate rescue.target', 'systemctl start reboot.target',
+    'shutdown -h now', 'sudo shutdown -r +1', 'poweroff', 'reboot', 'halt', 'telinit 6', 'init 0', 'bash -c "sudo -n nmcli networking off"',
+    'cd /tmp && sudo -n systemctl reboot',
+    // rv-218: a value option must not hide the verb; loginctl power verbs; the drill's scheduler and units
+    'systemctl --message "drill" poweroff', 'systemctl -H host reboot', 'systemctl -M m poweroff', 'systemctl --when +5min poweroff',
+    'loginctl poweroff', 'loginctl reboot', 'loginctl -p x suspend',
+    'sudo -n systemd-run --on-active=1s --unit=delivery-drill-restart-zz /bin/sh -c "nmcli networking on; systemctl reboot"',
+    'sudo -n systemd-run --on-active=1s --unit=delivery-drill-restore-zz nmcli networking off', 'sudo -n systemd-run nmcli networking off',
+    'systemd-run reboot', 'sudo -n systemctl stop delivery-drill-restore-dec-x.timer', 'systemctl start delivery-drill-restart-x.timer',
+    'systemctl --user stop delivery-drill-restore-x.timer',
+    // the same commands behind the wrappers the review named
+    'pkexec systemctl poweroff', 'pkexec --user root nmcli networking off', 'run0 systemctl poweroff', 'flock /tmp/l systemctl poweroff',
+    'flock -w 5 /tmp/l nmcli networking off', 'strace -f systemctl reboot', 'strace -o out nmcli networking off', 'watch -n 5 systemctl poweroff',
+    'su -c "systemctl poweroff"', 'su root -c "nmcli networking off"', 'runuser -u root -- systemctl poweroff', 'script -qc "systemctl poweroff" /dev/null',
+    'find . -name x -exec systemctl poweroff {} ;', 'env -iS "systemctl poweroff"', 'time -p systemctl poweroff', 'flock /tmp/l -c "systemctl poweroff"',
+  ];
+  for (const role of ['builder', 'delivery-lead', 'reality-checker', 'host-manager', 'chief-of-staff']) {
+    for (const c of refused) {
+      assert.equal(hostRefusal(c, role), 'power', `${role}: ${c}`);
+      const r = d(c, role);
+      assert.equal(r.allow, false, `${role}: ${c}`);
+      assert.match(r.reason, /switching this host's network off, or powering the host off or restarting it, is refused to every role/, `${role}: ${c}`);
+    }
+  }
+  for (const c of [
+    'nmcli networking on', 'nmcli networking', 'nmcli n connectivity', 'nmcli device status', 'nmcli radio all', 'nmcli radio wifi on',
+    'systemctl status cron.service', 'systemctl --version', 'grep -rn "systemctl reboot" plugins/delivery', 'git commit -m "nmcli networking off is refused"',
+    'bd update x-1 --append-notes "the drill runs shutdown"', 'cat /etc/sudoers.d/delivery-drill',
+    // rv-218: reads and harmless wrapper uses still pass; a user-manager scope start is the host manager's
+    'loginctl list-sessions', 'loginctl show-session 2', 'loginctl user-status', 'systemd-analyze',
+    'pkexec --version', 'flock /tmp/l echo hi', 'strace -f true', 'watch -n 5 git status', 'su -c "ls"', 'runuser -u x -- git status',
+    'find . -name "*.js" -exec grep poweroff {} ;', 'time -p npm test', 'env -iS "git status"',
+  ]) assert.equal(hostRefusal(c, 'builder'), null, c);
+  // the user-manager scope start the host manager uses to start sessions is not a power refusal
+  assert.equal(hostRefusal('systemd-run --user --scope --unit=delivery-role-x node claude', 'host-manager'), null);
+  // but a user-manager systemd-run carrying a power or network-off command is refused even for the host
+  // manager, whose lane is otherwise allowed --user (so the carried-command check, not the --system one)
+  assert.equal(hostRefusal('systemd-run --user --scope nmcli networking off', 'host-manager'), 'power');
+  assert.equal(hostRefusal('systemd-run --user systemctl poweroff', 'host-manager'), 'power');
+});
+
 test('host manager lane: operands after -- must match, value flags are not operands, job modes and --force are refused', () => {
   const hm = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/host-manager' });
   const rd = fs.mkdtempSync(path.join(os.tmpdir(), 'hm-ops-'));
