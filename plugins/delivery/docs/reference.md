@@ -1769,9 +1769,15 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   directory, and a fresh second read of the sessions finds it idle, run-session stops that server (the
   same stop, and wait for the server and its session to end, that team-revive's restart uses), writes a
   `host-manager-replaced` row, and execs the unit's own session as above, reattaching the recorded
-  session once. A server in any `.service` (this unit, or one the plugin did not write: the plugin never
-  stops what such a unit runs), a hand-written unit on the directory, busy on either read, a cgroup or
-  process list that cannot be read, or two live sessions: exit 3, nothing changed; a server
+  session once. A leftover is replaced the same way: a server in `delivery-host-manager.service`'s own
+  cgroup (and no other service's) that is not the unit's main process, as `systemctl --user show
+  delivery-host-manager.service -p MainPID --value` reads it (0 while the unit is down, or another
+  process). A unit stopped with `KillMode=process` leaves its processes in its cgroup, so a session an
+  older unit left there is moved onto the unit's own session, idle only, with the same row (marked
+  `leftover`). A server that is the unit's main process, a MainPID that cannot be read, a server in
+  any other `.service` (one the plugin did not write: the plugin never stops what such a unit runs), a
+  hand-written unit on the directory, busy on either read, a cgroup or process list that cannot be
+  read, or two live sessions: exit 3, nothing changed; a server
   that does not stop: exit 1, and no session is started beside it. A list that cannot be read is a
   failure, and `Restart=` tries again later. Its restarts are bounded:
   `Restart=always` with a delay growing from 30 seconds to 30 minutes over 5 restarts (`RestartSec=30`,
