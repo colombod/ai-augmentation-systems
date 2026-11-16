@@ -804,7 +804,7 @@ function outsideUnit(running, { server, cgroupOf, roleDir, home, unitOf, exec } 
   return { session: s, server: srv.pid, leftover };
 }
 // deps (tests): server (team-revive's serverOf), cgroupOf(pid), stop (team-revive's stopServer), exec (systemctl, for the unit's MainPID).
-function runSession(root, o, { env = process.env, home = os.homedir(), hostname, execve, resolveBin, now, live, server, cgroupOf, stop, exec } = {}) {
+function runSession(root, o, { env = process.env, home = os.homedir(), hostname, execve, resolveBin, now, live, server, cgroupOf, stop, exec, sdFetch } = {}) {
   let team;
   try { team = M.loadManifest(root).team; } catch (err) { return { code: 1, out: `host-manager.js: the team at ${root} could not be read (${firstLine(err)}); no session started.` }; }
   const host = R.hostOf(env, hostname !== undefined ? hostname : os.hostname());
@@ -842,6 +842,9 @@ function runSession(root, o, { env = process.env, home = os.homedir(), hostname,
     const fresh = again.find((s) => s && s.sessionId === out.session.sessionId);
     const others = again.filter((s) => match(s) && s.sessionId !== out.session.sessionId);
     if (!fresh || fresh.status !== 'idle' || others.length) return already;
+    // a replace stops a running session: read the unit's directory entry first; unreadable, it is not made
+    const sdg = require('./lib/service-directory.js').beforeChange(HM.UNIT, { action: 'replace', running: true, fetch: sdFetch });
+    if (!sdg.ok) return { code: ALREADY_RUNNING, out: `${already.out} It is not replaced: ${sdg.why}.` };
     if (!(stop || require('./team-revive.js').stopServer)(out.server, out.session.pid)) return { code: 1, out: `host-manager.js: the host-manager session ${out.session.sessionId} runs outside ${HM.UNIT}, and its Remote Control server (pid ${out.server}) did not stop; no session started.` };
     R.record(root, { type: 'host-manager-replaced', at: now || new Date().toISOString(), instance: hm.instance, server: out.server, pid: out.session.pid || null, session: out.session.sessionId, ...(out.leftover ? { leftover: true } : {}) });
     replaced = `host-manager.js: replaced the host-manager session ${out.session.sessionId}, whose Remote Control server (pid ${out.server}) ${out.leftover ? `ran in ${HM.UNIT}'s cgroup as a leftover, not its main process` : 'ran in no unit'}: stopped while idle, and the unit's own session starts.`;

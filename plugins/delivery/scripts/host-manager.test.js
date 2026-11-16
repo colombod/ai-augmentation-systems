@@ -1121,8 +1121,9 @@ test('run-session replaces an idle host-manager session running outside its unit
   const env = { DELIVERY_HOST: 'pc', PATH: '/usr/bin', USER: 'dev', DELIVERY_ROLE: 'host-manager' };
   const UNIT_CG = `0::/user.slice/user-1000.slice/user@1000.service/app.slice/${HM.UNIT}\n`;
   const OTHER_CG = '0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-term-1.scope\n';
-  const setup = ({ status = 'idle', again, serverCg = OTHER_CG, selfCg = UNIT_CG, server = { pid: 3531014, self: false }, stopOk = true, handUnit = false, mainPid = 'unread', show } = {}) => {
+  const setup = ({ status = 'idle', again, serverCg = OTHER_CG, selfCg = UNIT_CG, server = { pid: 3531014, self: false }, stopOk = true, handUnit = false, mainPid = 'unread', show, dir } = {}) => {
     const m = machine({ alphaRoles: HM_ROLES });
+    if (dir) m.dir = dir;
     m.env = { ...env, CLAUDE_CONFIG_DIR: m.config };
     if (handUnit) roleUnit(m, m.alpha.dir('host-manager'), 'claude-rc-hm.service', '/opt/tools/bin/claude remote-control --name host-manager@pc');
     const old = { sessionId: 'hm-old', pid: 3531100, cwd: m.alpha.dir('host-manager'), name: 'host-manager@pc', status };
@@ -1205,6 +1206,19 @@ test('run-session replaces an idle host-manager session running outside its unit
   const two = setup({ serverCg: `0::/user.slice/user-1000.slice/user@1000.service/app.slice/${HM.UNIT}/claude-rc-x.service\n`, mainPid: 0 });
   assert.equal(two.r.code, 3, two.r.out);
   assert.deepEqual(two.calls.stop, []);
+  // the replace stops a running session, so the unit's directory entry is read first: unreachable, or
+  // owned by another, nothing is stopped (exit 3, the reason in the reply); its own entry, it goes ahead
+  const unreach = setup({ dir: fakeDirectory({ down: true }) });
+  assert.equal(unreach.r.code, 3, unreach.r.out);
+  assert.deepEqual([unreach.calls.stop, unreach.calls.execve], [[], []]);
+  assert.match(unreach.r.out, /It is not replaced: the service directory at http:\/\/127\.0\.0\.1:8085 could not be reached .*a replace of a running unit is not made/);
+  const other = setup({ dir: fakeDirectory({ entries: [{ ...SD.entryFor(HM.UNIT), owner: 'colombod' }] }) });
+  assert.equal(other.r.code, 3, other.r.out);
+  assert.deepEqual(other.calls.stop, []);
+  assert.match(other.r.out, /not by the delivery plugin, so the plugin does not replace it/);
+  const listed = setup({ dir: fakeDirectory({ entries: [SD.entryFor(HM.UNIT)] }) });
+  assert.equal(listed.r.code, 0, listed.r.out);
+  assert.deepEqual(listed.calls.stop, [[3531014, 3531100]]);
   // a server that does not stop: no session is started beside it
   const d = setup({ stopOk: false });
   assert.equal(d.r.code, 1, d.r.out);
@@ -1341,6 +1355,31 @@ test('the watchdog pass starts the host manager\'s unit when it is installed and
   const b2 = m.sd.calls.length;
   watchdog.ensureHostManager(m.alpha.root, { home: m.home, exec: m.sd.exec, now: T0, live: [] });
   assert.ok(!m.sd.calls.slice(b2).some((c) => c.includes('reset-failed')));
+});
+
+test('the watchdog\'s start check reads the host manager unit\'s directory entry before the start: its own is started, another owner\'s is refused; unreachable, the down unit is started with a row and a warning, and registered on the next pass', () => {
+  const env = { ...process.env, DELIVERY_ROLE: '', DELIVERY_ROLE_ID: '', DELIVERY_ROLE_DIR: '' };
+  const check = (dir) => {
+    const m = machine();
+    fs.writeFileSync(path.join(HM.unitDir(m.home), HM.UNIT), '[Service]\nExecStart=/usr/bin/env node /x/delivery.js host-manager.js run-session\n');
+    m.sd.units[HM.UNIT] = loaded(false);
+    const out = watchdog.ensureHostManager(m.alpha.root, { home: m.home, exec: m.sd.exec, now: T0, live: [], env, sdFetch: dir.fetch });
+    return { m, out, started: m.sd.calls.includes(`systemctl --user start ${HM.UNIT}`) };
+  };
+  const own = check(fakeDirectory({ entries: [SD.entryFor(HM.UNIT)] }));
+  assert.ok(own.started, own.out);
+  const other = check(fakeDirectory({ entries: [{ ...SD.entryFor(HM.UNIT), owner: 'colombod' }] }));
+  assert.ok(!other.started);
+  assert.match(other.out, /^host manager: delivery-host-manager\.service is inactive and is not started: the service directory lists delivery-host-manager\.service as owned by "colombod"/);
+  assert.deepEqual(R.ledger(other.m.alpha.root).filter((x) => x.type === 'host-manager-start'), [], 'no start row');
+  const down = fakeDirectory({ down: true });
+  const u = check(down);
+  assert.ok(u.started, u.out);
+  assert.deepEqual(R.ledger(u.m.alpha.root).filter((x) => x.type === 'directory-unreachable').map((x) => [x.unit, x.action]), [[HM.UNIT, 'start']]);
+  assert.deepEqual(require('./lib/warnings.js').list(u.m.alpha.root).map((w) => w.kind), ['service-directory-unreachable']);
+  down.down = false;
+  watchdog.directoryPass(u.m.alpha.root, { home: u.m.home, exec: u.m.sd.exec, sdFetch: down.fetch });
+  assert.equal(down.entry(HM.UNIT).owner, 'delivery plugin');
 });
 
 // rv-198 at 65a1abd: beside a hand-started host manager, every separate watchdog run started the unit
