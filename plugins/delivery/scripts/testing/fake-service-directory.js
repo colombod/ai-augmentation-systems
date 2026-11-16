@@ -1,8 +1,14 @@
 // scripts/testing/fake-service-directory.js — a stand-in for the owner's service directory, for tests: the
 // requests lib/service-directory.js makes (register, heartbeat, delete, the local list, health), kept in
 // memory, with every call recorded. No socket is opened. down: true makes every request fail as an
-// unreachable directory does; static names answer 409/403 as the real one does.
-function fakeDirectory({ entries = [], statics = [], down = false } = {}) {
+// unreachable directory does; static names answer 409/403 as the real one does. Each fake carries its own
+// list of the names the plugin registered (fetch.namesFile, in a fresh temporary directory, which
+// lib/service-directory.js reads before any other place); registered: names put on it at the start (at
+// now, or at `registeredAt`).
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+function fakeDirectory({ entries = [], statics = [], down = false, registered = [], registeredAt } = {}) {
   const d = { entries: entries.map((e) => ({ source: 'dynamic', ...e })), statics, down, calls: [], beats: {} };
   d.fetch = (method, p, body) => {
     d.calls.push(`${method} ${p}`);
@@ -30,6 +36,9 @@ function fakeDirectory({ entries = [], statics = [], down = false } = {}) {
     }
     return { status: 404, body: { detail: 'not faked' } };
   };
+  d.fetch.namesFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'fake-sd-')), 'directory-names.json');
+  if (registered.length) fs.writeFileSync(d.fetch.namesFile, JSON.stringify(Object.fromEntries(registered.map((n) => [n, { at: registeredAt || new Date().toISOString(), ttl: 3600 }]))));
+  d.names = () => { try { return JSON.parse(fs.readFileSync(d.fetch.namesFile, 'utf8')); } catch (err) { return {}; } };
   d.entry = (n) => d.entries.find((e) => e.name === n) || null;
   return d;
 }
