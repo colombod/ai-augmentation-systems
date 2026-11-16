@@ -595,7 +595,16 @@ The Delivery Manager puts the command in the script step with `reality-check.js 
 commands that hold quotes, from a JSON file with `reality-check.js refine <bead> --from <file>`, where the
 file is `{"<criterion>": {"command": ..., "match": ..., "step": <k, default 1>, "as_role": <bool>}}`;
 the whole file is checked (known criteria and steps, known keys, a valid `match`) before anything is
-written. Plan writes steps with actions only, so on a command-line surface a story is neither ready
+written. Each new command is checked without being run (refine runs no product code): it refuses, and
+saves nothing, a command whose `DELIVERY_TEST_FILES` names a path that is not a file under the plugin
+root (a relative path counts only after a `cd` that says where it runs; otherwise name it
+`${DELIVERY_PLUGIN_ROOT}/...`); with `--from`, one refused command keeps every other one in the file from
+being applied, and `--unchecked '<why>'` saves it anyway and keeps the reason on the steps that had the
+problem. A command that ends in a pipe is a warning: its exit is then the last command's alone, so a pass
+rests on the match. `verify-run.js run` checks the same paths before it runs the step, and after it, a
+run of the sealed runner or of `node --test` that reports no test (`# tests 0`, or no test file found):
+either way the command checks nothing, so nothing is recorded and no andon is raised, and the Reality
+Checker is told to have the Delivery Manager refine it. Plan writes steps with actions only, so on a command-line surface a story is neither ready
 (`ready.js` blocks with `reality-check-command`, R-33) nor deployed (`evidence.js state <bead> deployed`
 refuses) while a planned step group has no step carrying a command; both name the criteria still
 without one. A bead with no script yet (one that states its own criteria) is refused deployed on a
@@ -1532,7 +1541,7 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   marketplace clone shallow, so a clone that lacks the installed sha is first deepened (`git fetch --deepen`,
   50, then 200, then 1000 commits) until it holds it. It never installs
   while a wake is running (held to the next cycle), and while an install is held it starts no new wake,
-  so the running wakes end and the next cycle (or the kick a wake leaves as it ends) installs. A hold past the wake timeout and a cycle (2.5 h) means a wake outlived its stop: it is logged once as `held-overdue` and the owner briefing says which version waits, until it installs. It refuses an ungated or older version, retries a failed
+  so the running wakes end and the next cycle (or the kick a wake leaves as it ends) installs. A wake still running past the wake timeout plus the kill grace outlived its supervisor's own stop: before it looks at the install, the pass ends it (SIGTERM to its session's process group and to its supervisor, which stops the whole group as at the limit), logs a `wake-stopped` row with what it signalled, counts it as ended so the install goes in that pass, and kicks the next run, which starts the role fresh under the installed plugin. A later pass, once the kill grace has passed and within an hour of the stop, sends SIGKILL to any signalled target that is still that wake's (the supervisor while it reads as that wake by its row's time, a group while its leader started before the stop), once, as a `wake-killed` row; a number reused since, or an old row after a host restart, is never killed. A hold past the wake timeout and a cycle (2.5 h) is logged once as `held-overdue`, the Chief of Staff is sent one alert naming the roles waiting with work in progress, and the owner briefing says which version waits, until it installs. While a hold lasts the pass names every idle role with in-progress work (`Waiting for the install: ...`), and the run after the hold ends wakes those roles first. A wake whose row cannot be written after its spawn is stopped at once, so no run goes untracked. It refuses an ungated or older version, retries a failed
   update once an hour, and logs each outcome as a `self-update` row. If main moved during the update, so
   the installed sha is not the one checked, the row says `ungated-install` and an `install-ungated`
   warning is recorded. After an install the pass wakes no one and kicks the next run, which runs the new
@@ -1606,7 +1615,8 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   nor started: the check names it. A start pass holds `revive.lock` in the watchdog directory, so the
   Chief of Staff's `start` and the host job's never start the same instance twice; a pass that finds
   it held starts nothing and names the holder's pid, and a lock older than two minutes or whose pid is
-  gone is broken. Each start is a row in the watchdog directory's `revive.ndjson` (instance, pid,
+  gone is broken. A running pass refreshes its lock around each 60 s settle, so a pass that settles
+  several unit starts keeps its lock however long it runs. Each start is a row in the watchdog directory's `revive.ndjson` (instance, pid,
   time, arguments, the id it reattached), its output in `logs/revive-<instance>-<time>.log` beside it.
   `claude remote-control` takes no prompt, so a session it starts comes up with no turn. The watchdog
   reads these rows: the newest start of an instance, from two minutes to six hours old, whose session
@@ -1620,6 +1630,80 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   on that host. `--project <root>` names the team to check or start from anywhere, a role directory of
   another team included. An instance of the `host-manager` role is never started here: its session is
   its own user unit's.
+- **The outage drill.** Recovery after an outage is seen working once, on a host whose owner consented
+  to it. `outage-drill.js plan [--cut-minutes <n>] [--record <id>]` starts,
+  schedules and writes nothing: it prints the cut length, when the network comes back and when the host
+  restarts, whether the consent record verifies and whether a drill already spent it, each claim a run
+  left on a record (how long ago and by which run it was made, and the `rm` that clears it, or that the
+  record's drill row spends it anyway), and a pre-flight
+  line naming any leftover `claude` child with both `--print` and `--sdk-url` (a process-group kill can
+  leave one, and it must be gone before a reattach). `outage-drill.js run --record <id> --cut-minutes <n>
+  --restart` is the Reality Checker's only: its lane group `outage-drill` runs it, and every other lane,
+  the open ones and the host manager's included, refuses it per command: under the script's name with or
+  without a `.js`, `.cjs` or `.mjs` extension or through a glob that could expand to it, through the
+  launcher, `sh -c`, `env -S`, a word the shell builds at run time, `node -e` code that names the script,
+  behind `sudo`, `doas`, `nice` and the other wrappers, or fed its arguments through `xargs` (which cannot
+  be read, so any drill run behind it is refused). Those lanes are also refused a role variable
+  (`DELIVERY_ROLE`, `DELIVERY_ROLE_ID`, `DELIVERY_ROLE_DIR`) naming the Reality Checker, set before a
+  command, through `env` or by `export`. `plan` and a mere mention of the run stay open. A copy of the
+  script under another name, or code that loads it some other way, is not seen by the lane. The script
+  also checks its own role: the role marker found from its working directory upwards, never a role a
+  caller passes, with the role variables agreeing with that marker (`DELIVERY_ROLE` its instance,
+  `DELIVERY_ROLE_DIR`, when set, its directory); any role but the Reality Checker's, variables that
+  disagree, or no role session at all are refused. That check guards against a mistake, not against a
+  session set on running the drill: the working directory and the role variables are the caller's to
+  set, so a script of a builder's own can move into the Reality Checker's directory and set them. The
+  control is the consent record, below: without the owner's verified word for this drill on this host,
+  nothing is scheduled or cut. `DELIVERY_HOST`, when set, must name this machine (its short hostname), and `plan` says so when
+  it does not. It refuses a record that is not the owner's
+  verified word, a cut outside 1 to 30 minutes, a run without `--restart`, and a second drill on the same
+  record. The record must be consent to this drill: its scope carries the label `outage-drill:<host>`
+  for the host the drill would cut, and the owner's own words name the network cut and the restart
+  with no negation. Those words are the verified quote, or, for an answer to a confirmation, the
+  question the owner was shown and the answer they picked, captured with their input; a question that
+  negates the cut or the restart ("but do not restart", "without cutting") is refused as negated owner
+  words are; the scope and the
+  statement the recording agent wrote never count as the owner's words. Any other verified owner
+  record is refused. Before it schedules anything a run claims the record with an exclusive
+  `drill-<id>.claim` file beside `drills.ndjson`, so a second run started at the same time is refused; a
+  run that fails before its row is written gives the claim back, and one killed between the two leaves
+  it, for `plan` to show. The cut drops the session that runs it, so in this order it schedules the restore
+  (`systemd-run --on-active=<n*60>s --unit=delivery-drill-restore-<id> nmcli networking on`), schedules
+  the restart (`--on-active=<(n+1)*60>s --unit=delivery-drill-restart-<id>`, a minute after the network
+  is back; that unit turns networking on itself before it reboots, since NetworkManager keeps its
+  networking state across a reboot and a restore that failed would otherwise leave the host offline), writes the drill's row to the watchdog directory's `drills.ndjson`, and only then runs
+  `nmcli networking off`. The timers are transient system units owned by PID 1, so they outlive the
+  session; they and the cut need root, through `sudo -n` by default (`DELIVERY_DRILL_PRIVILEGE` replaces
+  it, for example with `pkexec`, or empty under root). The sudoers rule the owner adds for the drill
+  allows only its exact commands, for its own unit names: `systemd-run` with the
+  `delivery-drill-restore-*` and `delivery-drill-restart-*` units, `systemctl stop` of those timers, and
+  `nmcli networking off` and `on`; never a shell, `systemctl` in general or another unit. Because that
+  rule lets those commands run without a password, every lane, the Reality Checker's and the host
+  manager's included, refuses switching the network off (`nmcli networking off` or `nmcli radio ... off`,
+  under any abbreviation), powering the host off or restarting it (`shutdown`, `poweroff`, `reboot`,
+  `halt`, `telinit`, `init 0` or `6`, the `systemctl` power verbs and `isolate` of such a target, and the
+  `loginctl` power verbs, which often need no `sudo`), with `sudo` or without, and however a value option
+  is placed before the verb: the drill's script runs them itself. It also refuses the scheduler the rule
+  empowers: `systemd-run` as the system manager (not `--user`), and `systemctl` acting on a
+  `delivery-drill-*` unit (starting one, or stopping a running drill's restore), so a lane cannot schedule
+  or cancel a drill itself; a `systemd-run` or `systemctl` carrying a power or network-off command is
+  refused the same way. These refusals read the command behind the wrappers a shell offers
+  (`sudo`, `doas`, `env`, `pkexec`, `run0`, `nice`, `timeout`, `strace`, `watch`, `xargs`, `flock`, and
+  the command `su`, `runuser`, `script` or `find -exec` carries). What they cannot read is a command in a
+  script file the lane never sees, or fed to a shell on its standard input; there the consent record is the
+  control, as it is for the drill's own role check. A schedule that fails cuts nothing and stops the
+  timer made before it and the one that reported failing, which may still have been made, the restart
+  first. A cut that exits non-zero or times out may still have taken the network down: it stops only the
+  restart timer, runs the restore at once through the same privilege, and keeps the restore timer, so
+  the network is back by the end of the cut whatever the cut did; the record stays spent. Each stop is
+  checked: one that exits non-zero, times out or throws is reported as the timer that may still be
+  scheduled, with its unit (after a failed cut, with the time the host would restart).
+  `outage-drill.js stop --record <id>` then stops that drill's restart timer through the same privilege;
+  it never stops the restore, which only brings the network back, so any role may run it. On a record
+  whose drill never ran, the timer is not loaded (`systemctl` exits 5 or says so), so `stop` reports that
+  no drill restart is scheduled for it, rather than warning of a timer that may still fire. The
+  consent is one cut of up to 30 minutes and one restart, so an offline gap longer than the cut is
+  not covered and no option stretches it.
 - **A running role session moves onto a newly installed plugin.** Claude Code loads a plugin's hooks when
   a session starts, so a role session still open when a new version is installed keeps the old
   version's lane for as long as it runs. `team-revive.js check` names such a session (`Stale:`): open in
@@ -1750,7 +1834,13 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   still the open one did not take (the unit's run-session found it live and exited 3), so it does not
   hold the next try: once the start caps allow, a later pass or the owner's restart restarts the unit
   again; only a restart that brought up a new session that still records the older version is not
-  tried again for that version, as for every role. Busy on
+  tried again for that version, as for every role. Every start or restart through the plugin's own
+  unit (this one, and a missing role's start) is settled as a spawned start is: the pass waits the same
+  60 seconds and reads `systemctl --user is-active <unit>`; a unit not active by then (inactive, failed,
+  or still activating, as a session that exits within seconds leaves it) gets a `failed` row naming the
+  start, the reply says `Failed`, and the next pass tries again instead of holding the hour; the daily
+  cap still counts it, so a unit that keeps failing stays bounded. An answer that cannot be read is not
+  judged. Busy on
   either read, it is named and left; with that unit not installed for its role directory it is named
   and left, since nothing else restarts it; a unit the plugin did not write on that directory is
   named with its fix, as above, and nothing is restarted. Its server is never stopped and no session
@@ -1786,9 +1876,15 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   directory, and a fresh second read of the sessions finds it idle, run-session stops that server (the
   same stop, and wait for the server and its session to end, that team-revive's restart uses), writes a
   `host-manager-replaced` row, and execs the unit's own session as above, reattaching the recorded
-  session once. A server in any `.service` (this unit, or one the plugin did not write: the plugin never
-  stops what such a unit runs), a hand-written unit on the directory, busy on either read, a cgroup or
-  process list that cannot be read, or two live sessions: exit 3, nothing changed; a server
+  session once. A leftover is replaced the same way: a server in `delivery-host-manager.service`'s own
+  cgroup (and no other service's) that is not the unit's main process, as `systemctl --user show
+  delivery-host-manager.service -p MainPID --value` reads it (0 while the unit is down, or another
+  process). A unit stopped with `KillMode=process` leaves its processes in its cgroup, so a session an
+  older unit left there is moved onto the unit's own session, idle only, with the same row (marked
+  `leftover`). A server that is the unit's main process, a MainPID that cannot be read, a server in
+  any other `.service` (one the plugin did not write: the plugin never stops what such a unit runs), a
+  hand-written unit on the directory, busy on either read, a cgroup or process list that cannot be
+  read, or two live sessions: exit 3, nothing changed; a server
   that does not stop: exit 1, and no session is started beside it. A list that cannot be read is a
   failure, and `Restart=` tries again later. Its restarts are bounded:
   `Restart=always` with a delay growing from 30 seconds to 30 minutes over 5 restarts (`RestartSec=30`,

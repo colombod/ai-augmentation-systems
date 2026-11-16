@@ -170,6 +170,37 @@ test('run: a failing exit, a missing match and a timeout are recorded as fail ro
   assert.equal(s.rows().filter((x) => x.criterion === 2)[0].result, 'fail');
 });
 
+// 8l1.4.1.2: a command that checks nothing is not a fail of the product: no row, no andon, back to refine.
+// `true run-tests.js` stands for a command that runs the sealed runner (rv-217 F2: only such a command, or
+// node --test, is judged by its test count)
+test('run: a test run that finds no test, or no test file, is refused with no row; the same output from a command that runs no tests is recorded', () => {
+  const s = ready();
+  s.refine(1, "true run-tests.js; echo '# tests 0'");
+  const none = s.verify(1);
+  assert.equal(none.code, 1);
+  assert.match(none.out, /criterion 1 step 1 ran no test \(its test run reports none, or found no test file\): the command checks nothing, so nothing is recorded and no andon is raised\. Message the Delivery Manager to refine it/);
+  // F1: node's "Could not find" a test file is no test too
+  s.refine(2, "true run-tests.js; echo 'Could not find /x/a.test.js'");
+  assert.match(s.verify(2).out, /criterion 2 step 1 ran no test/);
+  assert.deepEqual(s.rows(), [], 'nothing recorded');
+  // the other direction: a command that runs no tests may print what it likes, and its run is recorded
+  s.refine(1, "echo '# tests 0'");
+  const plain = s.verify(1);
+  assert.match(plain.out, /: pass \(exit 0\)/);
+  assert.equal(s.rows().length, 1);
+});
+
+test('run: a step whose test files are not under the plugin root is refused before it runs, with no row', () => {
+  const s = ready();
+  const saved = s.dm('refine', ID, '--criterion', '1', '--step', '1', '--command', 'DELIVERY_TEST_FILES=checkout/x.test.js true run-tests.js', '--unchecked', 'test of the runner refusal');
+  assert.equal(saved.code, 0, saved.out);
+  const r = s.verify(1);
+  assert.equal(r.code, 1);
+  assert.match(r.out, /criterion 1 step 1 cannot check anything: checkout\/x\.test\.js is relative and no cd before it names where it runs/);
+  assert.match(r.out, /Nothing is recorded\./);
+  assert.deepEqual(s.rows(), []);
+});
+
 test('run: only the Reality Checker runs it; the builder and the Delivery Manager are refused and no row is written', () => {
   const s = ready();
   s.refine(1, 'sh tool.sh');
