@@ -1,5 +1,6 @@
 // scripts/lib/doc-impact.test.js — the doc-impact line the merge gate asks of a change users can see:
 // refused without one, passed with docs named and touched, or with "none" and a reason.
+require('../testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const D = require('./doc-impact.js');

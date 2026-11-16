@@ -1,6 +1,7 @@
 // scripts/gates-cli.test.js — ready.js, evidence.js, warnings.js and surface.js on a Vault project with an
 // in-memory bd. The session's role is passed as `who` (in a real session it comes from the role
 // marker); one test runs the script with no role session and expects writes to be refused.
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

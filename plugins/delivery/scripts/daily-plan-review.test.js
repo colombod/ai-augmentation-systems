@@ -1,6 +1,7 @@
 // scripts/daily-plan-review.test.js — the PR 58 review findings on the Chief of Staff's day, each replayed
 // first as a failing case: through the real lane and route-check hooks where a session meets it, on
 // main() and the library where a rule decides it.
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

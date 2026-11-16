@@ -1,11 +1,11 @@
 // scripts/watchdog.test.js — the stall alarm and the wake (R-04, R-43; tight gh polling, R-25), replayed
 // on Vault moments through the real lane and bd-guard hooks (testing/role-harness.js), through the host
 // job's command line, and through main().
-// owner-facing times are the host's local time: the tests read them in UTC
-process.env.TZ = 'UTC';
 // a role session's own variables are cleared first, as run-tests.js clears them, so a direct run from a
 // role session (a reality check) sees what CI sees (hjx.1.1.2)
 require('./testing/role-env.js').clearRoleEnv();
+// owner-facing times are the host's local time: the tests read them in UTC
+process.env.TZ = 'UTC';
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

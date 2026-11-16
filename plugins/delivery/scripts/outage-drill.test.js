@@ -2,6 +2,7 @@
 // consent record must verify and is spent by one drill, the restore and the restart are scheduled in
 // system timers before the cut, and plan starts nothing. Every command is a stub: no test cuts the
 // network, schedules a timer or restarts the host.
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

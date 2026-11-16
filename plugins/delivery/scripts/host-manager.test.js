@@ -2,6 +2,7 @@
 // health read, the restart and its reply from the read after it, the unattended pass and its one alert per
 // outage, the units it installs, and the watchdog pass that starts it again. systemctl, `claude agents`,
 // bd, the spawn of a session and the clock are fakes: no test touches the machine's own units or sessions.
+require('./testing/role-env.js').clearRoleEnv();
 process.env.TZ = 'UTC';
 const test = require('node:test');
 const assert = require('node:assert/strict');

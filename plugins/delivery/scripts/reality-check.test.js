@@ -1,5 +1,6 @@
 // scripts/reality-check.test.js — the Reality Checker (R-33, R-05, R-07) replayed on Vault moments:
 // vault-0n9.3 (the chat-drop import, #478) on S1, ChatGPT web in plain chat, which no test reaches.
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

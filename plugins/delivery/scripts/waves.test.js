@@ -1,6 +1,7 @@
 // scripts/waves.test.js — phase 2 acceptance: compounding waves (R-36), budget-aware start (R-34),
 // compounding-first selection with fixes and security first (R-41), replayed on Vault moments through
 // the real claim check (bd-guard gateChecks), plan.js and wave.js.
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

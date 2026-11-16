@@ -1,6 +1,7 @@
 // hooks/scripts/setup-net.test.js — the after-check: what a tool changed in a guarded file that the
 // guard before it could not see (a cp, a script file) is put back, exactly those keys or lines, and the
 // result is blocked with the reason. Run with: scripts/testing/run-tests.js.
+require('../../scripts/testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

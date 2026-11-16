@@ -1,6 +1,7 @@
 // scripts/docs.test.js — the front-door docs (README, docs/quickstart.md, docs/reference.md) name only things that
 // exist: scripts, operator commands, skills, templates, prepare-role flags, and a manifest that
 // validates. Light on purpose: it catches rot when a script, command or skill is renamed.
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

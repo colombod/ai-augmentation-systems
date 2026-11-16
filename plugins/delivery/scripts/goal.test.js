@@ -1,5 +1,6 @@
 // scripts/goal.test.js — R-42: constraints change only on an owner decision made for that change,
 // replayed on Vault moments with real operator records.
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

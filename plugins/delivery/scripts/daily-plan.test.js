@@ -1,6 +1,7 @@
 // scripts/daily-plan.test.js — the Chief of Staff drives the team (R-01, R-02, R-06, R-45): the goal
 // sheet, the day's plan, the owner's briefing and the routing check, replayed on Vault moments through
 // the real lane, bd-guard and route-check hooks (testing/role-harness.js) and through main().
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

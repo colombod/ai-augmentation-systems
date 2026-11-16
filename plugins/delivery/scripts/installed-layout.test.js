@@ -3,6 +3,7 @@
 // one version, which refine refuses or rewrites in a stored command, so a test that builds a step from it
 // passes in a checkout and fails installed (delivery-plugin-planning-8wz.6: 5 such tests failed from the
 // 0.43.53 cache while the checkout suite was green).
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

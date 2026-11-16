@@ -1,5 +1,6 @@
 // scripts/lib/operator-records.test.js — operator records: decisions, delegations, answers,
 // questions, verification chains, truncation protection and distribution.
+require('../testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
