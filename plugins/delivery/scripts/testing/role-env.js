@@ -17,6 +17,17 @@ const SEAL_VARS = ['DELIVERY_SEAL_ACTIVE', 'DELIVERY_SEALED_RUN', 'DELIVERY_TMP_
 // findInstall): it fetched the host's marketplace clone and read its installed versions, so a run woke
 // differently whenever the host's main was ahead, and slowly. From a checkout (CI, the sealed runner)
 // the plugin is under no configuration, which is what this makes every run see.
+// Each call's configuration directory, removed when the test process exits (rv-220): an unsealed run from a
+// role session, as a reality check runs one, has the host's /tmp, which would keep one per test file. One
+// exit handler for all of them, so a file that calls this many times adds no listener per call.
+const made = new Set();
+let reaping = false;
+function reapOnExit() {
+  if (reaping) return;
+  reaping = true;
+  process.once('exit', () => { for (const d of made) { try { require('fs').rmSync(d, { recursive: true, force: true }); } catch (err) { /* gone already */ } } });
+}
+
 function clearRoleEnv(env = process.env) {
   const keep = new Set(Object.keys(cleanEnv(env)));
   for (const k of Object.keys(env)) if (!keep.has(k) && !SEAL_VARS.includes(k)) delete env[k];
@@ -27,6 +38,8 @@ function clearRoleEnv(env = process.env) {
   delete env.XDG_RUNTIME_DIR;
   const fs = require('fs');
   env.CLAUDE_CONFIG_DIR = fs.mkdtempSync(require('path').join(require('os').tmpdir(), 'claude-config-'));
+  made.add(env.CLAUDE_CONFIG_DIR);
+  reapOnExit();
   return env;
 }
 

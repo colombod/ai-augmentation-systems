@@ -48,13 +48,63 @@ test('hjx.1.1.4: the Claude configuration is a fresh empty directory, never the 
   assert.notEqual(clearRoleEnv({}).CLAUDE_CONFIG_DIR, dir, 'each call its own directory');
 });
 
-test('hjx.1.1.4: with the host\'s configuration cleared, the self-update a watchdog run starts finds no install and runs nothing', () => {
+// rv-220: the installed layout the bug needs, built here (scratch/repro-installed.sh made deterministic): the
+// plugin under <config>/plugins/cache, installed_plugins.json naming it, and a marketplace clone whose
+// origin's main is a version ahead. Under the host's configuration the self-update a watchdog run starts
+// fetches that clone; under the cleared environment it finds no install and fetches nothing.
+function installedLayout() {
+  const { execFileSync } = require('child_process');
+  const W = fs.mkdtempSync(path.join(os.tmpdir(), 'installed-'));
+  const C = path.join(W, 'claude');
+  const P = path.join(C, 'plugins', 'cache', 'ai-augmentation-systems', 'delivery', '0.43.85');
+  fs.mkdirSync(P, { recursive: true });
+  const O = path.join(W, 'origin');
+  const g = (dir, ...args) => execFileSync('git', ['-C', dir, '-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { stdio: 'ignore' });
+  fs.mkdirSync(path.join(O, '.claude-plugin'), { recursive: true });
+  fs.mkdirSync(path.join(O, 'plugins', 'delivery', '.claude-plugin'), { recursive: true });
+  fs.writeFileSync(path.join(O, '.claude-plugin', 'marketplace.json'), JSON.stringify({ name: 'ai-augmentation-systems', plugins: [{ name: 'delivery', source: './plugins/delivery' }] }));
+  const manifest = path.join(O, 'plugins', 'delivery', '.claude-plugin', 'plugin.json');
+  fs.writeFileSync(manifest, JSON.stringify({ name: 'delivery', version: '0.43.85' }));
+  execFileSync('git', ['init', '-q', '-b', 'main', O], { stdio: 'ignore' });
+  g(O, 'add', '-A');
+  g(O, 'commit', '-qm', 'base');
+  const base = execFileSync('git', ['-C', O, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  const M = path.join(C, 'plugins', 'marketplaces', 'ai-augmentation-systems');
+  execFileSync('git', ['clone', '-q', O, M], { stdio: 'ignore' });
+  fs.writeFileSync(manifest, JSON.stringify({ name: 'delivery', version: '0.43.99' }));
+  g(O, 'commit', '-qam', 'delivery 0.43.99 (#999)');
+  fs.writeFileSync(path.join(C, 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: { 'delivery@ai-augmentation-systems': [{ scope: 'user', installPath: P, version: '0.43.85', gitCommitSha: base }] } }));
+  fs.writeFileSync(path.join(C, 'plugins', 'known_marketplaces.json'), JSON.stringify({ 'ai-augmentation-systems': { source: { source: 'github', repo: 'colombod/ai-augmentation-systems' }, installLocation: M } }));
+  return { W, C, P, fetched: () => fs.existsSync(path.join(M, '.git', 'FETCH_HEAD')) };
+}
+
+test('hjx.1.1.4: from an installed layout, the host\'s configuration makes the self-update fetch the marketplace; the cleared one makes it fetch nothing', () => {
   const SU = require('../lib/self-update.js');
-  const e = clearRoleEnv({ CLAUDE_CONFIG_DIR: hostCfg });
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), 'project-'));
+  // the bug: run from <config>/plugins/cache with the host's configuration, the self-update reaches its install
+  const host = installedLayout();
+  const ranHost = [];
+  SU.selfUpdate(project, { pluginRoot: host.P, env: { CLAUDE_CONFIG_DIR: host.C }, exec: (bin, args) => { ranHost.push([bin, ...args]); return ''; } });
+  assert.equal(host.fetched(), true, 'under the host configuration the marketplace clone is fetched');
+  // the fix: the same layout, the environment cleared as every test file clears it
+  const cleared = installedLayout();
   const ran = [];
-  const r = SU.selfUpdate(os.tmpdir(), { pluginRoot: path.resolve(__dirname, '..', '..'), env: e, exec: (bin, args) => { ran.push([bin, ...args]); return ''; } });
+  const r = SU.selfUpdate(project, { pluginRoot: cleared.P, env: clearRoleEnv({ CLAUDE_CONFIG_DIR: cleared.C }), exec: (bin, args) => { ran.push([bin, ...args]); return ''; } });
   assert.deepEqual(r, { lines: [], installed: false });
-  assert.deepEqual(ran, []);
+  assert.equal(cleared.fetched(), false, 'the cleared environment fetches nothing');
+  assert.deepEqual(ran, [], 'and runs nothing');
+});
+
+test('rv-220: the configuration directories a test process makes are gone when it exits', () => {
+  const { spawnSync } = require('child_process');
+  const code = `const { clearRoleEnv } = require(${JSON.stringify(path.join(__dirname, 'role-env.js'))}); const a = clearRoleEnv({}).CLAUDE_CONFIG_DIR; for (let i = 0; i < 12; i++) clearRoleEnv({}); const b = clearRoleEnv({}).CLAUDE_CONFIG_DIR; process.stdout.write(JSON.stringify([a, b, require('fs').existsSync(a)]));`;
+  const r = spawnSync(process.execPath, ['-e', code], { encoding: 'utf8' });
+  const [a, b, existed] = JSON.parse(r.stdout);
+  assert.equal(existed, true, 'it is there while the process runs');
+  assert.notEqual(a, b);
+  assert.equal(fs.existsSync(a), false, `${a} is removed at exit`);
+  assert.equal(fs.existsSync(b), false, `${b} is removed at exit`);
+  assert.equal(r.stderr, '', 'no listener warning for several calls');
 });
 
 test('hjx.1.1.2: with no argument it clears a role session\'s variables from process.env itself', () => {
