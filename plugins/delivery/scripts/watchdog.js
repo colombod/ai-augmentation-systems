@@ -682,7 +682,7 @@ function defaultRevive(root, { team, env, now, dryRun, bd, live, exec, sleep, re
   // missing role the plugin's own unit serves is started through it, each after its entry in the service
   // directory is read (team-revive.js unitOps)
   const TR = require('./team-revive.js');
-  const ops = TR.unitOps(root, { exec: runner(exec), now });
+  const ops = TR.unitOps(root, { exec: runner(exec), now, sdFetch: deps.sdFetch });
   // and settled as a spawned start is: a unit down after SETTLE_MS is a failed start, retried next pass
   return TR.revive(root, team, { ...deps, start: true, cwd: root, dryRun, env, now, bd, relist, ...ops, unitSettle: TR.unitSettleOf(runner(exec), sleep), ...(live !== undefined ? { live } : {}) }).lines;
 }

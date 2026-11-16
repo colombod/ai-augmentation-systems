@@ -822,7 +822,7 @@ test('the watchdog\'s start pass settles its host manager unit restart through i
   const lines = watchdog.defaultRevive(m.alpha.root, {
     team: m.alpha.team, env: { DELIVERY_HOST: 'pc', PATH: '/usr/bin', DELIVERY_CLAUDE_BIN: NO_CLAUDE }, now: m.now, bd: store([]), live: m.live, exec: m.sd.exec,
     sleep: (ms) => sleeps.push(ms), relist: () => m.live,
-    deps: { home: m.home, spawn: () => { throw new Error('no spawn'); }, stop: () => { throw new Error('no stop'); }, systemdRun: null, ...m.deps().teamDeps(m.alpha.root) },
+    deps: { home: m.home, spawn: () => { throw new Error('no spawn'); }, stop: () => { throw new Error('no stop'); }, systemdRun: null, sdFetch: m.dir.fetch, ...m.deps().teamDeps(m.alpha.root) },
   });
   assert.ok(m.sd.calls.includes(`systemctl --user restart ${HM.UNIT}`), `${m.sd.calls.join('\n')}\n${lines.join('\n')}`);
   assert.deepEqual(sleeps, [R.SETTLE_MS]);
