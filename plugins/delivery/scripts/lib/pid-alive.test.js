@@ -6,6 +6,7 @@
 // system gave that pid to an unrelated program (a session's PDF tool server). `ps -p` printed nothing
 // for it on this host and the check took empty output as alive, so every install was held for 91 hours
 // and no new wake started.
+require('../testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const WD = require('./watchdog.js');

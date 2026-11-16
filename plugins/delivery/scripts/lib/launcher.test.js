@@ -1,6 +1,7 @@
 // scripts/lib/launcher.test.js — run through scripts/testing/run-tests.js
 // The project's script launcher (delivery-plugin-planning-8wz.1): it finds the installed plugin when it
 // runs, so a command naming it survives plugin installs, and only an unedited launcher is trusted.
+require('../testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

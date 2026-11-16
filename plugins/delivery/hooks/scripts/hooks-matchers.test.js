@@ -1,6 +1,7 @@
 // hooks/scripts/hooks-matchers.test.js — every tool matcher in hooks.json covers exactly the tools it
 // is meant for. Evaluated with unanchored RegExp.test, the loosest reading a harness could apply, so
 // an unanchored "Write" would match TodoWrite.
+require('../../scripts/testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

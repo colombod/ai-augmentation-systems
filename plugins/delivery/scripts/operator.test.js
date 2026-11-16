@@ -1,4 +1,5 @@
 // scripts/operator.test.js — the operator CLI end to end, as separate processes.
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');

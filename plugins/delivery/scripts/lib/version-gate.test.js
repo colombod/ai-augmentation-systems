@@ -1,4 +1,5 @@
 // scripts/lib/version-gate.test.js — a pull request that changes a plugin must raise its version
+require('../testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { checkVersions, pluginDirs, parse, compare } = require('./version-gate.js');

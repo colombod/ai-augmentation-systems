@@ -1,6 +1,7 @@
 // scripts/flow.test.js — flow limits (R-23) replayed on Vault moments through the real lane and bd-guard
 // hook processes (testing/role-harness.js): 13 parallel builders on the collections epic (AI 10-09), eight
 // beads moved to one session in a minute (10-11 08:10), and a builder's third open pull request.
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const W = require('./lib/warnings.js');

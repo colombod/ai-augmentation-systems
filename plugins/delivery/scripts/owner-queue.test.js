@@ -1,4 +1,5 @@
 // scripts/owner-queue.test.js — R-07, R-44: the owner is asked only for what no agent can do, with exact steps.
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

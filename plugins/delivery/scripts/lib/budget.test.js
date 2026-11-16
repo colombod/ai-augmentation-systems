@@ -1,5 +1,6 @@
 // scripts/lib/budget.test.js — R-34 and R-42: the budget exists only on the owner's Yes; estimates
 // from size and model with the reserve; the levels the gates and selection read.
+require('../testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

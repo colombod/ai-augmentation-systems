@@ -2,6 +2,7 @@
 // bd-guard hook processes with real role markers (testing/role-harness.js): the 10-17 intake failure in
 // the real app, the 2-day red nightly (#195) and the ChatGPT desktop fix chain (#453 to #480, 16 PRs in
 // 7 days).
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

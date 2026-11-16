@@ -1,4 +1,5 @@
 // scripts/lib/operator-log.test.js — operator inputs log: sync, dedupe, per-host chains, distribution.
+require('../testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');

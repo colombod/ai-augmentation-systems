@@ -1,5 +1,6 @@
 // scripts/verify-run.test.js — the Reality Checker's runner for a command-line surface: the deployed sha
 // in a scratch clone, one scripted command, the capture and the row written by the runner, never by hand.
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
