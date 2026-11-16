@@ -106,11 +106,23 @@ function claimAdmission(root, { bd, team, now, stories, beadOf, ctx, ci, verifyR
     const st = base.set && extra ? { ...base, inflightNeed: base.inflightNeed + extra, free: base.free - extra, nearLimit: base.free - extra < base.table.units.S * (1 + base.table.reserve) } : base;
     return W.claimFindings(b, { ...c, beads: seen, budget: st, fix: c.fixOf(b), reason: c.reasonOf(G.areaOf(b)) });
   };
+  const rows = (s) => regs.rowsFor(G.initiativeOf(s));
+  // a child of a story answers to its story's assumptions, for the criterion it serves (or, naming none,
+  // for all), and to its story's area pause with its own labels counted (a fix label goes on): as the
+  // claim hook reads it (bd-guard, Copilot 911; rv-221 round 3)
+  const parentGates = (b, parent) => {
+    const pm = parent.metadata || {};
+    return [...A.forStory(root, parent, { bd, team, verifyRecord, atClaim: true, regs, ...(pm.story ? { storyId: String(pm.story) } : {}), criterion: (b.metadata || {}).criterion }).findings,
+      A.areaAndon({ ...parent, labels: [...(parent.labels || []), ...(b.labels || [])] }, all, rows)].filter(Boolean);
+  };
   return (b, taken = []) => {
     if (!b) return false;
-    const blocks = [...AN.claimFindings(b, { root, parent: b.parent ? show(b.parent) : null, fix: c.fixOf(b), stories: all, beadOf: show, team, now, ci: ciState }),
-      ...(G.isStoryBead(b) ? A.forStory(root, b, { bd, team, verifyRecord, atClaim: true, regs }).findings : []),
-      ...(G.isStoryBead(b) ? [A.areaAndon(b, all, (s) => regs.rowsFor(G.initiativeOf(s)))].filter(Boolean) : []),
+    const parent = b.parent ? show(b.parent) : null;
+    const story = G.isStoryBead(b);
+    const blocks = [...AN.claimFindings(b, { root, parent, fix: c.fixOf(b), stories: all, beadOf: show, team, now, ci: ciState }),
+      ...(story ? A.forStory(root, b, { bd, team, verifyRecord, atClaim: true, regs }).findings : []),
+      ...(story ? [A.areaAndon(b, all, rows)].filter(Boolean) : []),
+      ...(!story && parent && G.isStoryBead(parent) ? parentGates(b, parent) : []),
       // the claim check's own ready gate (bd-guard readyFindings and claimDivergence: criteria changed
       // since ready, an unknown or missing surface, no planned check script, a child naming a criterion
       // its story lacks), as waves.rank reads it for the plan (rv-221 round 2)

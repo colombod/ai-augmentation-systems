@@ -512,6 +512,22 @@ test('hjx.1.6.12.1: read then pass: a story resting on an external-host assumpti
   assert.deepEqual(offered(passOn(none, [intake], [intake])), ['ex-vault-0n9-3']);
 });
 
+// rv-221 round 3: a child of a story answers to its story's assumptions for the criterion it serves
+test('hjx.1.6.12.1: read then pass: a fix under a story resting on an unobserved external-host assumption is not offered; with none it is', () => {
+  const intake = GF.storyBead({ id: 'ex-vault-0n9-3', metadata: { area: 'collection', story: 'vault-0n9-3' } });
+  const child = { id: 'ex-vault-0n9-3.1', title: 'Fix the intake', status: 'open', assignee: '', priority: 1, parent: 'ex-vault-0n9-3', labels: ['bug'], metadata: { criterion: 1 } };
+  const unsettled = GF.makeProject();
+  fs.writeFileSync(A.fileOf(unsettled, 'vault'), register(`| A-8 | ${HANDOFF} | external-host | vault-0n9-3#1 vault-0n9-3#2 | assumed |  | PM |\n`));
+  assert.deepEqual(offered(passOn(unsettled, [intake, child], [child])), [], 'the claim hook refuses it (D4, its story\'s criterion 1 rests on A-8)');
+  const none = GF.makeProject();
+  fs.writeFileSync(A.fileOf(none, 'vault'), register(''));
+  assert.deepEqual(offered(passOn(none, [intake, child], [child])), ['ex-vault-0n9-3.1']);
+  // only the criterion it serves counts: A-8 resting on criterion 2 alone leaves a fix for criterion 1 free
+  const other = GF.makeProject();
+  fs.writeFileSync(A.fileOf(other, 'vault'), register(`| A-8 | ${HANDOFF} | external-host | vault-0n9-3#2 | assumed |  | PM |\n`));
+  assert.deepEqual(offered(passOn(other, [intake, child], [child])), ['ex-vault-0n9-3.1']);
+});
+
 // rv-221 round 2: the claim check's ready gate (D1, criteria changed since the story was made ready)
 test('hjx.1.6.12.1: read then pass: a story whose criteria changed since ready is not offered; one whose ready hash matches is', () => {
   const root = GF.makeProject();
