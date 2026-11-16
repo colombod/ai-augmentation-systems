@@ -319,8 +319,12 @@ test('a stop that fails is reported with its unit as possibly still scheduled, a
 test('stop stops the restart timer only, reports a stop that fails, and needs a record', () => {
   for (const [label, result, code, out] of [
     ['goes through', () => ({ status: 0 }), 0, new RegExp(`stopped delivery-drill-restart-${REC}\\.timer; the host does not restart for this drill`)],
-    ['exits non-zero', () => ({ status: 5, stderr: 'Failed to stop' }), 1, new RegExp(`could not stop delivery-drill-restart-${REC}\\.timer \\(Failed to stop\\); it may still restart the host`)],
+    ['exits non-zero', () => ({ status: 1, stderr: 'Failed to stop' }), 1, new RegExp(`could not stop delivery-drill-restart-${REC}\\.timer \\(Failed to stop\\); it may still restart the host`)],
     ['throws', () => { throw new Error('spawn failed'); }, 1, /could not stop .* \(spawn failed\)/],
+    // a record whose drill never ran: the unit is not loaded (exit 5, or systemd says so), so nothing is
+    // scheduled and nobody is sent to the owner (rv-218)
+    ['exit 5 not loaded', () => ({ status: 5, stderr: 'Failed to stop delivery-drill-restart-x.timer: Unit delivery-drill-restart-x.timer not loaded.' }), 0, new RegExp(`no drill restart is scheduled for ${REC} \\(delivery-drill-restart-${REC}\\.timer is not loaded\\); nothing to stop`)],
+    ['not found text', () => ({ status: 1, stderr: 'Unit delivery-drill-restart-x.timer not found.' }), 0, /no drill restart is scheduled/],
   ]) {
     const t = setup();
     const calls = [];

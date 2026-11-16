@@ -255,7 +255,13 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, verifyRecord,
     const unit = `${L.unitName('restart', o.record)}.timer`;
     let r;
     try { r = exec(L.stopArgs('restart', o.record, env)); } catch (err) { r = { status: null, error: err.message }; }
-    return r && r.status === 0 ? { code: 0, out: `outage-drill.js: stopped ${unit}; the host does not restart for this drill` } : { code: 1, out: `outage-drill.js: could not stop ${unit} (${failText(r)}); it may still restart the host. Message the host's owner` };
+    if (r && r.status === 0) return { code: 0, out: `outage-drill.js: stopped ${unit}; the host does not restart for this drill` };
+    // a unit that was never scheduled is not a timer that may still fire: systemctl exits 5, or says the
+    // unit is not loaded. Then there is no restart to stop, and nobody needs the host's owner.
+    if (r && (r.status === 5 || /not loaded|not[- ]found|no such (?:unit|file)/i.test(String(r.stderr || r.error || '')))) {
+      return { code: 0, out: `outage-drill.js: no drill restart is scheduled for ${o.record} (${unit} is not loaded); nothing to stop` };
+    }
+    return { code: 1, out: `outage-drill.js: could not stop ${unit} (${failText(r)}); it may still restart the host. Message the host's owner` };
   }
   const at = now || new Date().toISOString();
   const who = given || whoAmI({ cwd, env, project: o.project });

@@ -1663,9 +1663,17 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   rule lets those commands run without a password, every lane, the Reality Checker's and the host
   manager's included, refuses switching the network off (`nmcli networking off` or `nmcli radio ... off`,
   under any abbreviation), powering the host off or restarting it (`shutdown`, `poweroff`, `reboot`,
-  `halt`, `telinit`, `init 0` or `6`, and `systemctl poweroff`, `reboot`, `halt`, `kexec`, `suspend`,
-  `hibernate`, `rescue` or `isolate` of such a target), with `sudo` or without: the drill's script runs
-  them itself. A schedule that fails cuts nothing and stops the
+  `halt`, `telinit`, `init 0` or `6`, the `systemctl` power verbs and `isolate` of such a target, and the
+  `loginctl` power verbs, which often need no `sudo`), with `sudo` or without, and however a value option
+  is placed before the verb: the drill's script runs them itself. It also refuses the scheduler the rule
+  empowers: `systemd-run` as the system manager (not `--user`), and `systemctl` acting on a
+  `delivery-drill-*` unit (starting one, or stopping a running drill's restore), so a lane cannot schedule
+  or cancel a drill itself; a `systemd-run` or `systemctl` carrying a power or network-off command is
+  refused the same way. These refusals read the command behind the wrappers a shell offers
+  (`sudo`, `doas`, `env`, `pkexec`, `run0`, `nice`, `timeout`, `strace`, `watch`, `xargs`, `flock`, and
+  the command `su`, `runuser`, `script` or `find -exec` carries). What they cannot read is a command in a
+  script file the lane never sees, or fed to a shell on its standard input; there the consent record is the
+  control, as it is for the drill's own role check. A schedule that fails cuts nothing and stops the
   timer made before it and the one that reported failing, which may still have been made, the restart
   first. A cut that exits non-zero or times out may still have taken the network down: it stops only the
   restart timer, runs the restore at once through the same privilege, and keeps the restore timer, so
@@ -1673,7 +1681,9 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   checked: one that exits non-zero, times out or throws is reported as the timer that may still be
   scheduled, with its unit (after a failed cut, with the time the host would restart).
   `outage-drill.js stop --record <id>` then stops that drill's restart timer through the same privilege;
-  it never stops the restore, which only brings the network back, so any role may run it. The
+  it never stops the restore, which only brings the network back, so any role may run it. On a record
+  whose drill never ran, the timer is not loaded (`systemctl` exits 5 or says so), so `stop` reports that
+  no drill restart is scheduled for it, rather than warning of a timer that may still fire. The
   consent is one cut of up to 30 minutes and one restart, so an offline gap longer than the cut is
   not covered and no option stretches it.
 - **A running role session moves onto a newly installed plugin.** Claude Code loads a plugin's hooks when
