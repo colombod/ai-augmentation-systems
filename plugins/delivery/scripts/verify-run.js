@@ -130,6 +130,11 @@ function run(who, store, bead, a, { cwd, env, now, spawn, verifyRecord }) {
   const vf = L.versionFree(step.command, who.root);
   if (vf.problem) return refuse(`criterion ${n} step ${step.n}: ${vf.problem}. Message the Delivery Manager to refine it (reality-check.js refine ${bead} --criterion ${n} --step ${step.n} --command ...)`);
   if (vf.command !== step.command) return refuse(`criterion ${n} step ${step.n}: the command names one installed version of the plugin, which the next install deletes. Message the Delivery Manager to refine it to: ${vf.command}`);
+  // a command whose test files are not where it runs them checks nothing: refused before any checkout,
+  // with no row and no andon, since the fault is the command's, not the product's (8l1.4.1.2)
+  const CC = require('./lib/check-command.js');
+  const paths = CC.testFileProblems(step.command, PLUGIN_ROOT);
+  if (paths.length) return refuse(`criterion ${n} step ${step.n} cannot check anything: ${paths.join('; ')}. Nothing is recorded. Message the Delivery Manager to refine it (reality-check.js refine ${bead} --criterion ${n} --step ${step.n} --command ...)`);
   if (!who.roleDir) return refuse('not in a role directory, so the scratch area (verify/) is not known.');
   // refine refuses --as-role on any other command; checked again here for a script edited by hand, and
   // here alone with the checker's role directory, the only directory a cd in such a step may enter
@@ -147,6 +152,8 @@ function run(who, store, bead, a, { cwd, env, now, spawn, verifyRecord }) {
   const timedOut = !!(r.error && r.error.code === 'ETIMEDOUT');
   const code = r.status === null ? null : r.status;
   const stdout = String(r.stdout || '');
+  // a test run that found no test checked nothing: no row, no andon, the command goes back to refine
+  if (CC.zeroTests(step.command, `${stdout}\n${r.stderr || ''}`)) return refuse(`criterion ${n} step ${step.n} ran no test (its test run reports none, or found no test file): the command checks nothing, so nothing is recorded and no andon is raised. Message the Delivery Manager to refine it (reality-check.js refine ${bead} --criterion ${n} --step ${step.n} --command ...)`);
   let matched = true;
   if (step.match) { try { matched = new RegExp(step.match).test(stdout); } catch (err) { return refuse(`step ${step.n} has a match that is not a pattern (${err.message})`); } }
   const pass = !timedOut && code === 0 && matched;

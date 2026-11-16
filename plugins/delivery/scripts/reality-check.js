@@ -27,9 +27,9 @@ const W = require('./lib/warnings.js');
 const { tupleOf, TUPLE } = require('./lib/surface.js');
 const { whoAmI, gateInputs, writerProblem, ownerRecord, recordChecker, EVIDENCE_WRITERS } = require('./lib/gate-context.js');
 
-const USAGE = 'usage: reality-check.js plan <bead> [--attempts <n>] [--minutes <n>] [--owner-record dec-...] | refine <bead> --from <file> | refine <bead> [--criterion <n> (--step <k>|--add-step) | --setup <k>] [--action ..] [--expect ..] [--command ..] [--match ..] [--as-role|--no-as-role] [--capture a,b] [--pass-rule ..] [--account <name>] [--read-on-screen ..] [--precondition <o-id>] | show <bead> | run-record <bead> --criterion <n> --result pass|fail --artifact <path> --observed-version <v> [--host h] [--app a] [--mode m] [--install-artifact x]';
+const USAGE = 'usage: reality-check.js plan <bead> [--attempts <n>] [--minutes <n>] [--owner-record dec-...] | refine <bead> --from <file> [--unchecked <why>] | refine <bead> [--criterion <n> (--step <k>|--add-step) | --setup <k>] [--unchecked <why>] [--action ..] [--expect ..] [--command ..] [--match ..] [--as-role|--no-as-role] [--capture a,b] [--pass-rule ..] [--account <name>] [--read-on-screen ..] [--precondition <o-id>] | show <bead> | run-record <bead> --criterion <n> --result pass|fail --artifact <path> --observed-version <v> [--host h] [--app a] [--mode m] [--install-artifact x]';
 const VALUE = ['--criterion', '--result', '--artifact', '--observed-version', '--attempts', '--minutes', '--project', '--host', '--app', '--mode', '--install-artifact',
-  '--step', '--setup', '--action', '--expect', '--command', '--match', '--capture', '--pass-rule', '--account', '--read-on-screen', '--precondition', '--from', '--owner-record'];
+  '--step', '--setup', '--action', '--expect', '--command', '--match', '--capture', '--pass-rule', '--account', '--read-on-screen', '--precondition', '--from', '--owner-record', '--unchecked'];
 // a test account is named, never given: anything that looks like a password or token is refused
 const SECRETISH = /pass(?:word|wd)?|secret|token|api[_-]?key|[:=]\S|\b[A-Za-z0-9+/_-]{24,}\b/i;
 const DEFAULT_CAP = { attempts: 2, minutes: 30 };
@@ -361,12 +361,14 @@ function runRecord(who, store, id, a, { cwd, env, now, verifyRecord }) {
 
 // The Delivery Manager's edits go through here: the script lives in the shared project checkout, which
 // run-record reads, and no lane writes it directly.
-function refine(who, id, a, at, cwd) {
+function refine(who, id, a, at, cwd, check = {}) {
   const wp = writerProblem(who);
   if (wp) return refuse(wp);
   const s = readScript(who.root, id);
   if (!s) return refuse(`no reality-check script for ${id}: plan it first (reality-check.js plan ${id})`);
-  if (a.from !== undefined) return refineFrom(who, id, s, a, at, cwd);
+  if (a.unchecked !== undefined && !String(a.unchecked).trim()) return refuse('--unchecked needs the reason the command is saved without its check');
+  if (a.from !== undefined) return refineFrom(who, id, s, a, at, cwd, check);
+  let touched = null;
   const fields = (step) => {
     if (a.action !== undefined) step.action = a.action;
     if (a.expect !== undefined) step.expect = a.expect;
@@ -376,6 +378,7 @@ function refine(who, id, a, at, cwd) {
       const v = require('./lib/launcher.js').versionFree(a.command, who.root);
       if (v.problem) return v.problem;
       step.command = v.command;
+      touched = step;
     }
     if (a.match !== undefined) step.match = a.match;
     // operator.js sync writes as a role, so it needs the checker's identity, which the runner otherwise
@@ -419,17 +422,44 @@ function refine(who, id, a, at, cwd) {
   if (a.read_on_screen !== undefined) { s.artifact = { ...s.artifact, read_on_screen: a.read_on_screen }; changed.push('version on screen'); }
   if (a.precondition !== undefined) { s.preconditions = [...new Set([...(s.preconditions || []), a.precondition])]; changed.push('preconditions'); }
   if (!changed.length) return { code: 2, out: USAGE };
+  const dry = touched ? checkCommands([{ label: changed[0], step: touched }], a, check) : { lines: [], flagged: [] };
+  if (dry.refusal) return dry.refusal;
+  if (touched) markUnchecked(touched, a, dry.flagged.includes(0));
   s.refined_by = who.instance;
   s.refined_at = at;
   fs.writeFileSync(path.join(who.root, scriptRel(id)), `${JSON.stringify(s, null, 2)}\n`);
-  return { code: 0, out: `${scriptRel(id)}: ${changed.join(', ')}` };
+  return { code: 0, out: [`${scriptRel(id)}: ${changed.join(', ')}`, ...dry.lines].join('\n') };
 }
+
+// Each new command is checked before it is saved, without running it (lib/check-command.js): this lane
+// runs no product code, so the run itself is verify-run.js's, in the Reality Checker's lane. A
+// DELIVERY_TEST_FILES path that is not a file under the plugin root refuses the refine unless --unchecked
+// gives the reason, and only the steps that had a problem keep that reason (rv-217 F3); a command that
+// ends in a pipe is a warning. { lines, flagged: [index of each item with a problem], refusal }
+function checkCommands(items, a, { pluginRoot = path.join(__dirname, '..') } = {}) {
+  const CC = require('./lib/check-command.js');
+  const lines = [];
+  const problems = [];
+  const flagged = [];
+  items.forEach(({ label, step }, i) => {
+    const mine = CC.testFileProblems(step.command, pluginRoot);
+    if (mine.length) flagged.push(i);
+    for (const p of mine) problems.push(`${label}: ${p}`);
+    if (CC.endsInPipe(step.command)) lines.push(`warning: ${label}: ${CC.PIPE_WARNING}`);
+  });
+  if (problems.length && a.unchecked === undefined) {
+    return { refusal: refuse(`${problems.join('; ')}; nothing is saved.\nFix the command, or save it as it is with --unchecked '<why it cannot be checked here>'`) };
+  }
+  if (problems.length) lines.push(`saved unchecked (${String(a.unchecked).trim()}): ${problems.join('; ')}`);
+  return { lines, flagged };
+}
+const markUnchecked = (step, a, isFlagged) => { if (isFlagged && a.unchecked !== undefined) step.unchecked = String(a.unchecked).trim(); else delete step.unchecked; };
 
 // refine --from <file>: { "<criterion>": { command, match, [step], [as_role] } }. Drafted commands hold
 // single quotes, which a lane that refuses quote-escaping cannot pass as --command; a file carries them
 // as data. The whole file is checked before anything is written, so a bad entry changes nothing.
 const FROM_KEYS = new Set(['command', 'match', 'step', 'as_role']);
-function refineFrom(who, id, s, a, at, cwd = process.cwd()) {
+function refineFrom(who, id, s, a, at, cwd = process.cwd(), check = {}) {
   const other = ['criterion', 'step', 'setup', 'add_step', 'command', 'match', 'action', 'expect', 'as_role', 'capture', 'pass_rule', 'account', 'read_on_screen', 'precondition'].find((k) => a[k] !== undefined);
   if (other) return { code: 2, out: `reality-check.js: --from takes no other option (got --${other.replace(/_/g, '-')}); run that refine on its own` };
   let text;
@@ -461,22 +491,26 @@ function refineFrom(who, id, s, a, at, cwd = process.cwd()) {
     plan.push({ n, step, e });
   }
   if (!plan.length) return refuse(`${a.from} names no criterion`);
+  // every command is checked before any is applied: one that is refused changes nothing
+  const dry = checkCommands(plan.map(({ n, step, e }) => ({ label: `criterion ${n} step ${step.n}`, step: { command: e.command, match: e.match } })), a, check);
+  if (dry.refusal) return dry.refusal;
   for (const { step, e } of plan) {
     step.command = e.command;
     step.match = e.match;
     if (e.as_role === true) step.as_role = true;
     if (e.as_role === false) delete step.as_role;
+    markUnchecked(step, a, dry.flagged.includes(plan.findIndex((x) => x.step === step)));
   }
   s.refined_by = who.instance;
   s.refined_at = at;
   fs.writeFileSync(path.join(who.root, scriptRel(id)), `${JSON.stringify(s, null, 2)}\n`);
-  return { code: 0, out: `${scriptRel(id)}: ${plan.map(({ n, step }) => `criterion ${n} step ${step.n}`).join(', ')}` };
+  return { code: 0, out: [`${scriptRel(id)}: ${plan.map(({ n, step }) => `criterion ${n} step ${step.n}`).join(', ')}`, ...dry.lines].join('\n') };
 }
 
 // open reality-check beads, for /delivery:team
 const pending = (beads) => (beads || []).filter((b) => (b.labels || []).includes(LABEL) && b.status !== 'closed');
 
-function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRecord, who: given } = {}) {
+function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRecord, who: given, pluginRoot } = {}) {
   const a = parse(argv);
   const [cmd, id] = a._;
   if (!['plan', 'refine', 'show', 'run-record'].includes(cmd) || !id) return { code: 2, out: USAGE };
@@ -489,7 +523,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
   const store = bd || require('./lib/bd.js').makeBd({ cwd: who.root });
   const at = now || new Date().toISOString();
   if (cmd === 'plan') return plan(who, store, id, a, at, verifyRecord);
-  if (cmd === 'refine') return refine(who, id, a, at, cwd);
+  if (cmd === 'refine') return refine(who, id, a, at, cwd, pluginRoot ? { pluginRoot } : {});
   return runRecord(who, store, id, a, { cwd, env, now: at, verifyRecord });
 }
 
