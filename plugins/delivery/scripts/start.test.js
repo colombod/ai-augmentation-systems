@@ -1,5 +1,6 @@
 // scripts/start.test.js — start.js end to end, as a separate process, with a fake bd and a fake claude
 // on a PATH that holds nothing else, so every prerequisite can be present or missing on purpose.
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

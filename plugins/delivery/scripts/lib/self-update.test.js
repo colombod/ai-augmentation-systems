@@ -2,6 +2,7 @@
 // plugin version main carries once the team's gate merged it, so the owner is never the installer. The
 // marketplace clone is a real git clone of a bare origin, so the reading of main is exercised for real;
 // only `claude plugin ...` is faked.
+require('../testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

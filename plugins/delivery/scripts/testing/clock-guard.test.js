@@ -7,6 +7,7 @@
 // process start time from the kernel), runs again under two moved clocks, 45 days ahead at noon as CI
 // does and 30 seconds before a year ends, and must not fail.
 // run-tests.test.js is left out: it tests --clock itself, and this file runs through it.
+require('./role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

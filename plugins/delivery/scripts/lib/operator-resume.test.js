@@ -4,6 +4,7 @@
 // timestamp, but carries a new promptId (one per file, shared by every copied record) or none at all. Human
 // inputs were deduped on promptId first, so every resume captured every earlier input again. The record
 // uuid is the message's identity; a copy is the same input, a new record is a new one.
+require('../testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');

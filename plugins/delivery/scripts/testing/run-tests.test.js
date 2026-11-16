@@ -1,3 +1,4 @@
+require('./role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert');
 const path = require('path');
@@ -7,7 +8,7 @@ const { cleanEnv, testFiles } = require('./run-tests.js');
 // and nothing else (PATH, HOME and the rest are what the tests need).
 test('run-tests: clears the role and beads variables, keeps the rest', () => {
   const env = cleanEnv({ PATH: '/bin', HOME: '/h', DELIVERY_ROLE: 'x', DELIVERY_ROLE_DIR: '/r', BEADS_DIR: '/b', BEADS_ACTOR: 'a', BD_ACTOR: 'a', BD_NON_INTERACTIVE: '1', CLAUDE_PLUGIN_ROOT: '/p' });
-  assert.deepStrictEqual(env, { PATH: '/bin', HOME: '/h', BD_NON_INTERACTIVE: '1', CLAUDE_PLUGIN_ROOT: '/p' });
+  assert.deepStrictEqual(env, { PATH: '/bin', HOME: '/h', CLAUDE_PLUGIN_ROOT: '/p' });
 });
 
 test('run-tests: finds the suite CI ran (scripts/**, hooks/scripts), itself included', () => {

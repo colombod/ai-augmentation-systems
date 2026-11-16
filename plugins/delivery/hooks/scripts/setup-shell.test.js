@@ -1,6 +1,7 @@
 // hooks/scripts/setup-shell.test.js — the setup guard before a tool runs: scripts, heredocs, copies,
 // assembled names and plugin switch-offs are judged by what they write, not only by their words; one-off
 // variables, reads and test fixtures pass. Run with: scripts/testing/run-tests.js.
+require('../../scripts/testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const S = require('./setup.js');

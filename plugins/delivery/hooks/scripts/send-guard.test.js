@@ -1,6 +1,7 @@
 // hooks/scripts/send-guard.test.js — run with: node scripts/testing/run-tests.js
 // Two teams on one host, with the same role names and different bead prefixes: a role session of team A
 // reaches only team A's sessions, by their <instance>@<team> names.
+require('../../scripts/testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
