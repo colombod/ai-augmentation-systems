@@ -213,7 +213,7 @@ function wakeAlive(ended, now) {
   return (pid, since) => !ended.has(pid) && WD.pidAlive(pid, { since, now });
 }
 
-function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWake, ended = new Set(), deliver = defaultDeliver }) {
+function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWake, ended = new Set(), deliver = defaultDeliver, home = os.homedir() }) {
   const at = now || new Date().toISOString();
   if (res.unreadable || res.paused) return [];
   // a wake row is stamped at its spawn, not at the pass start: the check reads the supervisor's start
@@ -233,7 +233,7 @@ function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWa
   for (const w of p.wakes) {
     const s = res.sessions.find((x) => x.instance === w.target) || null;
     const wm = wakeMode(manifest, s);
-    const c = wm.skip ? { skip: wm.skip } : WD.wakeCommand(s, w.prompt, open, wm.mode, { freshAbove: freshAboveOf(manifest), installed, prefix: manifest && manifest.team ? manifest.team.prefix : null });
+    const c = wm.skip ? { skip: wm.skip } : WD.wakeCommand(s, w.prompt, open, wm.mode, { freshAbove: freshAboveOf(manifest), installed, prefix: manifest && manifest.team ? manifest.team.prefix : null, unit: s && s.roleDir ? require('./lib/team-revive.js').remoteControlUnitFor(s.roleDir, { home }) : null });
     if (c.skip) {
       lines.push(`Not woken: ${w.target}: ${c.skip}. ${w.lines[0]}`);
       // one skip row an hour per session keeps the log short while a session is busy
@@ -666,12 +666,14 @@ function defaultUserGuard(env, home) {
 // work is in flight (team-revive.js, dec-chief-of-staff-000279): the job runs it each pass, so a team
 // dropped by a network loss comes back with no step from the owner. A run inside the sealed test
 // runner starts none: a test must never start a real session on the machine it runs on.
-function defaultRevive(root, { team, env, now, dryRun, bd, live }) {
+function defaultRevive(root, { team, env, now, dryRun, bd, live, exec }) {
   if (env.DELIVERY_SEAL_ACTIVE || env.DELIVERY_SEALED_RUN) return [];
   // a stale session is stopped only after a read of the open sessions made just then finds it idle,
   // never on the pass's first read, which may be minutes old by then (lib/team-revive.js staleOf)
   const relist = () => liveSessions(env.DELIVERY_CLAUDE_BIN || 'claude', env);
-  return require('./team-revive.js').revive(root, team, { start: true, cwd: root, dryRun, env, now, bd, relist, ...(live !== undefined ? { live } : {}) }).lines;
+  // a host manager on an older plugin is restarted through its own unit, after the same fresh read
+  const restartUnit = (unit) => runner(exec)('systemctl', ['--user', 'restart', unit]);
+  return require('./team-revive.js').revive(root, team, { start: true, cwd: root, dryRun, env, now, bd, relist, restartUnit, ...(live !== undefined ? { live } : {}) }).lines;
 }
 
 function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, live, spawn, deliver, platform = process.platform, home = os.homedir(), exec, has, sweep, lockWaitMs, update = {}, userGuard, revive, hostUnit } = {}) {
@@ -710,13 +712,13 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
     state.held = !!updated.held;
     // a held install starts no wake: one started now is another run the install must wait for, and with
     // wakes back to back it never went (delivery-plugin-planning-0ba.6)
-    const woke = [...updated.lines, ...(updated.installed ? ['Wakes wait for the next run, which starts under the plugin just installed.'] : updated.held ? [`No new wake starts until ${updated.held} is installed: the running wakes end first.`] : wake(who.root, res, { now, dryRun: o.dryRun, env, live, spawn, ended: endedPids(kicked), ...(deliver ? { deliver } : {}) }))];
+    const woke = [...updated.lines, ...(updated.installed ? ['Wakes wait for the next run, which starts under the plugin just installed.'] : updated.held ? [`No new wake starts until ${updated.held} is installed: the running wakes end first.`] : wake(who.root, res, { now, dryRun: o.dryRun, env, live, spawn, home, ended: endedPids(kicked), ...(deliver ? { deliver } : {}) }))];
     // every cycle, the test runs' leftovers in the host's temp directory go (dec-chief-of-staff-000211):
     // a server is never left for a restart or a person to clean; a failing sweep never stops the wakes
     // after the wakes, so a role a wake now runs is seen running; never under an install (the next run's)
     let revived = [];
     if (cmd === 'run' && first && !updated.installed && !updated.held) {
-      try { revived = (revive || defaultRevive)(who.root, { team: who.team, env, now, dryRun: !!o.dryRun, bd, live }).map((l) => `Team: ${l}`); } catch (err) { revived = [`Team: the missing role sessions were not checked (${String(err && err.message || err).split('\n')[0].slice(0, 200)})`]; }
+      try { revived = (revive || defaultRevive)(who.root, { team: who.team, env, now, dryRun: !!o.dryRun, bd, live, exec }).map((l) => `Team: ${l}`); } catch (err) { revived = [`Team: the missing role sessions were not checked (${String(err && err.message || err).split('\n')[0].slice(0, 200)})`]; }
     }
     let swept = kicked.length ? [`Kicked: ${kicked.length} (${[...new Set(kicked.map((k) => k.replace(/^\S+\s*/, '').replace(/ \(pid \d+\)$/, '') || 'a kick'))].join('; ').slice(0, 300)})`] : [];
     if (cmd === 'run' && first) {

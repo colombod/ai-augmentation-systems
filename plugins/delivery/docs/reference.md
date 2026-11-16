@@ -891,7 +891,10 @@ owner and is reviewed again; gates block only on authority or serious divergence
   would merge new code at a version already installed, so the self-update would never install it. The
   refusal names both versions and the send-back command; a plugin.json that cannot be read, or one on
   the base branch with no valid version, refuses too, and a product with no plugin directory is never
-  asked. When gh cannot read the pull request or its list of changed files, the gate already stands
+  asked. The marketplace beside the plugins directory (`.claude-plugin/marketplace.json`) carries the
+  version an install reads, so when the base branch's marketplace lists the plugin with a version, the
+  head's entry must name the same version as the head's plugin.json and be above the base's entry; a
+  marketplace that cannot be read, or that is gone at the head, refuses too. When gh cannot read the pull request or its list of changed files, the gate already stands
   on the record for the head and CI, and the version step is skipped with it. A new commit changes the head, so the old
   review no longer counts. A change users can see also needs a doc-impact line in its description,
   at the start of a line: `Doc-impact: <the docs it updates>`, with at least one doc file (Markdown,
@@ -1413,7 +1416,12 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   that, the last plugin path its own commands named). A session not open whose last version is older
   than the one the watchdog runs (the installed one) is woken fresh instead of resumed, told which
   version it ran and which is installed. A running wake is never stopped, and an open idle session is
-  handed the wake as a message, as above, never forked or started fresh beside it. A conversation resumed any other way is told at its start that the plugin moved
+  handed the wake as a message, as above, never forked or started fresh beside it. The host manager is
+  the exception: its session belongs to its unit, so while its recorded version trails the installed
+  plugin it gets no wake of any kind, open or not (`Not woken: ... the host manager is moved onto it
+  only by a restart of its unit delivery-host-manager.service (when idle), never woken in place`), and
+  the start pass's stale-session restart moves it through that unit. A host manager on the installed
+  plugin gets its wake as a message, as every role does. A conversation resumed any other way is told at its start that the plugin moved
   and where its scripts are now; and when the lane refuses a path to another installed version of
   this plugin, its reason says so and gives the same command at the current plugin root (or says
   that the lane would refuse it there too) (delivery-plugin-planning-8wz).
@@ -1595,6 +1603,52 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   on that host. `--project <root>` names the team to check or start from anywhere, a role directory of
   another team included. An instance of the `host-manager` role is never started here: its session is
   its own user unit's.
+- **The outage drill.** Recovery after an outage is seen working once, on a host whose owner consented
+  to it. `outage-drill.js plan [--cut-minutes <n>] [--record <id>]` starts,
+  schedules and writes nothing: it prints the cut length, when the network comes back and when the host
+  restarts, whether the consent record verifies and whether a drill already spent it, each claim a run
+  left on a record (how long ago and by which run it was made, and the `rm` that clears it, or that the
+  record's drill row spends it anyway), and a pre-flight
+  line naming any leftover `claude` child with both `--print` and `--sdk-url` (a process-group kill can
+  leave one, and it must be gone before a reattach). `outage-drill.js run --record <id> --cut-minutes <n>
+  --restart` is the Reality Checker's only: its lane group `outage-drill` runs it, and every other lane,
+  the open ones and the host manager's included, refuses it per command: under the script's name with or
+  without a `.js`, `.cjs` or `.mjs` extension or through a glob that could expand to it, through the
+  launcher, `sh -c`, a word the shell builds at run time, or `node -e` code that names the script. Those
+  lanes are also refused a role variable (`DELIVERY_ROLE`, `DELIVERY_ROLE_ID`, `DELIVERY_ROLE_DIR`) naming
+  the Reality Checker, set before a command, through `env` or by `export`. `plan` and a mere mention of
+  the run stay open. A copy of the script under another name, or code that loads it some other way, is not
+  seen by the lane; the script refuses those itself. It takes the role from the role marker found from its
+  own working directory upwards, never from `DELIVERY_ROLE_DIR` or a role a caller passes, and the role
+  variables must agree with that marker (`DELIVERY_ROLE` its instance, `DELIVERY_ROLE_DIR`, when set, its
+  directory). Any role but the Reality Checker's, variables that disagree, or no role session at all are
+  refused. `DELIVERY_HOST`, when set, must name this machine (its short hostname), and `plan` says so when
+  it does not. It refuses a record that is not the owner's
+  verified word, a cut outside 1 to 30 minutes, a run without `--restart`, and a second drill on the same
+  record. The record must be consent to this drill: its scope carries the label `outage-drill:<host>`
+  for the host the drill would cut, and the owner's own words name the network cut and the restart
+  with no negation. Those words are the verified quote, or, for an answer to a confirmation, the
+  question the owner was shown and the answer they picked, captured with their input; a question that
+  negates the cut or the restart ("but do not restart", "without cutting") is refused as negated owner
+  words are; the scope and the
+  statement the recording agent wrote never count as the owner's words. Any other verified owner
+  record is refused. Before it schedules anything a run claims the record with an exclusive
+  `drill-<id>.claim` file beside `drills.ndjson`, so a second run started at the same time is refused; a
+  run that fails before its row is written gives the claim back, and one killed between the two leaves
+  it, for `plan` to show. The cut drops the session that runs it, so in this order it schedules the restore
+  (`systemd-run --on-active=<n*60>s --unit=delivery-drill-restore-<id> nmcli networking on`), schedules
+  the restart (`--on-active=<(n+1)*60>s --unit=delivery-drill-restart-<id>`, a minute after the network
+  is back; that unit turns networking on itself before it reboots, since NetworkManager keeps its
+  networking state across a reboot and a restore that failed would otherwise leave the host offline), writes the drill's row to the watchdog directory's `drills.ndjson`, and only then runs
+  `nmcli networking off`. The timers are transient system units owned by PID 1, so they outlive the
+  session; they and the cut need root, through `sudo -n` by default (`DELIVERY_DRILL_PRIVILEGE` replaces
+  it, for example with `pkexec`, or empty under root). A schedule that fails cuts nothing and stops the
+  timer made before it and the one that reported failing, which may still have been made, the restart
+  first. A cut that exits non-zero or times out may still have taken the network down: it stops only the
+  restart timer, runs the restore at once through the same privilege, and keeps the restore timer, so
+  the network is back by the end of the cut whatever the cut did; the record stays spent. The
+  consent is one cut of up to 30 minutes and one restart, so an offline gap longer than the cut is
+  not covered and no option stretches it.
 - **A running role session moves onto a newly installed plugin.** Claude Code loads a plugin's hooks when
   a session starts, so a role session still open when a new version is installed keeps the old
   version's lane for as long as it runs. `team-revive.js check` names such a session (`Stale:`): open in
@@ -1669,13 +1723,68 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   not as a line in the open Remote Control conversation; with no such instance the ledger row is the
   only record.
 - **A role a user unit serves.** A role whose role directory is the `WorkingDirectory=` of a service
-  in `~/.config/systemd/user` whose `ExecStart=` runs `claude remote-control` is served by that unit
-  (`lib/team-revive.js` `remoteControlUnitFor`). No start pass starts it, and none restarts it in a
-  scope of its own, which would put a second session beside the unit's: a missing one is named with
-  its unit (`not started: it is served by the user unit <unit>`), and one on an older plugin is left
-  to the owner's restart. The owner's restart restarts it with `systemctl --user restart <unit>`,
-  only when its session is idle on the read just before, a `restart` row with the unit; busy, it is
-  named busy and not restarted.
+  in `~/.config/systemd/user` is served by that unit (`lib/team-revive.js` `servingUnits`): the
+  plugin's own when its `ExecStart=` runs `host-manager.js run-session`, one the plugin did not write
+  when its `ExecStart=` runs `claude remote-control` itself. Such a role has one start path, its unit:
+  no start pass, stale-session restart, watchdog wake, `start.js --launch` or host manager restart
+  starts it in a scope of its own or in a wake beside the unit, which would put a second session in
+  one directory (on a real host, a hand-written Chief of Staff unit beside a scoped start failed with
+  "This folder is already served" and restarted over 5,000 times). A missing role the plugin's own
+  unit serves is started with `systemctl --user reset-failed` and `systemctl --user start <unit>`, a
+  `start` row with the unit and `via: unit` under the same caps (one start an hour, the daily cap); a
+  missing one a unit the plugin did not write serves is named with its unit (`not started: it is served
+  by the user unit <unit>`) and nothing is started; with both units on one directory, it is named as two
+  start paths and the plugin starts neither. A watchdog wake for such a role starts no session (`Not
+  woken: ... served by the user unit <unit>`); a live session of it still gets the wake as a message.
+  One on an older plugin, or one the owner's restart asks for, is restarted only through the plugin's
+  own unit (`systemctl --user restart <unit>`, only when its session is idle on the read just before, a
+  `restart` row with the unit; busy, it is named busy and not restarted). A role served by a unit the
+  plugin did not write is never restarted: the reply names it (`served by <unit>, which the plugin did
+  not write; not restarted: <the fix>`), and with both units on one directory neither is restarted. The
+  unit file is read as systemd reads it: `%h` and `~` are the home, `%%` one `%`, and a quoted word one
+  word (`--name "Chief of Staff"`). A unit the plugin did not write that `systemctl --user is-enabled`
+  and `is-active` say is neither enabled nor active (stopped and disabled, as the fix says) no longer
+  serves its directory, though its file stays; a state that cannot be read counts as serving. The
+  plugin's own unit stays its role's start path while it rests inactive. The plugin never edits, stops, disables or removes a
+  unit it did not write: `start.js --check` names it, one `role unit <instance>` row per role directory
+  a unit serves on this host, a warning with the fix: stop and disable that unit (`systemctl --user
+  disable --now <unit>`), then, for the Chief of Staff, install the plugin's own (`host-manager.js
+  install-role --project <root>` through the project's launcher). The plugin's own unit alone is a pass
+  row.
+- **The Chief of Staff's own unit.** `host-manager.js install-role [--dry-run] --project <root>
+  [--instance <id>]` writes `delivery-role-<instance>-<team tag>.service` (the tag is the watchdog's,
+  from the project root, so two teams' units on one machine never share a name) for the team's Chief
+  of Staff on this host, whose role directory must hold its role marker. It runs `host-manager.js
+  run-session --project <root> --instance <id>` in that directory through the project's launcher, so
+  it starts by the host manager's rules below (the recorded session reattached once, otherwise a server
+  that stays up, never beside a live session, exit 3 when one is live), named `<instance>@<team>` and
+  recorded as `role-unit-session` rows of `revive.ndjson`. It has the same bounded restarts
+  (`Restart=always`, `RestartSec=30`, `RestartSteps=5`, `RestartMaxDelaySec=30min`,
+  `StartLimitIntervalSec=15min`, `StartLimitBurst=5`), `KillMode=process`, and `TasksMax=1000`, the
+  limit `lib/service-limits.js` asks of a unit that holds one role session; claude replaces run-session
+  (`process.execve`), so it runs in the unit's own cgroup. It reloads systemd and enables the unit,
+  starting it at once only when no session of the Chief of Staff is live (otherwise the start pass
+  starts it through the unit once that session is gone). While a unit the plugin did not write serves
+  the same directory it installs nothing and names that unit with the fix. `start.js --launch
+  --keep-alive` runs it before the launch on a host with systemctl, so the launch leaves the Chief of
+  Staff to its unit. Install-role is refused in every role session, and run-session runs for the Chief
+  of Staff only in its own role (or outside any role session, as its unit runs it).
+- **The host manager on an older plugin.** Its `delivery-host-manager.service` is the plugin's own
+  unit, and it is moved onto the installed plugin through that unit on every start pass (the
+  watchdog's each run, and the owner's restart), not only the owner's: a host-manager session whose
+  roster entry records a plugin version below the installed one is restarted with `systemctl --user
+  restart delivery-host-manager.service` only when a fresh read of the sessions, made just before,
+  finds it idle (a `restart` row with the unit, from and to, and the session it meant to replace as
+  `from_session`; the same caps as every restart). A unit restart after which that same session is
+  still the open one did not take (the unit's run-session found it live and exited 3), so it does not
+  hold the next try: once the start caps allow, a later pass or the owner's restart restarts the unit
+  again; only a restart that brought up a new session that still records the older version is not
+  tried again for that version, as for every role. Busy on
+  either read, it is named and left; with that unit not installed for its role directory it is named
+  and left, since nothing else restarts it; a unit the plugin did not write on that directory is
+  named with its fix, as above, and nothing is restarted. Its server is never stopped and no session
+  is spawned in a scope for it, and a start pass never starts a host manager that is down: its unit
+  does. A host manager on the installed plugin is left as it is.
 - **The host manager's units.** `host-manager.js install [--dry-run] --project <root> [--instance <id>]`
   takes the role directory of that team's `host-manager` instance (the roster's, else the team layout's)
   and writes three systemd user units: `delivery-host-manager.service` runs `host-manager.js
@@ -1686,15 +1795,30 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   recorded one never joined or already ran (a reattach is single-session and ends after its task), a
   server that stays up after each task (`--spawn same-dir --capacity 1`); always in the team's
   permission mode. Each start is a `host-manager-session` row of the team's `revive.ndjson`, with the
-  dropped id and why, so the once-only rule holds across the unit's restarts. run-session replaces itself
-  with claude (`process.execve`), so the unit's main process is claude; on a node before 22.15, which has
-  no `process.execve`, it starts nothing and says so, since claude as its child would outlive a stop of
-  the unit and the next start would add a second host manager. Before it starts, run-session lists the
+  dropped id and why, so the once-only rule holds across the unit's restarts. The project's launcher
+  replaces itself with the script it runs (`process.execve`), and run-session replaces itself with
+  claude, so the unit's main process is the `claude remote-control` session itself, never the launcher
+  or a node waiting on it: a stop or restart of `delivery-host-manager.service` stops that session, and
+  no host-manager claude is left running outside the unit. On a node before 22.15, which has no
+  `process.execve`, the launcher runs the script as a child as before, and run-session starts nothing
+  and says so, since claude as its child would outlive a stop of the unit and the next start would add a
+  second host manager. Before it starts, run-session lists the
   open sessions: one live in the host manager's role directory or under its name `<instance>@<host>`
   means no second session (one live session per role), and so does a list that cannot be read. A live
   host manager is exit 3, a success the unit does not restart (`SuccessExitStatus=3`,
   `RestartPreventExitStatus=3`): the unit rests inactive, so it never runs into its start limit and the
-  watchdog's reset; the watchdog's next pass starts it once again. A list that cannot be read is a
+  watchdog's reset; the watchdog's next pass starts it once again. One exception replaces the live
+  session: when run-session runs in the unit and the one live host-manager session's `claude
+  remote-control` server runs in no service unit at all (its `/proc/<pid>/cgroup` holds only scopes and
+  slices under the user manager: a session started by hand in a terminal or login session, a role
+  scope, one an older unit left behind), no unit the plugin did not write serves the host manager's
+  directory, and a fresh second read of the sessions finds it idle, run-session stops that server (the
+  same stop, and wait for the server and its session to end, that team-revive's restart uses), writes a
+  `host-manager-replaced` row, and execs the unit's own session as above, reattaching the recorded
+  session once. A server in any `.service` (this unit, or one the plugin did not write: the plugin never
+  stops what such a unit runs), a hand-written unit on the directory, busy on either read, a cgroup or
+  process list that cannot be read, or two live sessions: exit 3, nothing changed; a server
+  that does not stop: exit 1, and no session is started beside it. A list that cannot be read is a
   failure, and `Restart=` tries again later. Its restarts are bounded:
   `Restart=always` with a delay growing from 30 seconds to 30 minutes over 5 restarts (`RestartSec=30`,
   `RestartSteps=5`, `RestartMaxDelaySec=30min`, systemd 254 and later; an older systemd warns of the

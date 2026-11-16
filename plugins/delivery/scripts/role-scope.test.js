@@ -71,12 +71,14 @@ const PROCESS_FILES = {
   'scripts/lib/role-scope.js': 'the role-session start itself: systemd-run, or the plain start',
   'scripts/lib/self-update.js': 'git, gh and `claude plugin`, which start no role session',
   'scripts/lib/session-message.js': 'the socket client that delivers a message to a running session',
+  'scripts/lib/team-revive.js': 'systemctl --user is-enabled and is-active, the reads that tell whether a unit the plugin did not write still serves a role directory',
   'scripts/lib/user-guard.js': 'a hook script, through node',
   'scripts/lib/wake-run.js': 'the supervisor: runs the command startRole gives it, in its own process group',
   'scripts/lib/watch.js': 'git, to name a worktree\'s branch',
   'scripts/lib/watchdog.js': 'git and bd reads for the watchdog\'s plan',
   'scripts/map.js': 'git, for the files a change touches',
   'scripts/materialise.js': 'git and bd, to write the bead graph',
+  'scripts/outage-drill.js': 'sudo -n nmcli and systemd-run for the drill\'s cut, restore and restart timers, and ps to find a leftover headless claude child in its pre-flight; it starts no session',
   'scripts/prepare-role.js': 'git, to prepare role worktrees',
   'scripts/ready.js': 'git, to tell a repository',
   'scripts/review-run.js': 'git, for the reviewer\'s scratch clone',
@@ -99,6 +101,17 @@ const SESSION_FILES = {
   'scripts/start.js': '--launch starts each role through startRole',
   'scripts/team-revive.js': 'starts Remote Control sessions through roleCommand',
   'scripts/watchdog.js': 'reads claude agents and wakes a session through startRole',
+  'scripts/lib/team-revive.js': 'names claude remote-control to recognise a role unit; it runs only systemctl is-enabled and is-active',
+};
+// The starts that go through a user unit, not a scope (hjx.1.6.10.1.2.1): the unit is the role's start
+// path and holds its own TasksMax, so these are allowed by name, each with its reason, and each is checked
+// to still be what its reason says.
+const UNIT_STARTS = {
+  'scripts/team-revive.js#startOwnUnit': 'a unit start through systemctl: reset-failed, then start of the plugin\'s own role unit; it starts no session itself, the unit does',
+  'scripts/host-manager.js#installRole': 'a unit start through systemctl: daemon-reload, then enable (with --now only when no session of the role is live) of the plugin\'s own role unit',
+  'scripts/host-manager.js#execve': 'the unit\'s own session: run-session replaces itself with claude (process.execve), so the session is the unit\'s main process in the unit\'s cgroup, under its TasksMax',
+  'scripts/watchdog.js#defaultRevive': 'a unit restart through systemctl: restart of the plugin\'s own unit (the host manager\'s, on an older plugin and idle on a fresh read), handed to the start pass as restartUnit; it starts no session itself, the unit does',
+  'scripts/lib/launcher.js#execve': 'the launcher replaces itself with the plugin script it was asked to run (node, never claude), so a unit that runs run-session through it holds that script and the claude it execs as its main process',
 };
 const ALLOWED = {
   'scripts/host-manager.js#execFileSync(cmd, args': 'the host manager\'s systemctl runner: its cmd is a parameter, only systemctl and which; the file names claude elsewhere',
@@ -262,4 +275,35 @@ test('the wake with a real systemd-run that refuses: the session starts plain wh
   assert.match(fs.readFileSync(path.join(dir, 'b.log'), 'utf8'), /refused scope delivery-role-builder-2-\d+, and no plain start followed: it has a live session by now/);
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300);
   assert.ok(!fs.existsSync(mark), 'the session never ran');
+});
+
+test('the starts through a user unit are listed with their reasons, and each is still only what its reason says', () => {
+  for (const [k, why] of Object.entries(UNIT_STARTS)) assert.ok(why.length > 10, `${k} has a reason`);
+  const src = (rel) => fs.readFileSync(path.resolve(__dirname, '..', rel), 'utf8');
+  const body = (rel, name) => { const t = src(rel); const i = t.indexOf(`function ${name}(`); assert.ok(i >= 0, `${rel} has ${name}`); return t.slice(i, t.indexOf('\n}\n', i)); };
+  // startOwnUnit runs systemctl --user reset-failed and start of the unit it is given, and nothing else
+  const own = body('scripts/team-revive.js', 'startOwnUnit');
+  assert.deepEqual([...own.matchAll(/\bexec\(([^;]*)\)/g)].map((m) => m[1]), ["'systemctl', ['--user', 'reset-failed', unit]", "'systemctl', ['--user', 'start', unit]"]);
+  // installRole's commands are a reload and an enable of the unit it wrote; it never stops, disables or restarts one
+  const ins = body('scripts/host-manager.js', 'installRole');
+  assert.match(ins, /\['systemctl', \['--user', 'daemon-reload'\]\], \['systemctl', \['--user', 'enable', \.\.\.\(startNow \? \['--now'\] : \[\]\), u\.unit\]\]/);
+  assert.doesNotMatch(ins, /'(stop|disable|restart|kill|mask)'/);
+  // run-session's exec is the one claude start of the host manager's and the Chief of Staff's units
+  const rs = body('scripts/host-manager.js', 'runSession');
+  assert.equal([...rs.matchAll(/\bex\(/g)].length, 1);
+  assert.match(rs, /process\.execve/);
+  // the watchdog's start pass restarts a unit only as systemctl --user restart of the unit it is given
+  const dr = body('scripts/watchdog.js', 'defaultRevive');
+  assert.deepEqual([...dr.matchAll(/runner\(exec\)\(([^;]*)\);/g)].map((m) => m[1]), ["'systemctl', ['--user', 'restart', unit]"]);
+  // the launcher's exec runs node on a plugin script, never claude or a command it was handed
+  const lb = require('./lib/launcher.js').launcherBody('/p', null, null);
+  assert.deepEqual([...lb.matchAll(/process\.execve\(([^\n]*)\);\n/g)].map((m) => m[1]), ['process.execPath, [process.execPath, script, ...process.argv.slice(3)], process.env']);
+  assert.match(lb, /const script = path\.join\(root, 'scripts', name\);/);
+  // and the role unit carries the task limit a unit that holds one session needs
+  const HMS = require('./host-manager.js');
+  const SL = require('./lib/service-limits.js');
+  const where = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-unit-'));
+  const u = HMS.roleUnitFiles(where, { project: 'acme', prefix: 'acme', roles: [] }, 'chief-of-staff', { env: { PATH: '/usr/bin' }, home: where, host: 'pc', roleDir: path.join(where, 'cos') });
+  assert.match(u.body, new RegExp(`^TasksMax=${SL.needOf(u.unit, 0)}$`, 'm'));
+  assert.match(u.body, /"host-manager\.js" "run-session"/);
 });

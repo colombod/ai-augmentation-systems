@@ -65,6 +65,8 @@ const RC_DEFAULT_MODES = ['default', 'manual'];
 // is gone after one task. Capacity 1: one session in a role directory at a time, never a second link.
 const STAY_UP = ['--spawn', 'same-dir', '--capacity', '1'];
 const ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+// the host manager's own session unit (host-manager.js install; lib/host-manager.js UNIT)
+const HOST_MANAGER_UNIT = 'delivery-host-manager.service';
 const ms = (x) => { const t = Date.parse(x); return Number.isNaN(t) ? -Infinity : t; };
 
 // this host's name as team.json names hosts: DELIVERY_HOST (a role session and the macOS job carry it),
@@ -96,28 +98,111 @@ function pointerOf(configDir, dir) {
 // readFile: a test's reads.
 const unitDirOf = (home = os.homedir()) => path.join(home, '.config', 'systemd', 'user');
 const unquote = (x) => x.replace(/^["']|["']$/g, '');
-function runsRemoteControl(execStart) {
-  // ExecStart may carry systemd's prefixes (-, @, +, !, :) and an /usr/bin/env in front of claude
-  const words = String(execStart || '').trim().replace(/^[-@+!:]+/, '').split(/\s+/).map(unquote);
-  const k = words.findIndex((w) => path.basename(w) === 'claude');
-  return k >= 0 && words.slice(k + 1).includes('remote-control');
+// systemd's specifiers in a unit line: %h is the user's home, %% one %, any other is left as written
+const specifiers = (x, home) => String(x).replace(/%(.)/g, (m, c) => (c === '%' ? '%' : c === 'h' ? home : m));
+// An ExecStart line as systemd splits it: its prefixes (-, @, +, !, :) dropped, then words, a quoted one
+// whole ("Chief of Staff" is one word), each with its specifiers read
+function execWords(execStart, home) {
+  const line = String(execStart || '').trim().replace(/^[-@+!:]+/, '');
+  const out = [];
+  const re = /"((?:[^"\\]|\\.)*)"|'([^']*)'|(\S+)/g;
+  let m;
+  while ((m = re.exec(line))) out.push({ word: specifiers(m[1] !== undefined ? m[1] : m[2] !== undefined ? m[2] : m[3], home), quoted: m[3] === undefined });
+  return out;
 }
-function remoteControlUnitFor(roleDir, { home, dir = unitDirOf(home), readdir = fs.readdirSync, readFile = (f) => fs.readFileSync(f, 'utf8') } = {}) {
-  if (!roleDir) return null;
+function runsRemoteControl(execStart, home = os.homedir()) {
+  // an /usr/bin/env in front of claude is allowed; remote-control is the subcommand, not a quoted value
+  const words = execWords(execStart, home);
+  const k = words.findIndex((w) => path.basename(w.word) === 'claude');
+  return k >= 0 && words.slice(k + 1).some((w) => w.word === 'remote-control' && (!w.quoted || k + 1 === words.indexOf(w)));
+}
+// The plugin's own role unit (host-manager.js unitFiles and roleUnitFiles) runs `host-manager.js
+// run-session`, which starts claude remote-control by the plugin's rules: that command is what makes a
+// unit the plugin's, so a host manager unit installed before this check existed is the plugin's too.
+function runsRoleSession(execStart, home = os.homedir()) {
+  const words = execWords(execStart, home).map((w) => w.word);
+  const k = words.findIndex((w) => path.basename(w) === 'host-manager.js');
+  return k >= 0 && words[k + 1] === 'run-session';
+}
+// A WorkingDirectory as systemd reads it: a leading - (missing is no error) dropped, ~ the home, and the
+// specifiers read (%h/workspaces/... on a real host's hand-written unit)
+function workingDir(value, home) {
+  let d = unquote(String(value).trim().replace(/^-/, ''));
+  if (d === '~' || d.startsWith('~/')) d = home + d.slice(1);
+  return specifiers(d, home);
+}
+// Whether a unit is enabled and whether it is active, from `systemctl --user is-enabled` and `is-active`
+// (reads only): true, false, or null when the answer is not one systemd gives for a known unit.
+const ENABLED = /^(enabled|enabled-runtime|static|linked|linked-runtime|alias|indirect|generated|transient)$/;
+const ACTIVE = /^(active|activating|reloading|deactivating|refreshing)$/;
+function unitActivity(unit, exec) {
+  const read = (sub) => {
+    try { return String(exec('systemctl', ['--user', sub, unit]) || '').trim().split('\n')[0]; } catch (err) { return String((err && err.stdout) || '').trim().split('\n')[0]; }
+  };
+  const en = read('is-enabled');
+  const ac = read('is-active');
+  return { enabled: ENABLED.test(en) ? true : /^(disabled|masked|masked-runtime)$/.test(en) ? false : null, active: ACTIVE.test(ac) ? true : /^(inactive|failed)$/.test(ac) ? false : null };
+}
+const realExec = (c, a) => require('child_process').execFileSync(c, a, { encoding: 'utf8', timeout: 10000, stdio: ['ignore', 'pipe', 'pipe'] });
+// Every user service that serves a role directory: [{ unit, written }], written true for the plugin's own
+// (runsRoleSession), false for one someone else wrote (its ExecStart runs claude remote-control itself).
+// A role directory two of them serve has two start paths; the plugin never edits, starts, stops, restarts
+// or disables the one it did not write: it names it (start.js --check) and starts nothing for that role.
+// A unit the plugin did not write that systemd says is neither enabled nor active (the owner stopped and
+// disabled it, as --check's fix says) no longer serves the directory, though its file stays on disk; an
+// answer that is not known counts as serving. The plugin's own unit rests inactive between its runs by
+// design, so it stays the start path. exec: the systemctl the state is read with (a test's); without it,
+// the state is read only for the user's own unit directory, the one systemctl --user loads, never for a
+// directory systemd does not know (a test's).
+function servingUnits(roleDir, { home, dir = unitDirOf(home), readdir = fs.readdirSync, readFile = (f) => fs.readFileSync(f, 'utf8'), exec } = {}) {
+  if (!roleDir) return [];
+  const h = home || os.homedir();
   let names = [];
-  try { names = readdir(dir).filter((f) => /\.service$/.test(f)).sort(); } catch (err) { return null; }
+  try { names = readdir(dir).filter((f) => /\.service$/.test(f)).sort(); } catch (err) { return []; }
   const want = path.resolve(roleDir);
+  const sd = exec || (path.resolve(dir) === path.resolve(unitDirOf()) ? realExec : null);
+  const out = [];
   for (const f of names) {
     let body = '';
     try { body = readFile(path.join(dir, f)); } catch (err) { continue; }
     const wd = /^WorkingDirectory=(.+)$/m.exec(body);
     if (!wd) continue;
-    const d = unquote(wd[1].trim().replace(/^-/, '')).replace(/%%/g, '%');
+    const d = workingDir(wd[1], h);
     if (!path.isAbsolute(d) || path.resolve(d) !== want) continue;
     const execs = [...body.matchAll(/^ExecStart=(.*)$/gm)].map((x) => x[1]);
-    if (execs.some(runsRemoteControl)) return f;
+    if (execs.some((x) => runsRoleSession(x, h))) out.push({ unit: f, written: true });
+    else if (execs.some((x) => runsRemoteControl(x, h))) {
+      const st = sd ? unitActivity(f, sd) : { enabled: null, active: null };
+      if (st.enabled === false && st.active === false) continue;
+      out.push({ unit: f, written: false });
+    }
   }
-  return null;
+  return out;
+}
+// The fix for a unit the plugin did not write, the same in start.js --check and in every reply that names
+// it: the owner stops and disables it (its file may stay: a unit neither enabled nor active no longer
+// serves), then the plugin's own start path takes over. The plugin never does either step itself.
+function unitFix(units, { role, root } = {}) {
+  const stop = units.map((u) => `stop and disable ${u} (systemctl --user disable --now ${u}; the plugin never changes it)`).join(', and ');
+  const then = role === 'chief-of-staff' && root ? `then install the plugin's own: node ${path.join(root, '.delivery', 'bin', 'delivery.js')} host-manager.js install-role --project ${root}` : 'then the team\'s start pass starts the role in a scope of its own';
+  return `${stop}, ${then}`;
+}
+
+// The unit that serves a role directory, or null: one the plugin did not write first (it is what a start
+// here would collide with), else the plugin's own.
+function remoteControlUnitFor(roleDir, opts = {}) {
+  const all = servingUnits(roleDir, opts);
+  const hand = all.find((u) => !u.written);
+  return (hand || all[0] || {}).unit || null;
+}
+// What gather's unitOf gives assess: { unit, written, hand: [units not the plugin's], own: [the plugin's] }
+// or null when no unit serves the directory.
+function unitServing(roleDir, opts = {}) {
+  const all = servingUnits(roleDir, opts);
+  if (!all.length) return null;
+  const hand = all.filter((u) => !u.written).map((u) => u.unit);
+  const own = all.filter((u) => u.written).map((u) => u.unit);
+  return { unit: hand[0] || own[0], written: !hand.length, hand, own };
 }
 
 // the open sessions' own files that name a Remote Control session: [{ sessionId, cwd, bridgeSessionId, pid }]
@@ -230,18 +315,28 @@ function modeOf(team) {
 // user unit that serves its role directory (remoteControlUnitFor); such a session is restarted only
 // through that unit, and only on the owner's restart: never stopped and started again in a scope here.
 // st.busy: the status that holds it (not idle between turns).
-function staleOf(f, { e, open, starts, last, t, team, name, same, forced = false, unit = null }) {
+// served: unitServing's { hand, own } (or a unit's name, taken as one the plugin did not write). The plugin
+// restarts only a unit it wrote: one it did not write is named with its fix and never restarted, stopped
+// or started, and with both on one directory neither is restarted.
+// anyPass: the plugin's own unit may be restarted by any start pass, not only the owner's (the host
+// manager on an older plugin: its unit is the one way it moves onto the installed one).
+function staleOf(f, { e, open, starts, last, t, team, name, same, forced = false, unit = null, served = null, role = null, anyPass = false }) {
   const older = Boolean(f.installed && e.session_id && e.session_id === open.sessionId && PV.compare(e.plugin_version, f.installed) === -1);
   if (!older && !forced) return null;
   const version = e.session_id && e.session_id === open.sessionId ? e.plugin_version || null : null;
-  const st = { version, installed: f.installed || null, session: open.sessionId, pid: open.pid || null, server: null, remoteId: null, skip: null, held: null, ...(forced ? { forced: true } : {}), ...(unit ? { unit } : {}) };
+  const hand = served && typeof served === 'object' ? served.hand || [] : unit ? [unit] : [];
+  const own = served && typeof served === 'object' ? served.own || [] : [];
+  const st = { version, installed: f.installed || null, session: open.sessionId, pid: open.pid || null, server: null, remoteId: null, skip: null, held: null, ...(forced ? { forced: true } : {}), ...(!hand.length && own.length ? { unit: own[0] } : {}) };
   const bridge = (f.bridges || []).find((s) => same(s.cwd) && (!s.sessionId || s.sessionId === open.sessionId));
   st.remoteId = bridge ? bridge.bridgeSessionId : null;
   const m = modeOf(team);
   st.mode = m.mode || null;
-  if (unit) {
-    // the unit has its own command and its own link: no server to stop, no argv to build
-    if (!forced) st.skip = `it is served by the user unit ${unit}, so it is not restarted in a scope here; the owner's restart restarts it through that unit`;
+  if (hand.length) {
+    const both = own.length ? `; the plugin's own ${own.join(', ')} serves it too: two start paths for one role directory, so neither is restarted` : '';
+    st.skip = `served by ${hand.join(', ')}, which the plugin did not write; not restarted: ${unitFix(hand, { role, root: f.root })}${both}`;
+  } else if (own.length) {
+    // the plugin's own unit has its own command and its own link: no server to stop, no argv to build
+    if (!forced && !anyPass) st.skip = `it is served by the plugin's own unit ${own[0]}, so it is not restarted in a scope here; the owner's restart restarts it through that unit`;
   } else {
     const server = f.serverOf ? f.serverOf(open.pid) : null;
     if (server && server.unreadable) st.held = `the process list could not be read, so its Remote Control server is not known (${server.unreadable})`;
@@ -256,7 +351,10 @@ function staleOf(f, { e, open, starts, last, t, team, name, same, forced = false
   if (st.skip || st.held) return st;
   // a restart onto this version that did not take (the session still records the older one since) is
   // not tried again: a loop of stops would cost the owner the link each hour
-  const tried = starts.filter((r) => r.type === 'restart' && r.to === f.installed);
+  // a unit restart whose session it meant to replace is still the one open did not take (the unit's
+  // run-session found it live and exited 3): it is not a restart onto this version, so it holds nothing
+  // beyond the start caps, and a later pass or the owner's restart tries again
+  const tried = starts.filter((r) => r.type === 'restart' && r.to === f.installed && !(r.via === 'unit' && r.from_session && r.from_session === open.sessionId));
   const lastTry = tried[tried.length - 1];
   if (older && lastTry && ms(e.last_seen) > ms(lastTry.at)) st.held = `restarted ${WD.clock(ms(lastTry.at))} onto ${f.installed}, and its session still records ${e.plugin_version}; not tried again`;
   else if (open.status !== 'idle') { st.busy = open.status || 'busy'; st.held = `it is ${st.busy}; it is restarted only when idle between turns`; }
@@ -311,13 +409,16 @@ function assess(f) {
   if (f.live === null) out.unreadable.push('the open sessions (`claude agents --json` failed), so which role sessions run is not known');
   const t = ms(f.now);
   const rows = f.rows || [];
-  for (const { instance } of mine) {
+  for (const { instance, role } of mine) {
     const e = roster[instance] || {};
     const roleDir = e.role_dir || f.defaultDir(instance);
     const same = (d) => Boolean(d) && path.resolve(d) === path.resolve(roleDir);
     const it = { instance, roleDir, name: SN.sessionName(instance, team.prefix), running: null, remoteId: null, skip: null, held: null };
     // a role a user unit of its own serves is started and restarted only through that unit
-    const unit = f.unitOf ? f.unitOf(roleDir) : null;
+    // unitOf gives a name (a test's) or unitServing's { unit, written, hand, own }
+    const served = f.unitOf ? f.unitOf(roleDir) : null;
+    const unit = served ? (typeof served === 'string' ? served : served.unit) : null;
+    const own = Boolean(served && typeof served === 'object' && served.written);
     if (unit) it.unit = unit;
     // every live session of this instance (lib/one-session.js): in or under its role directory, or under
     // its own session name; the roster's own session first when it is one of them
@@ -340,7 +441,7 @@ function assess(f) {
     const alive = open || !last || failed ? false : f.alive(last.pid);
     if (open) {
       it.running = `session ${open.name || open.sessionId || 'open'} in ${roleDir}`;
-      it.stale = staleOf(f, { e, open, roleDir, starts, last, t, team, name: it.name, same, forced: Array.isArray(f.force) && f.force.includes(instance), unit });
+      it.stale = staleOf(f, { e, open, roleDir, starts, last, t, team, name: it.name, same, forced: Array.isArray(f.force) && f.force.includes(instance), unit, served, role: role && role.id });
       // a restart stops one session and starts another: with two running it would still leave two
       if (it.stale && it.twice && !it.stale.skip) it.stale.skip = `it runs twice (${it.twice}); one must end first`;
     }
@@ -357,6 +458,8 @@ function assess(f) {
       // it ran and ended, so it is started again at once, not after the hour that holds a start that died
       const ran = Boolean(last) && ms(e.last_seen) > ms(last.at);
       if (!f.exists(roleDir)) it.skip = `its role directory ${roleDir} is not on this host (prepare-role.js prepares it)`;
+      else if (unit && own) it.viaUnit = unit;
+      else if (unit && served.own && served.own.length) it.skip = `it is served by the user unit ${unit}, which the delivery plugin did not write, and by the plugin's own ${served.own.join(', ')}: two start paths for one role directory; stop and disable ${unit} (the plugin never changes it), and the plugin's own unit is its start path`;
       else if (unit) it.skip = `it is served by the user unit ${unit}, which is its start path, so no scope is started beside it; the plugin does not start a unit it did not write: start that unit, or replace it with the plugin's own`;
       else { const l = linkFor(it.remoteId, starts, e); it.remoteId = l.remoteId; if (l.staleId) it.staleId = l.staleId; if (l.endedId) it.endedId = l.endedId; }
       const m = modeOf(team);
@@ -367,13 +470,41 @@ function assess(f) {
       if (!it.skip && last && !failed && !ran && t - ms(last.at) < START_EVERY_MS) it.held = `started ${WD.clock(ms(last.at))}; the next start is after ${WD.clock(ms(last.at) + START_EVERY_MS)} (one start an hour)`;
       else if (!it.skip && today.length >= DAILY_CAP) it.held = `started ${today.length} times in the last day, the most a day allows; the next start is after ${WD.clock(ms(today[today.length - DAILY_CAP].at) + DAY)}`;
       if (!it.skip && alive === null && !failed) it.held = `the process list could not be read, so whether its Remote Control server started ${WD.clock(ms(last.at))} (pid ${last.pid}) still runs is not known`;
-      it.args = ['remote-control', '--name', it.name, ...(it.remoteId ? ['--session-id', it.remoteId] : STAY_UP), ...(it.mode ? ['--permission-mode', it.mode] : [])];
+      // the plugin's own unit runs run-session, which builds its own command when it starts
+      if (!it.viaUnit) it.args = ['remote-control', '--name', it.name, ...(it.remoteId ? ['--session-id', it.remoteId] : STAY_UP), ...(it.mode ? ['--permission-mode', it.mode] : [])];
     }
     out.instances.push(it);
   }
+  // The host manager is not one of the instances above: its unit, never a start pass, starts it. But a
+  // host manager on an older plugin must still be moved onto the installed one, and its unit is the one
+  // way: restarted through that unit (restartStale's unit path, idle on a fresh read, the caps), never
+  // stopped and spawned in a scope. Only an older one: a current one is left as it is, even when forced.
+  const hostManagers = [];
+  for (const { instance } of M.expandInstances(team).filter((i) => !(i.role && i.role.retired) && i.role.host === f.host && M.canonicalRoleId(i.role.id) === 'host-manager')) {
+    if (!Array.isArray(f.live)) break;
+    const e = roster[instance] || {};
+    const roleDir = e.role_dir || f.defaultDir(instance);
+    const same = (d) => Boolean(d) && path.resolve(d) === path.resolve(roleDir);
+    // its sessions: in its role directory, or under its own name <instance>@<host> (host-manager.js run-session)
+    const lives = f.live.filter((s) => s && (OS.inside(s.cwd, roleDir) || s.name === `${instance}@${f.host}`));
+    const open = lives.find((s) => e.session_id && s.sessionId === e.session_id) || lives[0] || null;
+    if (!open) continue;
+    const starts = rows.filter((r) => (r.type === 'start' || r.type === 'restart' || (r.type === 'restart-failed' && r.stopped)) && r.instance === instance);
+    // the units that serve its directory (unitServing): its own delivery-host-manager.service is the plugin's
+    // (it runs run-session), so restarting it is the plugin restarting a unit it wrote; a unit someone else
+    // wrote there is named with its fix by staleOf and never restarted
+    const sv = f.unitOf ? f.unitOf(roleDir) : null;
+    const served = typeof sv === 'string' ? { unit: sv, written: false, hand: [sv], own: [] } : sv;
+    const ownUnit = Boolean(served && (served.own || []).includes(HOST_MANAGER_UNIT));
+    const st = staleOf(f, { e, open, starts, last: starts[starts.length - 1] || null, t, team, name: `${instance}@${f.host}`, same, served: served ? { hand: served.hand || [], own: ownUnit ? [HOST_MANAGER_UNIT] : [] } : null, role: 'host-manager', anyPass: true });
+    if (!st) continue;
+    if (!ownUnit && !(served && (served.hand || []).length)) { st.skip = `its unit ${HOST_MANAGER_UNIT} is not installed on this host for ${roleDir}, and only that unit restarts it (host-manager.js install writes it)`; st.held = null; }
+    if (lives.length > 1 && !st.skip) st.skip = `it runs twice (${OS.described(lives)}); one must end first`;
+    hostManagers.push({ instance, roleDir, name: `${instance}@${f.host}`, hostManager: true, stale: st });
+  }
   if (!mine.length) out.none = `no role of this team runs on host "${f.host}" (team.json names ${[...new Set(team.roles.map((r) => r.host))].join(', ')}); set DELIVERY_HOST to the name team.json gives this host`;
   out.missing = out.instances.filter((i) => !i.running);
-  out.stale = out.instances.filter((i) => i.stale);
+  out.stale = [...out.instances.filter((i) => i.stale), ...hostManagers];
   // a restart needs a full read of the sessions (it checked the session is idle) and no owner pause; it
   // does not wait for work in flight: a lane older than the installed plugin is a defect on its own
   out.restart = f.live !== null && !out.paused && !(f.paused && f.paused.unreadable);
@@ -401,8 +532,16 @@ function lines(a, { bin = 'claude', started = null, restarted = null, dryRun = f
     const why = `no session in ${i.roleDir}`;
     if (i.skip) { out.push(`Missing: ${i.instance} (${why}); not started: ${i.skip}.`); continue; }
     if (i.held) { out.push(`Missing: ${i.instance} (${why}); held: ${i.held}.`); continue; }
-    const how = `${i.failed ? `retry after a failed start (${i.failed}): ` : ''}${shown(bin, i.args)} in ${i.roleDir}${i.remoteId ? `, reattaching Remote Control session ${i.remoteId}` : ', a new Remote Control session'}${i.staleId ? ` (its reattach to ${i.staleId} never joined)` : ''}${i.endedId ? ` (its reattach to ${i.endedId} ran and ended, as a single-session server does after its task)` : ''}`;
+    const how = `${i.failed ? `retry after a failed start (${i.failed}): ` : ''}${shown(bin, i.args || [])} in ${i.roleDir}${i.remoteId ? `, reattaching Remote Control session ${i.remoteId}` : ', a new Remote Control session'}${i.staleId ? ` (its reattach to ${i.staleId} never joined)` : ''}${i.endedId ? ` (its reattach to ${i.endedId} ran and ended, as a single-session server does after its task)` : ''}`;
     const s = started && started[i.instance];
+    if (i.viaUnit) {
+      const viaHow = `systemctl --user start ${i.viaUnit}, the plugin's own unit for ${i.roleDir} (it reattaches its recorded session or starts a server that stays up)`;
+      if (s && s.why) out.push(`Missing: ${i.instance} (${why}); not started: ${s.why}.`);
+      else if (s) out.push(`Started: ${i.instance} through its user unit ${i.viaUnit}: ${viaHow}.`);
+      else if (a.go) out.push(`Missing: ${i.instance} (${why}); ${dryRun ? 'would start' : 'start runs'}: ${viaHow}.`);
+      else out.push(`Missing: ${i.instance} (${why}); not started now (${a.paused ? 'paused' : !a.inFlight ? 'no work in flight' : 'the open sessions could not be read'}); start would run: ${viaHow}.`);
+      continue;
+    }
     const where = s ? (s.unit ? `, scope ${s.unit}` : s.fallbackFrom ? `, a plain start: systemd-run refused scope ${s.fallbackFrom}` : '') : '';
     if (s && s.fallbackHeld) out.push(`Failed: ${i.instance} (pid ${s.pid}${where}): systemd-run refused the scope, and no plain start followed: ${s.fallbackHeld}; log ${s.log}.`);
     else if (s && s.failed) out.push(`Failed: ${i.instance} (pid ${s.pid}${where}): its process exited within ${Math.round(SETTLE_MS / 1000)}s of the start, so it is not counted as started and is retried at the next pass; ${how}; log ${s.log}.`);
@@ -434,4 +573,4 @@ function lines(a, { bin = 'claude', started = null, restarted = null, dryRun = f
   return out;
 }
 
-module.exports = { remoteControlUnitFor, unitDirOf, STAY_UP, linkFor, LEDGER, ledgerFile, SETTLE_MS, SCOPE_LIMITS, scopedCommand, LOCK, lockFile, LOCK_STALE_MS, startLock, START_EVERY_MS, DAILY_CAP, RC_MODES, hostOf, configDirOf, projectKey, pointerOf, bridgeSessions, remoteSessionOf, ledger, record, modeOf, staleOf, assess, lines, shown };
+module.exports = { HOST_MANAGER_UNIT, unitFix, unitActivity, servingUnits, unitServing, runsRoleSession, remoteControlUnitFor, unitDirOf, STAY_UP, linkFor, LEDGER, ledgerFile, SETTLE_MS, SCOPE_LIMITS, scopedCommand, LOCK, lockFile, LOCK_STALE_MS, startLock, START_EVERY_MS, DAILY_CAP, RC_MODES, hostOf, configDirOf, projectKey, pointerOf, bridgeSessions, remoteSessionOf, ledger, record, modeOf, staleOf, assess, lines, shown };

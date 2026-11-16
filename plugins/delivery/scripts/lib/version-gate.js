@@ -9,9 +9,58 @@
 //
 // A plugin is a directory named plugins/<name> (at any depth) whose plugin.json exists on the base
 // branch; a product with no such directory is never asked. A read that fails is a refusal, never a pass.
+//
+// The marketplace that lists the plugin (.claude-plugin/marketplace.json beside the plugins directory)
+// carries the version too, and an install reads it from there (8l1.5): a head that raised plugin.json
+// but left the marketplace entry at main's version, or gave the two different numbers, passed. So when
+// the base's marketplace lists the plugin with a version, the head's entry must equal the head's
+// plugin.json and be above the base's entry. A repository with no marketplace, or an entry without a
+// version, asks nothing more.
 
 const PLUGIN_DIR = /^((?:.*\/)?plugins\/[^/]+)\//;
 const MANIFEST = '.claude-plugin/plugin.json';
+const MARKETPLACE = '.claude-plugin/marketplace.json';
+
+// the marketplace beside a plugins directory: plugins/app -> .claude-plugin/marketplace.json,
+// vendor/plugins/b -> vendor/.claude-plugin/marketplace.json
+function marketplaceOf(dir) {
+  const root = dir.replace(/(?:^|\/)plugins\/[^/]+$/, '');
+  return root ? `${root}/${MARKETPLACE}` : MARKETPLACE;
+}
+
+// a plugin's entry version in a marketplace's text: the version string, null for an entry with none,
+// undefined for no entry, false for text that is not a marketplace
+function entryVersion(text, name) {
+  let j;
+  try { j = JSON.parse(text); } catch (err) { return false; }
+  if (!j || !Array.isArray(j.plugins)) return false;
+  const e = j.plugins.find((x) => x && x.name === name);
+  if (!e) return undefined;
+  return typeof e.version === 'string' ? e.version : null;
+}
+
+function nameOf(text) {
+  try { const j = JSON.parse(text); return typeof j.name === 'string' && j.name ? j.name : null; } catch (err) { return null; }
+}
+
+// the marketplace side of one plugin's step: null when it holds, else the refusal
+function marketplaceStep({ dir, file, name, head, headRef, baseRef, read }) {
+  const mfile = marketplaceOf(dir);
+  const mb = read(mfile, baseRef);
+  if (mb.unavailable) return { ok: false, dir, why: `${mfile} on ${baseRef} could not be read (${mb.unavailable}), so the version step cannot be checked` };
+  if (mb.missing) return null;
+  const base = entryVersion(mb.text, name);
+  if (base === false) return { ok: false, dir, why: `${mfile} on ${baseRef} is not a readable marketplace, so the version step cannot be checked` };
+  if (base === undefined || base === null || !parse(base)) return null;
+  const mh = read(mfile, headRef);
+  if (mh.unavailable) return { ok: false, dir, why: `${mfile} at the head could not be read (${mh.unavailable}), so the version step cannot be checked` };
+  if (mh.missing) return { ok: false, dir, base, why: `${mfile} is gone at the head, while ${baseRef} lists ${name} at ${base}` };
+  const at = entryVersion(mh.text, name);
+  if (at === false || at === undefined || at === null || !parse(at)) return { ok: false, dir, base, why: `${mfile} at the head lists no valid version for ${name}, while ${baseRef} lists ${base}` };
+  if (compare(parse(at), parse(head)) !== 0) return { ok: false, dir, base, head, why: `${mfile} lists ${name} at ${at} at the head while ${file} is at ${head}: the two must name the same version` };
+  if (compare(parse(at), parse(base)) <= 0) return { ok: false, dir, base, head: at, why: `${mfile} lists ${name} at ${at} at the head, not above ${base} on ${baseRef}, so the merged change would never install` };
+  return null;
+}
 
 // The plugin directories a list of changed paths reaches, in first-seen order.
 function pluginDirs(paths) {
@@ -63,9 +112,11 @@ function checkVersions({ paths, headRef, baseRef, read }) {
     if (compare(ph, pb) <= 0) {
       return { ok: false, dir, base, head, why: `${dir} is at ${head} at the head, not above ${base} on ${baseRef}, so the merged change would never install` };
     }
+    const market = marketplaceStep({ dir, file, name: nameOf(h.text) || dir.split('/').pop(), head, headRef, baseRef, read });
+    if (market) return market;
     checked.push({ dir, base, head });
   }
   return { ok: true, checked };
 }
 
-module.exports = { checkVersions, pluginDirs, parse, compare, MANIFEST };
+module.exports = { checkVersions, pluginDirs, parse, compare, marketplaceOf, MANIFEST, MARKETPLACE };

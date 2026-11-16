@@ -210,6 +210,40 @@ test('R-43 and R-42: idle with ready work wakes the Delivery Manager; a busy ses
   assert.deepEqual(fresh('beta-'), ['--name', `${sessions[0].instance}@beta`]);
 });
 
+test('hjx.1.6.10.1.2.1: a role a user unit serves is never woken by a session the watchdog starts; a live one still gets the wake as a message', () => {
+  const now = Date.parse('2026-10-12T10:20:00Z');
+  const s = { instance: COS, role: COS, session: 's-cos', roleDir: os.tmpdir(), lastActive: now - H };
+  const down = WD.wakeCommand(s, 'go', [], 'auto', { unit: 'claude-rc-chief-of-staff.service' });
+  assert.equal(down.args, undefined, 'nothing is started beside the unit');
+  assert.match(down.skip, /served by the user unit claude-rc-chief-of-staff\.service, which starts it; no wake session is started beside it/);
+  // a fresh wake (context or an older plugin) is a start too
+  assert.equal(WD.wakeCommand({ ...s, context: WD.FRESH_ABOVE + 1 }, 'go', [], 'auto', { unit: 'u.service' }).args, undefined);
+  const idle = WD.wakeCommand(s, 'go', [{ sessionId: 's-cos', status: 'idle', pid: 77 }], 'auto', { unit: 'u.service' });
+  assert.equal(idle.mode, 'message');
+});
+
+test('hjx.1.6.10.1.2.1: the wake pass reads the unit that serves the role directory and starts no session for that role', () => {
+  const t0 = '2026-10-12T22:00:00Z';
+  const beads = { 'ex-p0': { id: 'ex-p0', status: 'open', priority: 0, created_at: iso(Date.parse(t0) - H) } };
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wd-home-'));
+  const units = path.join(home, '.config', 'systemd', 'user');
+  fs.mkdirSync(units, { recursive: true });
+  const run = (withUnit) => {
+    const h = harness({ beads });
+    session(h, DM, { seen: t0 });
+    if (withUnit) fs.writeFileSync(path.join(units, 'dm.service'), `[Service]\nWorkingDirectory=${h.roleDir(DM)}\nExecStart=/opt/x/claude remote-control\n`);
+    const spawn = spawner();
+    const store = memStore(h);
+    const out = every15(t0, 2).map((now) => at(h, now, ['run'], { spawn, bd: store, home }).out).join('\n');
+    return { r: { out }, spawn };
+  };
+  const plain = run(false);
+  assert.ok(plain.spawn.list.length >= 1, plain.r.out);
+  const served = run(true);
+  assert.deepEqual(served.spawn.list, [], served.r.out);
+  assert.match(served.r.out, /Not woken: delivery-lead: it is served by the user unit dm\.service/);
+});
+
 test('R-04: a bead in progress is stalled only when neither the bead nor its holder\'s session moved for stall_hours', () => {
   const now = Date.parse('2026-10-12T12:00:00Z');
   const beads = [{ id: 'ex-1', status: 'in_progress', assignee: 'dev@pc/builder-1', updated_at: iso(now - 3 * H) }];

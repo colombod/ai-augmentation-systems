@@ -62,7 +62,8 @@ switch (cmd) {
   case 'show': {
     const id = pos[0] || flags.id;
     const b = s.issues[id];
-    if (!b) { process.stderr.write(`fake-bd: no such issue ${id}\n`); process.exit(1); }
+    // real bd's words for an unknown id: lib/bd.js tells a missing bead from a failed read by them
+    if (!b) { process.stderr.write(`Error fetching ${id}: no issue found matching "${id}"\n`); process.exit(1); }
     if (flags.json) out([view(b)]); else process.stdout.write(`${b.id}: ${b.title}\n`);
     break;
   }
