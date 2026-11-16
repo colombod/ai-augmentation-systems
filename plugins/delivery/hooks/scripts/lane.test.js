@@ -2413,6 +2413,11 @@ test('outage-drill.js run is refused to every lane but the Reality Checker\'s, i
     `cd /tmp && ${drill} ${RUN}`, `bash -c "${drill} ${RUN}"`, `env A=1 ${drill} ${RUN}`, `node ${launcher} outage-drill.js ${RUN}`,
     `${drill} $CMD --record dec-x-1`, `node -e "require('${PR}/scripts/outage-drill.js').main(['run','--record','dec-x-1','--cut-minutes','30','--restart'])"`,
     `echo $(${drill} ${RUN})`,
+    // behind the privilege wrappers, whose -n, -S and -k take no value (rv-218: -n swallowed node)
+    `sudo -n ${drill} ${RUN}`, `sudo -S -k ${drill} ${RUN}`, `sudo -n -u root ${drill} ${RUN}`, `doas -n ${drill} ${RUN}`,
+    `nice -n 5 ${drill} ${RUN}`, `env -S "${drill} ${RUN}"`, `env --split-string="${drill} ${RUN}"`,
+    // fed through xargs, whose arguments come from standard input and cannot be read
+    `echo ${RUN} | xargs ${drill}`, `xargs -n 9 ${drill} < args.txt`, `xargs -a args.txt ${drill}`,
   ];
   for (const role of ['builder', 'spike-researcher', 'delivery-lead', 'chief-of-staff', 'host-manager']) {
     for (const c of spellings) {
@@ -2431,6 +2436,11 @@ test('outage-drill.js run is refused to every lane but the Reality Checker\'s, i
   }
   for (const role of ['builder', 'spike-researcher']) assert.equal(d(`node ${launcher} outage-drill.js plan --record dec-x-1`, role).allow, true, role);
   for (const role of ['delivery-lead', 'host-manager']) assert.equal(hostRefusal(`${drill} plan --record dec-x-1`, role), null, role);
+  // stop only cancels a drill's restart: the Reality Checker's lane runs it, and so does an open lane
+  for (const role of ['reality-checker', 'builder']) assert.equal(d(`${drill} stop --record dec-x-1`, role).allow, true, `${role}: ${d(`${drill} stop --record dec-x-1`, role).reason}`);
+  // plan behind a wrapper is still plan; the Reality Checker's run behind xargs is still its own
+  for (const c of [`sudo -n ${drill} plan`, `nice -n 5 ${drill} plan`]) assert.equal(hostRefusal(c, 'builder'), null, c);
+  assert.equal(hostRefusal(`echo ${RUN} | xargs ${drill}`, 'reality-checker'), null);
   // a mention is no run
   const rel = ['plugins', 'delivery', 'scripts'].join('/');
   for (const c of [
@@ -2438,6 +2448,36 @@ test('outage-drill.js run is refused to every lane but the Reality Checker\'s, i
     'grep -rn "outage-drill.js run" plugins/delivery', `cat ${rel}/outage-drill.js`, `git diff origin/main -- ${rel}/outage-drill.js`,
     'git commit -m "outage-drill.js run is the Reality Checker\'s"', 'bd update x-1 --append-notes "next: node outage-drill.js run --record dec-x-1"',
   ]) assert.equal(d(c, 'builder').allow, true, `${c}: ${d(c, 'builder').reason}`);
+});
+
+// Once the host lets the drill's commands run without a password, a lane could switch the network off or
+// the host off itself, past the drill's consent check. Those commands are refused to every role, the
+// Reality Checker's and the host manager's included; reads and the other direction stay open.
+test('switching the network off and powering off or restarting the host are refused to every role, wrapped or not; reads and network on are not', () => {
+  const { hostRefusal } = require('./lane.js');
+  const rd = fs.mkdtempSync(path.join(os.tmpdir(), 'power-lane-'));
+  const policyOf = (role) => loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: `delivery/${role}` });
+  const d = (command, role) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: policyOf(role), roleDir: rd, groups: GROUPS, pluginRoot: PLUGIN_ROOT, cwd: rd });
+  const refused = [
+    'sudo -n nmcli networking off', 'nmcli networking off', 'nmcli n off', 'nmcli net of', 'nmcli -t networking off', 'nmcli -w 5 networking off',
+    'nmcli radio all off', 'nmcli r wifi off', 'nmcli $OBJ off', 'sudo -n systemctl reboot', 'systemctl poweroff', 'systemctl --no-wall halt',
+    'systemctl kexec', 'systemctl soft-reboot', 'systemctl suspend', 'systemctl isolate rescue.target', 'systemctl start reboot.target',
+    'shutdown -h now', 'sudo shutdown -r +1', 'poweroff', 'reboot', 'halt', 'telinit 6', 'init 0', 'bash -c "sudo -n nmcli networking off"',
+    'cd /tmp && sudo -n systemctl reboot',
+  ];
+  for (const role of ['builder', 'delivery-lead', 'reality-checker', 'host-manager', 'chief-of-staff']) {
+    for (const c of refused) {
+      assert.equal(hostRefusal(c, role), 'power', `${role}: ${c}`);
+      const r = d(c, role);
+      assert.equal(r.allow, false, `${role}: ${c}`);
+      assert.match(r.reason, /switching this host's network off, or powering the host off or restarting it, is refused to every role/, `${role}: ${c}`);
+    }
+  }
+  for (const c of [
+    'nmcli networking on', 'nmcli networking', 'nmcli n connectivity', 'nmcli device status', 'nmcli radio all', 'nmcli radio wifi on',
+    'systemctl status cron.service', 'systemctl --version', 'grep -rn "systemctl reboot" plugins/delivery', 'git commit -m "nmcli networking off is refused"',
+    'bd update x-1 --append-notes "the drill runs shutdown"', 'cat /etc/sudoers.d/delivery-drill',
+  ]) assert.equal(hostRefusal(c, 'builder'), null, c);
 });
 
 test('host manager lane: operands after -- must match, value flags are not operands, job modes and --force are refused', () => {

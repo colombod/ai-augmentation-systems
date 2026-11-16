@@ -1067,7 +1067,25 @@ const RESUME_REASON = 'resuming or continuing a Claude session is the watchdog h
 // glob (watchd?g.js) words are matched as the shell would expand them; a command word built from a
 // variable ($c) is refused when its arguments are a resume flag or a watchdog verb.
 const WRAPPERS = new Set(['env', 'nohup', 'exec', 'command', 'builtin', 'time', 'nice', 'sudo', 'doas', 'xargs', 'timeout', 'stdbuf', 'caffeinate', 'setsid', 'ionice', 'chrt']);
-const WRAPPER_VALUE_FLAGS = new Set(['-u', '-g', '-C', '-n', '-k', '-s', '-S', '--signal', '--kill-after', '--unset', '--chdir', '-P', '-I', '-L']);
+// The options that take the next word as their value, per wrapper: one set for all of them read sudo's -n
+// (no value: non-interactive) as nice's -n (a value), so `sudo -n node x.js` swallowed `node` and the
+// command word went unseen. An option not listed for its wrapper takes no value.
+const WRAPPER_VALUE_FLAGS = {
+  sudo: new Set(['-u', '--user', '-g', '--group', '-C', '--close-from', '-D', '--chdir', '-p', '--prompt', '-R', '--chroot', '-r', '--role', '-t', '--type', '-T', '--command-timeout', '-U', '--other-user']),
+  doas: new Set(['-u', '-C']),
+  env: new Set(['-u', '--unset', '-C', '--chdir']),
+  nice: new Set(['-n', '--adjustment']),
+  timeout: new Set(['-s', '--signal', '-k', '--kill-after']),
+  xargs: new Set(['-I', '-L', '-n', '-P', '-s', '-d', '-E', '-a', '--arg-file', '--delimiter', '--max-args', '--max-procs', '--max-lines', '--max-chars', '--replace', '--eof']),
+  ionice: new Set(['-c', '--class', '-n', '--classdata', '-p', '--pid']),
+  stdbuf: new Set(['-i', '-o', '-e', '--input', '--output', '--error']),
+  time: new Set(['-f', '--format', '-o', '--output']),
+  exec: new Set(['-a']),
+  caffeinate: new Set(['-w', '-t']),
+};
+const takesValue = (wrapper, flag) => !!(WRAPPER_VALUE_FLAGS[wrapper] && WRAPPER_VALUE_FLAGS[wrapper].has(flag));
+// env -S and --split-string give one word that env splits into the command and its arguments
+const ENV_SPLIT = /^(?:-S|--split-string)(?:=(.*))?$/;
 const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'fish']);
 const INTERPRETERS = new Set(['node', 'nodejs', 'bun', 'deno', 'tsx', 'ts-node']);
 // -i (interactive) takes no value: `node -i x.test.js` runs the file (Copilot on #117)
@@ -1136,8 +1154,19 @@ function commandWords(t) {
       continue;
     }
     if (i < t.length && WRAPPERS.has(baseOf(t[i]))) {
+      const wrapper = baseOf(t[i]);
       i++;
-      while (i < t.length && (t[i].startsWith('-') || /^[A-Za-z_][A-Za-z0-9_]*=/.test(t[i]) || /^\d+(?:\.\d+)?[smhd]?$/.test(t[i]))) { i += WRAPPER_VALUE_FLAGS.has(t[i]) ? 2 : 1; }
+      while (i < t.length && (t[i].startsWith('-') || /^[A-Za-z_][A-Za-z0-9_]*=/.test(t[i]) || /^\d+(?:\.\d+)?[smhd]?$/.test(t[i]))) {
+        const split = wrapper === 'env' ? ENV_SPLIT.exec(t[i]) : null;
+        if (split) {
+          // the split string is the command that runs: read on from its words
+          const words = String(split[1] !== undefined ? split[1] : t[i + 1] || '').split(/\s+/).filter(Boolean);
+          t = [...words, ...t.slice(i + (split[1] !== undefined ? 1 : 2))];
+          i = 0;
+          break;
+        }
+        i += takesValue(wrapper, t[i]) ? 2 : 1;
+      }
       continue;
     }
     return t.slice(i);
@@ -1606,6 +1635,40 @@ function roleAssignment(words) {
   return false;
 }
 const DRILL_REASON = 'the outage drill\'s run cuts this host\'s network and restarts it: it is the Reality Checker\'s, on a bead that names the owner\'s consent.\nRun outage-drill.js plan to see what it would do, and message the Delivery Manager';
+// Switching the network off or the host off, run directly. Once the host allows the drill's commands
+// without a password, a lane could run them itself, past the drill's consent check: they are refused to
+// every role, the Reality Checker's and the host manager's included, since the drill's script runs them
+// itself (not through a tool call) and no role needs them by hand.
+const POWER_REASON = 'switching this host\'s network off, or powering the host off or restarting it, is refused to every role: the outage drill schedules both itself, on the owner\'s consent.\nRun outage-drill.js plan to see what it would do, and message the Delivery Manager';
+const POWER_TOOLS = new Set(['shutdown', 'poweroff', 'reboot', 'halt', 'telinit']);
+const POWER_VERBS = new Set(['poweroff', 'reboot', 'halt', 'kexec', 'soft-reboot', 'suspend', 'hibernate', 'hybrid-sleep', 'suspend-then-hibernate', 'rescue', 'emergency']);
+const POWER_TARGET = /^(?:poweroff|reboot|halt|kexec|soft-reboot|rescue|emergency|shutdown|suspend|hibernate|hybrid-sleep|sleep)\.target$/;
+const NMCLI_VALUE_FLAGS = new Set(['-f', '--fields', '-m', '--mode', '-c', '--colors', '-e', '--escape', '-w', '--wait', '-g', '--get-values']);
+// nmcli takes any prefix of an object or command word (n, net, networking; r, radio; of, off)
+const prefixOf = (word, full, min = 1) => word.length >= min && full.startsWith(word);
+function powerCommand(name, args) {
+  if (POWER_TOOLS.has(name)) return true;
+  if (name === 'init' && args.some((a) => /^[06sS]$/.test(a))) return true;
+  if (name === 'systemctl') {
+    const words = args.filter((a) => !a.startsWith('-'));
+    if (words.length && POWER_VERBS.has(words[0])) return true;
+    if (words.slice(1).some((w) => POWER_TARGET.test(w))) return true;
+    return false;
+  }
+  if (name !== 'nmcli') return false;
+  if (args.some((a) => /[$`]/.test(a))) return true;
+  const words = [];
+  for (let i = 0; i < args.length; i++) {
+    if (NMCLI_VALUE_FLAGS.has(args[i])) { i++; continue; }
+    if (args[i].startsWith('-')) continue;
+    words.push(args[i]);
+  }
+  const [obj, a, b] = words;
+  if (!obj) return false;
+  if (prefixOf(obj, 'networking') && a && prefixOf(a, 'off', 2)) return true;
+  if (prefixOf(obj, 'radio') && a && b && ['all', 'wifi', 'wwan'].some((r) => prefixOf(a, r)) && prefixOf(b, 'off', 2)) return true;
+  return false;
+}
 // 'units' | 'start' | 'manager' | 'code' | 'drill' | null for one command line, depth-limited. The host
 // manager is spared every refusal here but the drill's.
 function hostRefusal(text, roleId, depth = 0) {
@@ -1626,6 +1689,7 @@ function hostRefusal(text, roleId, depth = 0) {
       if (r) return r;
       continue;
     }
+    if (powerCommand(name, args)) return 'power';
     if (SERVICE_TOOLS.has(name)) {
       if (name === 'systemctl' && unitRead(args)) continue;
       // a word the shell builds at run time could become --user: its options cannot be known
@@ -1659,14 +1723,18 @@ function hostRefusal(text, roleId, depth = 0) {
     // the project's launcher runs its first argument as the plugin script
     if (isLauncher(file)) { file = rest[0]; rest = rest.slice(1); }
     const base = baseOf(file);
-    if (drillFile(file) && roleId !== DRILL_ROLE && rest.some((x) => x === 'run' || /[$`]/.test(x))) return 'drill';
+    // behind xargs the arguments come from standard input, so a run cannot be told from a plan: the
+    // drill's script run that way is refused to every lane but the Reality Checker's
+    const k = raw.indexOf(t[0]);
+    const fed = raw.slice(0, k < 0 ? raw.length : k).some((w) => baseOf(w) === 'xargs');
+    if (drillFile(file) && roleId !== DRILL_ROLE && (fed || rest.some((x) => x === 'run' || /[$`]/.test(x)))) return 'drill';
     if (hm) continue;
     if (base === 'team-revive.js' && rest.includes('start') && roleId !== 'chief-of-staff') return 'start';
     if (base === 'host-manager.js' && rest.some((x) => ['restart', 'tick', 'install', 'run-session'].includes(x))) return 'manager';
   }
   return null;
 }
-const HOST_REASONS = { units: HOST_UNITS_REASON, start: START_REASON, manager: HOST_MANAGER_REASON, code: HOST_CODE_REASON, drill: DRILL_REASON };
+const HOST_REASONS = { units: HOST_UNITS_REASON, start: START_REASON, manager: HOST_MANAGER_REASON, code: HOST_CODE_REASON, drill: DRILL_REASON, power: POWER_REASON };
 const MERGE_REASON = 'merging is the Delivery Manager\'s.\nOpen the pull request and message the Delivery Manager; resolve conflicts when it asks';
 const DEFAULT_BRANCHES = ['main', 'master'];
 

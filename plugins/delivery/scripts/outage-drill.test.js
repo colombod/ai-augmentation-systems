@@ -270,8 +270,66 @@ test('a cut that fails or times out stops the restart timer, runs the restore at
       const rows = L.drills(t.root);
       assert.deepEqual(rows.map((x) => x.type), ['drill', 'cut_failed'], label);
       assert.equal(rows[1].restore_now, restoreOk ? 'ok' : 'failed', label);
+      assert.equal(rows[1].restart_stopped, true, label);
     }
   }
+});
+
+// A stop is checked like any other step (rv-218): one that exits non-zero, times out or throws may leave
+// its timer pending, so the reply names that unit instead of saying it was stopped, and the other
+// direction still says stopped.
+test('a stop that fails is reported with its unit as possibly still scheduled, after a failed schedule and after a failed cut', () => {
+  const timedOut = () => ({ status: null, signal: 'SIGTERM', error: Object.assign(new Error('spawnSync sudo ETIMEDOUT'), { code: 'ETIMEDOUT' }) });
+  const stopFails = [['exits non-zero', () => ({ status: 5, stderr: 'Failed to stop' })], ['times out', timedOut], ['throws', () => { throw new Error('spawn failed'); }]];
+  for (const [label, stopResult] of stopFails) {
+    // a failed schedule of the restart: both stops fail, both units are named, the restart first
+    const t = setup();
+    const exec = (args) => {
+      const c = args.join(' ');
+      if (/ systemctl stop /.test(c)) return stopResult();
+      if (c.includes('systemd-run') && c.includes(`drill-restart-${REC}`)) return { status: 1, stderr: 'Interactive authentication required.' };
+      return { status: 0, stderr: '' };
+    };
+    const r = t.run(RUN, { exec });
+    assert.equal(r.code, 1, label);
+    assert.match(r.out, /could not schedule the restart .*; nothing cut/, label);
+    assert.match(r.out, new RegExp(`the restart may still be scheduled: delivery-drill-restart-${REC}\\.timer, and the restore may still be scheduled: delivery-drill-restore-${REC}\\.timer\\. Run outage-drill\\.js stop --record ${REC} now\\.`), label);
+    // a failed cut whose restart stop fails: the reply says the host may still restart, and when
+    const c2 = setup();
+    const exec2 = (args) => {
+      const c = args.join(' ');
+      if (/ networking off$/.test(c)) return { status: 1, stderr: 'Error: NetworkManager is not running.' };
+      if (/ systemctl stop /.test(c)) return stopResult();
+      return { status: 0, stderr: '' };
+    };
+    const r2 = c2.run(RUN, { exec: exec2 });
+    assert.equal(r2.code, 1, label);
+    assert.doesNotMatch(r2.out, /the restart timer is stopped/, label);
+    assert.match(r2.out, new RegExp(`stopping the restart did not go through, so the restart may still be scheduled: delivery-drill-restart-${REC}\\.timer; run outage-drill\\.js stop --record ${REC} now, or the host restarts at 2026-11-07T10:31:00.000Z`), label);
+    assert.equal(L.drills(c2.root)[1].restart_stopped, false, label);
+  }
+  // the other direction: stops that go through name no pending unit
+  const t = setup();
+  const r = t.run(RUN, { exec: (args) => (args.join(' ').includes(`systemd-run`) && args.join(' ').includes(`drill-restart-${REC}`) ? { status: 1, stderr: 'no' } : { status: 0, stderr: '' }) });
+  assert.doesNotMatch(r.out, /may still be scheduled/);
+});
+
+// stop is the step a run that could not confirm its stop asks for: it stops that drill's restart timer
+// only (the restore only brings the network back), says so, and says when the stop did not go through.
+test('stop stops the restart timer only, reports a stop that fails, and needs a record', () => {
+  for (const [label, result, code, out] of [
+    ['goes through', () => ({ status: 0 }), 0, new RegExp(`stopped delivery-drill-restart-${REC}\\.timer; the host does not restart for this drill`)],
+    ['exits non-zero', () => ({ status: 5, stderr: 'Failed to stop' }), 1, new RegExp(`could not stop delivery-drill-restart-${REC}\\.timer \\(Failed to stop\\); it may still restart the host`)],
+    ['throws', () => { throw new Error('spawn failed'); }, 1, /could not stop .* \(spawn failed\)/],
+  ]) {
+    const t = setup();
+    const calls = [];
+    const r = t.run(['stop', '--record', REC], { exec: (args) => { calls.push(args.join(' ')); return result(); }, who: { root: t.root, roleId: 'builder' } });
+    assert.equal(r.code, code, label);
+    assert.match(r.out, out, label);
+    assert.deepEqual(calls, [`sudo -n systemctl stop delivery-drill-restart-${REC}.timer`], `${label}: the restart alone is stopped`);
+  }
+  assert.equal(setup().run(['stop']).code, 2);
 });
 
 // A run killed between its claim and its row (the session dropped, the host lost power) leaves the claim,
