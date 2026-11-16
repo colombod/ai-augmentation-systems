@@ -557,12 +557,16 @@ test('start: a publish refused with HTTP 403 names the network policy and where 
 
 // ---- --launch: the team starts itself ----
 
-// a stand-in claude that records each start (cwd, args, DELIVERY_ROLE) as one JSON file per call
+// a stand-in claude that records each start (cwd, args, DELIVERY_ROLE) as one JSON file per call. The
+// record is written beside its name and renamed into place, so it appears whole: waitFor reads a file
+// as soon as it exists, and a record written in place was read half written ("Unexpected end of JSON
+// input", hjx.1.6.8.4)
+const RECORD_WRITE = 'const fs = require("fs"); const f = process.argv[1]; fs.writeFileSync(f + ".part", JSON.stringify({ cwd: process.cwd(), role: process.env.DELIVERY_ROLE, parent: process.env.CLAUDE_CODE_SESSION_ID || process.env.CLAUDE_CODE_REMOTE_SESSION_ID || process.env.CLAUDECODE || null, bgWait: process.env.CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS || null, args: process.argv.slice(2) })); fs.renameSync(f + ".part", f)';
 function recordingClaude() {
   const dir = mk('start-launch-rec-');
   const bin = path.join(dir, 'claude-rec');
   // `claude agents --json` lists FAKE_AGENTS (none by default), or fails when FAKE_AGENTS_FAIL is set
-  fs.writeFileSync(bin, `#!/bin/sh\nif [ "$1" = agents ]; then [ -n "$FAKE_AGENTS_FAIL" ] && exit 1; printf '%s' "\${FAKE_AGENTS:-[]}"; exit 0; fi\nf="${dir}/$DELIVERY_ROLE.json"\n"${process.execPath}" -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ cwd: process.cwd(), role: process.env.DELIVERY_ROLE, parent: process.env.CLAUDE_CODE_SESSION_ID || process.env.CLAUDE_CODE_REMOTE_SESSION_ID || process.env.CLAUDECODE || null, bgWait: process.env.CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS || null, args: process.argv.slice(2) }))' "$f" "$@"\n`, { mode: 0o755 });
+  fs.writeFileSync(bin, `#!/bin/sh\nif [ "$1" = agents ]; then [ -n "$FAKE_AGENTS_FAIL" ] && exit 1; printf '%s' "\${FAKE_AGENTS:-[]}"; exit 0; fi\nf="${dir}/$DELIVERY_ROLE.json"\n"${process.execPath}" -e '${RECORD_WRITE}' "$f" "$@"\n`, { mode: 0o755 });
   return { bin, dir };
 }
 function waitFor(files, ms = 10000) {
@@ -570,6 +574,24 @@ function waitFor(files, ms = 10000) {
   while (Date.now() < until && !files.every((f) => fs.existsSync(f))) cp.spawnSync('sleep', ['0.1']);
   return files.every((f) => fs.existsSync(f));
 }
+
+// hjx.1.6.8.4: the record is read the moment it exists, as waitFor reads it, so it must never be seen half
+// written. A preload makes every write in the writer slow (the file is created, then filled 300 ms later),
+// so a record written in place is caught empty every time, and one renamed into place never is.
+test('a launch record appears whole: a reader that waits only for the file never reads it half written', () => {
+  const dir = mk('start-record-');
+  const slow = path.join(dir, 'slow-write.js');
+  fs.writeFileSync(slow, "const fs = require('fs'); fs.writeFileSync = (p, d) => { const fd = fs.openSync(p, 'w'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300); fs.writeSync(fd, String(d)); fs.closeSync(fd); };\n");
+  const f = path.join(dir, 'builder.json');
+  const child = cp.spawn(process.execPath, ['--require', slow, '-e', RECORD_WRITE, f, '-p', 'join'], { stdio: 'ignore' });
+  const until = Date.now() + 15000;
+  while (Date.now() < until && !fs.existsSync(f)) { /* poll as waitFor does, only faster */ }
+  assert.ok(fs.existsSync(f), 'the record was written');
+  const text = fs.readFileSync(f, 'utf8');
+  assert.doesNotThrow(() => JSON.parse(text), `read ${JSON.stringify(text.slice(0, 40))}: half written`);
+  assert.deepEqual(JSON.parse(text).args, ['-p', 'join']);
+  child.kill();
+});
 
 test('--launch starts every role on this host in its role directory, in auto mode, with the join prompt', () => {
   const project = path.join(mk('start-launch-'), 'acme');

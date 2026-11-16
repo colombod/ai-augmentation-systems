@@ -1416,7 +1416,12 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   that, the last plugin path its own commands named). A session not open whose last version is older
   than the one the watchdog runs (the installed one) is woken fresh instead of resumed, told which
   version it ran and which is installed. A running wake is never stopped, and an open idle session is
-  handed the wake as a message, as above, never forked or started fresh beside it. A conversation resumed any other way is told at its start that the plugin moved
+  handed the wake as a message, as above, never forked or started fresh beside it. The host manager is
+  the exception: its session belongs to its unit, so while its recorded version trails the installed
+  plugin it gets no wake of any kind, open or not (`Not woken: ... the host manager is moved onto it
+  only by a restart of its unit delivery-host-manager.service (when idle), never woken in place`), and
+  the start pass's stale-session restart moves it through that unit. A host manager on the installed
+  plugin gets its wake as a message, as every role does. A conversation resumed any other way is told at its start that the plugin moved
   and where its scripts are now; and when the lane refuses a path to another installed version of
   this plugin, its reason says so and gives the same command at the current plugin root (or says
   that the lane would refuse it there too) (delivery-plugin-planning-8wz).
@@ -1718,6 +1723,22 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   --keep-alive` runs it before the launch on a host with systemctl, so the launch leaves the Chief of
   Staff to its unit. Install-role is refused in every role session, and run-session runs for the Chief
   of Staff only in its own role (or outside any role session, as its unit runs it).
+- **The host manager on an older plugin.** Its `delivery-host-manager.service` is the plugin's own
+  unit, and it is moved onto the installed plugin through that unit on every start pass (the
+  watchdog's each run, and the owner's restart), not only the owner's: a host-manager session whose
+  roster entry records a plugin version below the installed one is restarted with `systemctl --user
+  restart delivery-host-manager.service` only when a fresh read of the sessions, made just before,
+  finds it idle (a `restart` row with the unit, from and to, and the session it meant to replace as
+  `from_session`; the same caps as every restart). A unit restart after which that same session is
+  still the open one did not take (the unit's run-session found it live and exited 3), so it does not
+  hold the next try: once the start caps allow, a later pass or the owner's restart restarts the unit
+  again; only a restart that brought up a new session that still records the older version is not
+  tried again for that version, as for every role. Busy on
+  either read, it is named and left; with that unit not installed for its role directory it is named
+  and left, since nothing else restarts it; a unit the plugin did not write on that directory is
+  named with its fix, as above, and nothing is restarted. Its server is never stopped and no session
+  is spawned in a scope for it, and a start pass never starts a host manager that is down: its unit
+  does. A host manager on the installed plugin is left as it is.
 - **The host manager's units.** `host-manager.js install [--dry-run] --project <root> [--instance <id>]`
   takes the role directory of that team's `host-manager` instance (the roster's, else the team layout's)
   and writes three systemd user units: `delivery-host-manager.service` runs `host-manager.js
@@ -1728,15 +1749,30 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   recorded one never joined or already ran (a reattach is single-session and ends after its task), a
   server that stays up after each task (`--spawn same-dir --capacity 1`); always in the team's
   permission mode. Each start is a `host-manager-session` row of the team's `revive.ndjson`, with the
-  dropped id and why, so the once-only rule holds across the unit's restarts. run-session replaces itself
-  with claude (`process.execve`), so the unit's main process is claude; on a node before 22.15, which has
-  no `process.execve`, it starts nothing and says so, since claude as its child would outlive a stop of
-  the unit and the next start would add a second host manager. Before it starts, run-session lists the
+  dropped id and why, so the once-only rule holds across the unit's restarts. The project's launcher
+  replaces itself with the script it runs (`process.execve`), and run-session replaces itself with
+  claude, so the unit's main process is the `claude remote-control` session itself, never the launcher
+  or a node waiting on it: a stop or restart of `delivery-host-manager.service` stops that session, and
+  no host-manager claude is left running outside the unit. On a node before 22.15, which has no
+  `process.execve`, the launcher runs the script as a child as before, and run-session starts nothing
+  and says so, since claude as its child would outlive a stop of the unit and the next start would add a
+  second host manager. Before it starts, run-session lists the
   open sessions: one live in the host manager's role directory or under its name `<instance>@<host>`
   means no second session (one live session per role), and so does a list that cannot be read. A live
   host manager is exit 3, a success the unit does not restart (`SuccessExitStatus=3`,
   `RestartPreventExitStatus=3`): the unit rests inactive, so it never runs into its start limit and the
-  watchdog's reset; the watchdog's next pass starts it once again. A list that cannot be read is a
+  watchdog's reset; the watchdog's next pass starts it once again. One exception replaces the live
+  session: when run-session runs in the unit and the one live host-manager session's `claude
+  remote-control` server runs in no service unit at all (its `/proc/<pid>/cgroup` holds only scopes and
+  slices under the user manager: a session started by hand in a terminal or login session, a role
+  scope, one an older unit left behind), no unit the plugin did not write serves the host manager's
+  directory, and a fresh second read of the sessions finds it idle, run-session stops that server (the
+  same stop, and wait for the server and its session to end, that team-revive's restart uses), writes a
+  `host-manager-replaced` row, and execs the unit's own session as above, reattaching the recorded
+  session once. A server in any `.service` (this unit, or one the plugin did not write: the plugin never
+  stops what such a unit runs), a hand-written unit on the directory, busy on either read, a cgroup or
+  process list that cannot be read, or two live sessions: exit 3, nothing changed; a server
+  that does not stop: exit 1, and no session is started beside it. A list that cannot be read is a
   failure, and `Restart=` tries again later. Its restarts are bounded:
   `Restart=always` with a delay growing from 30 seconds to 30 minutes over 5 restarts (`RestartSec=30`,
   `RestartSteps=5`, `RestartMaxDelaySec=30min`, systemd 254 and later; an older systemd warns of the

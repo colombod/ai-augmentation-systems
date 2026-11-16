@@ -177,8 +177,9 @@ function versionedSteps(script) {
 function plan(who, store, id, a, at, verifyRecord) {
   const wp = writerProblem(who);
   if (wp) return refuse(wp);
-  const bead = store.show(id);
-  if (!bead) return refuse(`no bead ${id}`);
+  const found = require('./lib/bd.js').lookupBead(store, id);
+  if (!found.bead) return refuse(require('./lib/bd.js').lookupProblem(id, found));
+  const bead = found.bead;
   const inp = gateInputs(who.root, bead, { bd: store, team: who.team });
   if (!inp.checkStory) return refuse(`${id} has no readable story file (metadata story_file under .delivery/stories/) and states no criteria of its own (a "Done when:" paragraph in its description, or metadata.criteria)`);
   if (!inp.surface) return refuse(`${id} names no declared customer surface (surface.json), so there is nothing to set up: declare it first (R-09)${inp.story ? '' : `; a bead with no story file takes its parent's initiative, or names one: metadata initiative=<slug> and surface=<id>`}`);
@@ -311,8 +312,9 @@ function runRecord(who, store, id, a, { cwd, env, now, verifyRecord }) {
   const wp = writerProblem(who, EVIDENCE_WRITERS);
   if (wp) return refuse(wp);
   if (!a.criterion || !['pass', 'fail'].includes(a.result) || !a.artifact || !a.observed_version) return { code: 2, out: USAGE };
-  const bead = store.show(id);
-  if (!bead) return refuse(`no bead ${id}`);
+  const found = require('./lib/bd.js').lookupBead(store, id);
+  if (!found.bead) return refuse(require('./lib/bd.js').lookupProblem(id, found));
+  const bead = found.bead;
   const m = bead.metadata || {};
   if (!m.deployed_sha) return refuse(`${id} has no deployed sha: a reality check runs on a deploy (evidence.js state ${id} deployed --sha <sha>)`);
   const script = readScript(who.root, id);
