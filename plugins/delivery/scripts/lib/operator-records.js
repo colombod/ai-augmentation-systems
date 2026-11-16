@@ -268,6 +268,34 @@ function depsOf(rec) {
 
 function bad(code, message, extra) { return { code, message, ...(extra || {}) }; }
 
+// chief-of-staff-11: what a record reaches that is a test (an input the Reality Checker typed, source
+// 'test', or a record made from one, test: true). { inputs: [{ id, test }], records: [{ id, test, found }], any }
+function testReach(st, view, rec) {
+  const ins = [];
+  for (const c of Array.isArray(rec.cites) ? rec.cites : []) if (typeof c === 'string' && c.startsWith('in-')) ins.push(c);
+  if (rec.kind === 'ack' && typeof rec.input === 'string') ins.push(rec.input);
+  const inputs = ins.map((id) => { const e = st.localInput(id); return { id, test: !!(e && e.source === 'test') }; });
+  const records = depsOf(rec).map((id) => { const r = view.byId.get(id); return { id, test: !!(r && r.test === true), found: !!r }; });
+  return { inputs, records, any: inputs.some((x) => x.test) || records.some((x) => x.test) };
+}
+// A record's test mark must equal what it reaches (the mark is derived, so a mismatch is a hand-made
+// record), and a test record reaches only tests: a test revocation, supersede, decision under or answer
+// to a real record would otherwise change the operator's decisions in the valid view.
+function testMarkError(st, rec, view) {
+  if (rec.test !== undefined && rec.test !== true) return bad('test_mark_mismatch', `${rec.id}: the test field, when present, is true`);
+  const t = testReach(st, view, rec);
+  const marked = rec.test === true;
+  if (marked !== t.any) {
+    return bad('test_mark_mismatch', marked ? `${rec.id} is marked test but reaches no test input or test record`
+      : `${rec.id} reaches a test input or test record but is not marked test`);
+  }
+  if (marked) {
+    const real = [...t.inputs.filter((x) => !x.test), ...t.records.filter((x) => x.found && !x.test)].map((x) => x.id);
+    if (real.length) return bad('test_scope', `${rec.id} is a test record and may reach only test inputs and test records, not ${real.join(', ')}; a test input never changes the operator's own decisions`);
+  }
+  return null;
+}
+
 function scopeShapeError(scope, what) {
   if (scope === undefined || scope === null) return null;
   if (typeof scope !== 'object' || Array.isArray(scope)) return bad('invalid_scope', `${what} must be an object of beads, labels and initiatives`);
@@ -378,7 +406,7 @@ function validateCore(st, rec, view, mode) {
     const ip = log.parseId(cid);
     if (hd.seq && hv.count < hd.seq) return { err: bad('cited_entry_missing', `host ${input.host} chain has ${hv.count} entries but ${rec.id} cited entry ${hd.seq}`) };
     if (ip && hd.seq && ip.seq !== hd.seq) return { err: bad('history_rewritten', `${cid} does not match the sequence recorded by ${rec.id}`) };
-    if (input.source !== 'human') return { err: bad('not_human', `input ${cid} is a ${input.source} message, not the operator's own words; only human inputs can be cited (operator.js pending lists them)`) };
+    if (input.source !== 'human' && !(input.source === 'test' && rec.test === true)) return { err: bad('not_human', `input ${cid} is a ${input.source} message, not the operator's own words; only human inputs can be cited (operator.js pending lists them)`) };
     const qc = quoteCheck(input.text, rec.quote);
     if (!qc.ok) return { err: bad(qc.code, `${qc.message} (operator.js show ${cid} prints the operator's words)`) };
     if (!ownsInput(by, input)) return { err: bad('not_allowed', `only the chief of staff or the instance and session that captured ${cid} may record it; send the input id ${cid} to the chief of staff`) };
@@ -636,7 +664,7 @@ function validateCore(st, rec, view, mode) {
 }
 
 const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
-const COMMON_FIELDS = ['id', 'kind', 'by', 'ts', 'prev', 'hash', 'scope', 'cites', 'cites_head', 'supersedes'];
+const COMMON_FIELDS = ['id', 'kind', 'by', 'ts', 'prev', 'hash', 'scope', 'cites', 'cites_head', 'supersedes', 'test'];
 const KIND_FIELDS = {
   decision: ['statement', 'quote', 'under', 'answers'],
   delegation: ['statement', 'grant', 'quote', 'limits', 'answers'],
@@ -747,6 +775,8 @@ function validateRecord(st, rec, view, mode) {
   }
   const res = validateCore(st, rec, view, mode);
   if (res) return res;
+  const tm = testMarkError(st, rec, view);
+  if (tm) return tm;
   const t = Date.parse(rec.ts);
   // A record dated ahead of this reader's clock is not trusted YET; nothing about that verdict is
   // stored, so it becomes valid once the clock reaches it. Order is judged against the previous VALID
@@ -1113,6 +1143,7 @@ function commit(st, by, fields, ids = []) {
     const pt = pv && typeof pv.ts === 'string' && ISO_RE.test(pv.ts) ? Date.parse(pv.ts) : NaN;
     return pt > Date.parse(now) && pt <= limit ? pv.ts : now;
   };
+  if (testReach(st, view, fields).any) fields = { ...fields, test: true };
   const cand = { id, ...fields, by, ts: stamp(last) };
   if (last && typeof last.ts === 'string' && Date.parse(last.ts) > Date.parse(cand.ts)) {
     st.warn(`clock_behind_chain: records/${inst} ends with ${last.id} dated ${last.ts}, ahead of this clock (${now}); this record is stamped ${cand.ts}. If ${last.id} is genuine (a clock that ran fast), records written now stop verifying once its time arrives; if it is not yours it is forged. Either way the way out is to give this instance a new id in .delivery/team/team.json (Staffing) and record from that, or have the chief of staff record the decision`);
@@ -1422,6 +1453,7 @@ function verifyRecord(projectRoot, id, opts = {}) {
     if (!v.ok) { fail(v.code, v.error, { at: v.at }); return finish(); }
     noteChain(`inputs/${e.host}`, v);
     result.chain.push(inputHop(e, null));
+    if (e.source === 'test') fail('test_input', `${id} is a test input the Reality Checker typed during a check; it is never the operator's word`);
     return finish();
   }
 
@@ -1516,7 +1548,10 @@ function verifyRecord(projectRoot, id, opts = {}) {
   // validity: the chain it sits in, then the same validator the writer ran
   const cv = verifyRecordsFileCached(st, p.instance);
   if (!cv.ok) { fail(cv.code, cv.error, { at: cv.at }); return finish(); }
-  if (IXV.byId.has(id)) return finish();
+  if (IXV.byId.has(id)) {
+    if (IXV.byId.get(id).test === true) fail('test_input', `${id} is a test record, made from a Reality Checker test input; it is never the operator's word`);
+    return finish();
+  }
   const why = st.invalid.get(id);
   if (why) { fail(why.code, why.message, { at: why.at }); return finish(); }
   const chainProblem = st.problems().find((x) => x.file === `records/${p.instance}`);
@@ -1554,6 +1589,7 @@ function find(projectRoot, o = {}) {
   for (const r of st.all()) {
     if (!['decision', 'delegation', 'answer'].includes(r.kind)) continue;
     if (kinds && !kinds.includes(r.kind)) continue;
+    if (r.test === true && !o.all) continue;
     if ((view.revokedBy.get(r.id) || [])[0]) continue;
     const superseded = (view.supersededBy.get(r.id) || [])[0];
     if (superseded && !o.all) continue;
@@ -1564,7 +1600,7 @@ function find(projectRoot, o = {}) {
       id: r.id, kind: r.kind, statement: r.kind === 'answer' ? r.answer : r.statement, question: r.question, quote: r.quote || null,
       grant: r.grant || undefined, scope: r.scope, confidence: r.kind === 'answer' ? r.confidence : undefined,
       ratified: (r.kind === 'answer' && r.confidence === 'inferred') || r.kind === 'delegation' ? isRatified(view, r) : undefined,
-      by: r.by, ts: r.ts, superseded_by: superseded ? superseded.id : undefined, match: exactBead ? 'bead' : 'scope', _bead: exactBead, _rec: r,
+      by: r.by, ts: r.ts, superseded_by: superseded ? superseded.id : undefined, test: r.test === true ? true : undefined, match: exactBead ? 'bead' : 'scope', _bead: exactBead, _rec: r,
     });
   }
   out.sort((a, b) => (a._bead === b._bead ? -byOrder(a._rec, b._rec) : (a._bead ? -1 : 1)));
@@ -1608,7 +1644,9 @@ function pending(projectRoot, o = {}) {
       return ai && Date.parse(ai.ts) > ownTs && Date.parse(a.ts) >= Date.parse(d.ts);
     });
   }).sort((a, b) => -byOrder(a, b));
-  const res = { inputs, open_questions: open, unratified_answers: unratified, delegations_awaiting_glance: glance, problems: st.problems().slice() };
+  const tests = log.listInputs(projectRoot, { source: 'test', since: o.since || undefined, sessionId: o.sessionId || undefined })
+    .filter((e) => !handled.has(e.id));
+  const res = { inputs, tests, open_questions: open, unratified_answers: unratified, delegations_awaiting_glance: glance, problems: st.problems().slice() };
   if (o.all) res.acked = view.acks.map((a) => ({ input: a.input, reason: a.reason, by: a.by, ts: a.ts, id: a.id })).reverse();
   return res;
 }
