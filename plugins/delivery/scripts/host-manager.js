@@ -245,15 +245,43 @@ function restart(deps = {}, before, o = {}) {
   // (and path unit) restarted
   const restartJobErrors = {};
   const ranService = {};
+  // each start or restart of a host job's unit (its timer, path unit and service are the plugin's) is made
+  // only after the unit's entry in the service directory is read (lib/service-directory.js beforeChange),
+  // as every other plugin unit's is: a refused one is named in the reply and the rest goes ahead. One
+  // directory for the whole restart: after a request that cannot reach it, the rest do not wait again.
+  const SD = require('./lib/service-directory.js');
+  const sdf = SD.passFetch(deps.sdFetch);
+  const gate = (unit, action, running, root) => SD.beforeChange(unit, { action, running, fetch: sdf, ...(root ? { onUnreachable: SD.unreachableRecorder(root, { now }) } : {}) });
+  const rootOf = (unit) => (before.units.find((x) => x.unit === unit) || {}).root || null;
   for (const j of plan.restartJobs.filter((x) => !x.unavailable)) {
     let failed = null;
-    for (const u of [j.timer, ...(j.path ? [j.path] : [])]) { try { run('systemctl', ['--user', 'restart', u]); } catch (err) { failed = `restarting ${u} failed (${firstLine(err)})`; break; } }
-    if (!failed) { try { run('systemctl', ['--user', 'start', '--no-block', j.service]); ranService[j.service] = true; } catch (err) { failed = `its timer restarted, but one run of ${j.service} did not start (${firstLine(err)})`; ranService[j.service] = firstLine(err); } }
+    for (const u of [j.timer, ...(j.path ? [j.path] : [])]) {
+      // a timer or path unit that is down is started by the restart: with the directory unreachable it goes ahead
+      const up = Boolean((before.units.find((x) => x.unit === u) || {}).running);
+      const g = gate(u, up ? 'restart' : 'start', up, j.root);
+      if (!g.ok) { failed = `${u} is not restarted: ${g.why}`; break; }
+      try { run('systemctl', ['--user', 'restart', u]); } catch (err) { failed = `restarting ${u} failed (${firstLine(err)})`; break; }
+    }
+    if (!failed) {
+      const g = gate(j.service, 'start', false, j.root);
+      if (!g.ok) { failed = `its timer restarted, but ${j.service} is not run: ${g.why}`; ranService[j.service] = `not run: ${g.why}`; }
+      else { try { run('systemctl', ['--user', 'start', '--no-block', j.service]); ranService[j.service] = true; } catch (err) { failed = `its timer restarted, but one run of ${j.service} did not start (${firstLine(err)})`; ranService[j.service] = firstLine(err); } }
+    }
     if (failed) restartJobErrors[j.timer] = failed;
   }
-  for (const unit of plan.jobs) { try { run('systemctl', ['--user', 'start', unit]); } catch (err) { jobErrors[unit] = firstLine(err); } }
+  const gatedJobs = [];
+  for (const unit of plan.jobs) {
+    const g = gate(unit, 'start', false, rootOf(unit));
+    if (!g.ok) { jobErrors[unit] = `not started: ${g.why}`; continue; }
+    gatedJobs.push(unit);
+    try { run('systemctl', ['--user', 'start', unit]); } catch (err) { jobErrors[unit] = firstLine(err); }
+  }
   // one pass of each restarted job at once, not at its next timer tick; --no-block: a run takes minutes
-  for (const u of before.units.filter((x) => x.service && plan.jobs.includes(x.unit))) { try { run('systemctl', ['--user', 'start', '--no-block', u.service]); } catch (err) { jobErrors[u.unit] = jobErrors[u.unit] || `its service did not start: ${firstLine(err)}`; } }
+  for (const u of before.units.filter((x) => x.service && gatedJobs.includes(x.unit))) {
+    const g = gate(u.service, 'start', false, u.root);
+    if (!g.ok) { jobErrors[u.unit] = jobErrors[u.unit] || `not started: its service ${u.service} is not run: ${g.why}`; continue; }
+    try { run('systemctl', ['--user', 'start', '--no-block', u.service]); } catch (err) { jobErrors[u.unit] = jobErrors[u.unit] || `its service did not start: ${firstLine(err)}`; }
+  }
   // a job whose timer runs but which has run no pass: one run of its service, once
   const kickErrors = {};
   for (const k of plan.kick) {
@@ -261,6 +289,8 @@ function restart(deps = {}, before, o = {}) {
     if (ranService[k.service] === true) continue;
     if (ranService[k.service]) { kickErrors[k.service] = ranService[k.service]; continue; }
     if (plan.restartJobs.some((j) => j.service === k.service)) { kickErrors[k.service] = restartJobErrors[k.timer] || 'its timer did not restart'; continue; }
+    const g = gate(k.service, 'start', false, k.root);
+    if (!g.ok) { kickErrors[k.service] = `not started: ${g.why}`; continue; }
     try { run('systemctl', ['--user', 'start', '--no-block', k.service]); } catch (err) { kickErrors[k.service] = firstLine(err); }
   }
   const refused = {};
@@ -271,7 +301,7 @@ function restart(deps = {}, before, o = {}) {
   const oldSessions = {};
   // a role the plugin's own unit serves is restarted, or started when missing, through that unit, each only
   // after its entry in the service directory is read (team-revive.js unitOps)
-  const opsOf = (root) => TR.unitOps(root, { exec: run, sdFetch: deps.sdFetch, now });
+  const opsOf = (root) => TR.unitOps(root, { exec: run, sdFetch: sdf, now });
   // each unit start or restart is settled as a spawned start is: down after SETTLE_MS, it is a failed start
   const unitSettle = require('./team-revive.js').unitSettleOf(run, sleep);
   for (const t of before.teams) {
@@ -283,7 +313,7 @@ function restart(deps = {}, before, o = {}) {
     refused[root] = {};
     let r;
     try {
-      r = TR.revive(root, t.team, { start: true, cwd: deps.cwd, env: deps.env || process.env, home: deps.home, live: before.live, relist: () => sessionsNow(deps), only: want, ...(force.length ? { force } : {}), ...opsOf(root), unitSettle, sdFetch: deps.sdFetch, ...(deps.spawn ? { spawn: deps.spawn } : {}), ...(deps.stop ? { stop: deps.stop } : {}), ...(deps.teamDeps ? deps.teamDeps(root) : {}) });
+      r = TR.revive(root, t.team, { start: true, cwd: deps.cwd, env: deps.env || process.env, home: deps.home, live: before.live, relist: () => sessionsNow(deps), only: want, ...(force.length ? { force } : {}), ...opsOf(root), unitSettle, sdFetch: sdf, ...(deps.spawn ? { spawn: deps.spawn } : {}), ...(deps.stop ? { stop: deps.stop } : {}), ...(deps.teamDeps ? deps.teamDeps(root) : {}) });
     } catch (err) { for (const i of want) refused[root][i] = `the start failed: ${firstLine(err)}`; for (const i of force) (unforced[root] = unforced[root] || {})[i] = `the restart pass failed: ${firstLine(err)}`; continue; }
     started[root] = {};
     // a start that exited within its settle is recorded failed by the start pass: named, not waited for

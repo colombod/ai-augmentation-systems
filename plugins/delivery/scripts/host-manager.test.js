@@ -477,7 +477,7 @@ test('the owner\'s restart reads the unit\'s directory entry first: the plugin\'
   const restarts = (m) => m.sd.calls.filter((x) => x === `systemctl --user restart ${own(m)}`).length;
   // its own entry: read, then restarted
   const a = running();
-  a.dir.entries.push(SD.entryFor(own(a)));
+  a.dir.entries.push(SD.entryFor(own(a)), ...Object.keys(a.sd.units).filter((u) => /^delivery-watchdog-/.test(u)).map((u) => SD.entryFor(u)), ...Object.keys(a.sd.units).filter((u) => /^delivery-watchdog-.*\.timer$/.test(u)).map((u) => SD.entryFor(u.replace(/\.timer$/, '.service'))));
   a.run(['restart']);
   assert.equal(restarts(a), 1);
   assert.ok(a.dir.calls.includes('GET /api/services/local'));
@@ -1964,6 +1964,82 @@ test('an install registers a free name and never posts one another owner holds: 
   assert.equal(m.dir.calls.filter((c) => c === 'POST /api/services').length, before, 'no POST for it');
   assert.equal(m.dir.entry(cosUnit(m)).owner, 'colombod');
   assert.match(role.out, new RegExp(`^Not registered with the service directory, held by another owner: ${esc(cosUnit(m))} `, 'm'), role.out);
+});
+
+// The host jobs' units are the plugin's (watchdog.js jobFiles): host-manager.js restart and the tick read
+// each one's entry in the service directory before a start or restart, as for every other plugin unit;
+// a refused one is named and the rest of the restart goes ahead.
+test('the owner\'s restart reads each host job unit\'s directory entry first: a free one is restarted; one another owner holds, or one the plugin registered that someone removed, is not, is named, and the rest goes ahead', () => {
+  const m = machine({ beads: WORK });
+  const a = tag(m.alpha.root);
+  const b = tag(m.beta.root);
+  const SC = 'systemctl --user';
+  m.sd.units[`delivery-watchdog-${a}.timer`] = loaded(true);
+  m.dir.entries.push({ name: `delivery-watchdog-${a}.timer`, url: 'http://x', owner: 'colombod' });
+  const r = m.run(['restart']);
+  assert.equal(r.code, 0, r.out);
+  assert.ok(!m.sd.calls.includes(`${SC} restart delivery-watchdog-${a}.timer`), m.sd.calls.join('\n'));
+  assert.ok(!m.sd.calls.includes(`${SC} start --no-block delivery-watchdog-${a}.service`), 'no run of a job whose timer is refused');
+  assert.equal(m.dir.entry(`delivery-watchdog-${a}.timer`).owner, 'colombod', 'left as it is');
+  assert.match(r.out, new RegExp(`^Not restarted: alpha's host job: delivery-watchdog-${a}\\.timer is not restarted: the service directory lists delivery-watchdog-${a}\\.timer as owned by "colombod", not by the delivery plugin, so the plugin does not restart it\\.$`, 'm'), r.out);
+  // the rest goes ahead: beta's free job is registered, restarted and run once; the roles still come back
+  assert.ok(m.sd.calls.includes(`${SC} restart delivery-watchdog-${b}.timer`), m.sd.calls.join('\n'));
+  assert.ok(m.sd.calls.includes(`${SC} start --no-block delivery-watchdog-${b}.service`));
+  assert.equal(m.dir.entry(`delivery-watchdog-${b}.timer`).owner, 'delivery plugin');
+  assert.ok(m.spawned.length > 0, 'the team\'s start pass still runs');
+  // an entry the plugin registered that someone removed: not registered again, not restarted, named
+  const n = machine({ beads: WORK });
+  const nb = tag(n.beta.root);
+  SD.remember(`delivery-watchdog-${nb}.timer`, { fetch: n.dir.fetch });
+  const rn = n.run(['restart']);
+  assert.ok(!n.sd.calls.includes(`${SC} restart delivery-watchdog-${nb}.timer`), n.sd.calls.join('\n'));
+  assert.equal(n.dir.entry(`delivery-watchdog-${nb}.timer`), null, 'not registered again');
+  assert.match(rn.out, new RegExp(`^Not restarted: beta's host job: delivery-watchdog-${nb}\\.timer is not restarted: the entry the delivery plugin registered for delivery-watchdog-${nb}\\.timer was removed from the service directory`, 'm'), rn.out);
+  assert.ok(n.sd.calls.includes(`${SC} restart delivery-watchdog-${tag(n.alpha.root)}.timer`), 'alpha\'s job is restarted');
+  // its service held by another owner while its timer is the plugin's: the timer restarts, the run is refused and named
+  const s2 = machine({ beads: WORK });
+  const sa = tag(s2.alpha.root);
+  s2.dir.entries.push({ name: `delivery-watchdog-${sa}.service`, url: 'http://x', owner: 'colombod' });
+  const rs = s2.run(['restart']);
+  assert.ok(s2.sd.calls.includes(`${SC} restart delivery-watchdog-${sa}.timer`));
+  assert.ok(!s2.sd.calls.includes(`${SC} start --no-block delivery-watchdog-${sa}.service`), s2.sd.calls.join('\n'));
+  assert.match(rs.out, new RegExp(`^Not restarted: alpha's host job: its timer restarted, but delivery-watchdog-${sa}\\.service is not run: the service directory lists delivery-watchdog-${sa}\\.service as owned by "colombod"`, 'm'), rs.out);
+});
+
+test('restart --down-only and the tick read a host job unit\'s directory entry before starting it: a free down timer is started; one another owner holds is not, and is named', () => {
+  const SC = 'systemctl --user';
+  const free = machine();
+  const a = tag(free.alpha.root);
+  free.sd.units[`delivery-watchdog-${a}.timer`] = loaded(false, 'Sun 2026-11-08 09:00:00 UTC');
+  free.run(['restart', '--down-only']);
+  assert.ok(free.sd.calls.includes(`${SC} start delivery-watchdog-${a}.timer`), free.sd.calls.join('\n'));
+  assert.equal(free.dir.entry(`delivery-watchdog-${a}.timer`).owner, 'delivery plugin');
+  assert.ok(free.sd.calls.includes(`${SC} start --no-block delivery-watchdog-${a}.service`), 'and one run of its service');
+  // its timer the plugin's, its service held by another owner: the timer starts, the service is not run
+  const svc = machine();
+  const v = tag(svc.alpha.root);
+  svc.sd.units[`delivery-watchdog-${v}.timer`] = loaded(false, 'Sun 2026-11-08 09:00:00 UTC');
+  svc.dir.entries.push({ name: `delivery-watchdog-${v}.service`, url: 'http://x', owner: 'colombod' });
+  svc.run(['restart', '--down-only']);
+  assert.ok(svc.sd.calls.includes(`${SC} start delivery-watchdog-${v}.timer`), svc.sd.calls.join('\n'));
+  assert.ok(!svc.sd.calls.includes(`${SC} start --no-block delivery-watchdog-${v}.service`), svc.sd.calls.join('\n'));
+  const held = machine();
+  const h = tag(held.alpha.root);
+  held.sd.units[`delivery-watchdog-${h}.timer`] = loaded(false, 'Sun 2026-11-08 09:00:00 UTC');
+  held.dir.entries.push({ name: `delivery-watchdog-${h}.timer`, url: 'http://x', owner: 'colombod' });
+  const r = held.run(['restart', '--down-only']);
+  assert.ok(!held.sd.calls.some((c) => c.includes(`start delivery-watchdog-${h}.timer`) || c.includes(`start --no-block delivery-watchdog-${h}.service`)), held.sd.calls.join('\n'));
+  assert.match(r.out, new RegExp(`^Not back: delivery-watchdog-${h}\\.timer \\(not started: the service directory lists delivery-watchdog-${h}\\.timer as owned by "colombod", not by the delivery plugin, so the plugin does not start it\\);`, 'm'), r.out);
+  // the tick's one run of a silent job's service: refused the same way when another owner holds it
+  const roles = [{ id: 'chief-of-staff', host: 'pc' }, { id: 'host-manager', host: 'pc' }];
+  const k = machine({ alphaRoles: roles });
+  k.live = [{ cwd: k.alpha.dir('chief-of-staff') }, { cwd: k.beta.dir('chief-of-staff') }, { cwd: k.beta.dir('builder') }];
+  const ka = tag(k.alpha.root);
+  k.dir.entries.push({ name: `delivery-watchdog-${ka}.service`, url: 'http://x', owner: 'colombod' });
+  const passes = { [k.alpha.root]: Date.parse(T0) - 40 * MIN, [k.beta.root]: Date.parse(T0) - 5 * MIN };
+  const t = k.run(['tick'], { lastPass: (root) => passes[root] });
+  assert.ok(!k.sd.calls.includes(`${SC} start --no-block delivery-watchdog-${ka}.service`), k.sd.calls.join('\n'));
+  assert.match(t.out, new RegExp(`^Not back: alpha's host job, still silent: its timer runs but no pass since .*, and delivery-watchdog-${ka}\\.service was not started: the service directory lists delivery-watchdog-${ka}\\.service as owned by "colombod"`, 'm'), t.out);
 });
 
 // the watchdog's own install registers the job's units, which are the plugin's

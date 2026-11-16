@@ -1874,12 +1874,15 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   the reply says they were not registered, and the next pass registers them; within one watchdog run,
   after the first request that cannot reach the directory the rest of the run does not wait on it again.
   Before a start, stop, restart or replace of a plugin unit (the owner's restart and the tick restarting
-  or starting a role's own unit, the stale-session restart of the host manager, the watchdog's start of
+  or starting a role's own unit, the owner's restart of each host job's timer and path unit and its one
+  run of the job's service, `restart --down-only` and the tick starting a host job unit that is down and
+  running a silent job's service once, the stale-session restart of the host manager, the watchdog's start of
   `delivery-host-manager.service`, an install's `enable --now`, run-session's replace of a leftover or
   outside session), the unit's entry is read with `GET /api/services/local`. A missing entry the plugin
   never registered is registered and read again; a missing entry the plugin registered and someone
   removed, an entry owned by anyone but the plugin, or a unit the plugin did not write, is refused, with
-  the reason in the reply and a `restart-refused` or `start-refused` row that no start cap counts. When
+  the reason in the reply and a `restart-refused` or `start-refused` row that no start cap counts (a
+  refused host job unit is named in the reply with its reason, and the rest of the restart goes ahead). When
   the directory cannot be read, a stop, restart or replace of a running unit is refused and the reply
   says the directory could not be read; starting a plugin unit that is down goes ahead, since after a
   host restart the directory may come up later than the host manager, with a `directory-unreachable`
