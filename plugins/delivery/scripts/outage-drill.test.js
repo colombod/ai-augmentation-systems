@@ -16,8 +16,8 @@ const NOW = '2026-11-07T10:00:00.000Z';
 // The owner's record of this drill: verified, scoped to a drill on this host, and in the owner's own words
 // naming the cut and the restart. Each part can be changed to show the consent refused without it.
 const QUOTE = 'Yes, cut the network for 30 minutes and restart the machine once';
-const drillRecord = ({ labels = ['outage-drill:pc'], quote = QUOTE, text, asked } = {}) => (root, id) => (id === REC
-  ? { ok: true, chain: [{ kind: 'decision', scope: { beads: [], labels }, quote }, { kind: 'input', source: 'human', text: text === undefined ? quote : text, ...(asked ? { asked } : {}) }], notes: [] }
+const drillRecord = ({ labels = ['outage-drill:pc'], beads = [], quote = QUOTE, text, asked } = {}) => (root, id) => (id === REC
+  ? { ok: true, chain: [{ kind: 'decision', scope: { beads, labels }, quote }, { kind: 'input', source: 'human', text: text === undefined ? quote : text, ...(asked ? { asked } : {}) }], notes: [] }
   : { ok: false, error: 'not found' });
 const verifyRecord = drillRecord();
 const scratchDir = (prefix) => fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -170,7 +170,7 @@ test('only a record scoped to a drill on this host, whose owner words name the c
     assert.equal(fs.existsSync(L.ledgerFile(t.root)), false);
   };
   // an unrelated verified owner record: the owner's word, but about something else
-  refused(drillRecord({ labels: ['permission:builder=gh pr close'], quote: 'Yes, let builders close their own pull requests' }), /not scoped to a drill on this host \(its scope needs the label outage-drill:pc\)/);
+  refused(drillRecord({ labels: ['permission:builder=gh pr close'], quote: 'Yes, let builders close their own pull requests' }), /not scoped to this drill \(its scope needs the label outage-drill:pc\)/);
   // scoped to a drill on another host
   refused(drillRecord({ labels: ['outage-drill:other'] }), /needs the label outage-drill:pc/);
   refused(drillRecord(), /needs the label outage-drill:elsewhere/, { DELIVERY_HOST: 'elsewhere' });
@@ -194,7 +194,44 @@ test('only a record scoped to a drill on this host, whose owner words name the c
   refused(drillRecord({ quote: 'Yes, once (Recommended)', text: 'Yes, once (Recommended)', asked: asked('No') }), /do not name the network cut/);
   // the record still verifies as before, and plan says why a record is refused
   const p = setup();
-  assert.match(p.run(['plan', '--record', REC], { verifyRecord: drillRecord({ labels: [] }), ps: () => '' }).out, new RegExp(`consent: ${REC} refused: ${REC} is not scoped to a drill on this host`));
+  assert.match(p.run(['plan', '--record', REC], { verifyRecord: drillRecord({ labels: [] }), ps: () => '' }).out, new RegExp(`consent: ${REC} refused: ${REC} is not scoped to this drill`));
+});
+
+// hjx.1.6.6.4: the owner's real consent dec-chief-of-staff-000299 is scoped bead:hjx.1.6 (the drill's
+// story), not the outage-drill:<host> label, and operator.js will not re-scope it. So the drill also
+// accepts a verified owner record whose scope names the drill bead given by --bead, or that bead's story
+// (a dotted-prefix ancestor), with the owner's words still naming the cut and the restart and no negation.
+// The label path and the refusal of any other record are unchanged.
+test('hjx.1.6.6.4: a record scoped to the drill bead or its story is consent when --bead names it; without --bead, or for another bead, only the label counts', () => {
+  const BEAD = 'delivery-plugin-planning-hjx.1.6.6';
+  const STORY = 'delivery-plugin-planning-hjx.1.6';
+  const beadRec = (beads) => drillRecord({ labels: [], beads });
+  // scoped to the drill bead itself, named by --bead: consent
+  const a = setup();
+  assert.equal(a.run([...RUN, '--bead', BEAD], { verifyRecord: beadRec([BEAD]) }).code, 0, 'the drill bead in scope with --bead is consent');
+  // scoped to the story (an ancestor of the bead): consent, since the bead hangs under it
+  const b = setup();
+  assert.equal(b.run([...RUN, '--bead', BEAD], { verifyRecord: beadRec([STORY]) }).code, 0, 'the story in scope with --bead is consent');
+  // the same record without --bead: only the label counts, so it is refused
+  const c = setup();
+  const cr = c.run(RUN, { verifyRecord: beadRec([STORY]) });
+  assert.equal(cr.code, 1);
+  assert.match(cr.out, /is not scoped to this drill \(its scope needs the label outage-drill:pc\)/);
+  // --bead names a different bead than the record's scope: refused, and the message names the bead
+  const d = setup();
+  const dr = d.run([...RUN, '--bead', 'delivery-plugin-planning-other.9'], { verifyRecord: beadRec([STORY]) });
+  assert.equal(dr.code, 1);
+  assert.match(dr.out, /needs the label outage-drill:pc, or a bead delivery-plugin-planning-other\.9 or its story/);
+  // a near-miss: the scope bead has the drill bead as a prefix but is a different bead (descendant), not an
+  // ancestor, so it does not name the drill
+  const e = setup();
+  assert.equal(e.run([...RUN, '--bead', STORY], { verifyRecord: beadRec([BEAD]) }).code, 1, 'a descendant bead in scope does not name the drill');
+  // the owner's words still decide: a bead-scoped record whose words do not name both is refused
+  const f = setup();
+  assert.match(f.run([...RUN, '--bead', BEAD], { verifyRecord: drillRecord({ labels: [], beads: [BEAD], quote: 'Yes, restart the machine once' }) }).out, /do not name the network cut/);
+  // the label path still works on its own, with no --bead
+  const g = setup();
+  assert.equal(g.run(RUN, { verifyRecord: drillRecord() }).code, 0, 'the label alone is still consent');
 });
 
 test('run refuses a cut outside 1..30 minutes, a run without --restart, and any role but the Reality Checker', () => {

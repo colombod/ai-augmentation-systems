@@ -30,9 +30,9 @@ function hostMismatch(env, hostname) {
   return env.DELIVERY_HOST && here && env.DELIVERY_HOST !== here ? `DELIVERY_HOST is ${env.DELIVERY_HOST}, but this machine is ${here}` : null;
 }
 
-const USAGE = 'usage: outage-drill.js plan [--cut-minutes <n>] [--record <id>] | outage-drill.js run --record <id> --cut-minutes <n> --restart | outage-drill.js stop --record <id>   (each takes --project <root>)';
+const USAGE = 'usage: outage-drill.js plan [--cut-minutes <n>] [--record <id>] [--bead <id>] | outage-drill.js run --record <id> --cut-minutes <n> --restart [--bead <id>] | outage-drill.js stop --record <id>   (each takes --project <root>)\n  --bead names the drill bead, so a consent record scoped to that bead or its story counts, as the label outage-drill:<host> does';
 const ROLE = 'reality-checker';
-const VALUED = { '--cut-minutes': 'cut', '--record': 'record', '--project': 'project' };
+const VALUED = { '--cut-minutes': 'cut', '--record': 'record', '--project': 'project', '--bead': 'bead' };
 
 function parse(argv) {
   const o = { _: [], restart: false };
@@ -61,18 +61,29 @@ const failText = (r) => String((r && (r.stderr || r.error)) || `exit ${r ? r.sta
 //     answer nor the question may carry a negation. The scope and the statement the agent wrote never
 //     count as the owner's words.
 const DRILL_LABEL = (host) => `outage-drill:${host}`;
+// A scope bead names this drill when it is the drill's own bead (--bead) or one of its ancestors, which
+// is the story the bead hangs under: bead ids are dotted, so an ancestor is a dotted prefix. hjx.1.6.6's
+// story hjx.1.6 names it this way. This is the second way to scope consent (hjx.1.6.6.4): the owner's
+// record of dec-chief-of-staff-000299 is scoped bead:hjx.1.6, which operator.js will not re-scope to the
+// label. The host stays bound by DELIVERY_HOST and this machine's name (hostMismatch), not by the bead.
+const beadNamesDrill = (scopeBeads, bead) => !!bead && scopeBeads.some((s) => s === bead || String(bead).startsWith(`${s}.`));
 const CUT = /\bnetwork\b[^.?!]*\b(?:cut|off|down|disconnect\w*)\b|\b(?:cut|disconnect\w*)\b[^.?!]*\bnetwork\b/i;
 const RESTART = /\b(?:restart\w*|reboot\w*)\b/i;
 // fails closed: without the negation lexicon no words are taken as a yes
 const negated = (q) => { let neg; try { ({ hasNegation: neg } = require('./lib/operator-records.js')); } catch (err) { return true; } return typeof neg !== 'function' || neg(String(q || '').normalize('NFKC').replace(/[‘’ʼ]/g, "'").toLowerCase(), { before: false }); };
-function consent(root, id, verifyRecord, host) {
+function consent(root, id, verifyRecord, host, bead) {
   const verify = verifyRecord || require('./lib/operator-records.js').verifyRecord;
   let chain = [];
   const v = ownerRecord(root, id, (r, i) => { const out = verify(r, i, { noLedger: true }); chain = (out && Array.isArray(out.chain)) ? out.chain : []; return out; });
   if (!v.ok) return v;
   const want = DRILL_LABEL(host);
-  const labels = (v.head && v.head.scope && Array.isArray(v.head.scope.labels)) ? v.head.scope.labels : [];
-  if (!host || !labels.includes(want)) return { ok: false, why: `${id} is not scoped to a drill on this host (its scope needs the label ${want})` };
+  const scope = (v.head && v.head.scope) || {};
+  const labels = Array.isArray(scope.labels) ? scope.labels : [];
+  const beads = Array.isArray(scope.beads) ? scope.beads : [];
+  // the record is scoped to this drill by its label (outage-drill:<host>) or by naming the drill's bead
+  // or story; without --bead only the label counts, as before
+  const scoped = (!!host && labels.includes(want)) || beadNamesDrill(beads, bead);
+  if (!scoped) return { ok: false, why: `${id} is not scoped to this drill (its scope needs the label ${want}${bead ? `, or a bead ${bead} or its story` : ''})` };
   const asked = chain.filter((h) => h && h.kind === 'input' && h.source === 'human' && h.asked && h.asked.contract === 'delivery.confirmation/1'
     && h.asked.multi_select !== true && String(h.asked.answer || '').trim() === String(h.text || '').trim());
   const answers = [v.quote, ...asked.map((h) => h.asked.answer)];
@@ -127,7 +138,7 @@ function plan(who, o, { env = process.env, now, verifyRecord, ps, hostname }) {
     '  not covered: an offline gap longer than the cut (the consent is one cut of up to 30 minutes and one restart)'];
   if (!o.record) lines.push('  consent: no record named (pass --record <id>)');
   else {
-    const v = consent(who.root, o.record, verifyRecord, hostOf(env, hostname));
+    const v = consent(who.root, o.record, verifyRecord, hostOf(env, hostname), o.bead);
     lines.push(v.ok ? `  consent: ${o.record} verifies as the owner's word` : `  consent: ${o.record} refused: ${v.why}`);
     const used = L.drillOf(who.root, o.record);
     lines.push(used ? `  used: yes, a drill on it started ${used.started_at}; run is refused` : '  used: no drill on it yet');
@@ -148,7 +159,7 @@ function plan(who, o, { env = process.env, now, verifyRecord, ps, hostname }) {
 // is cut; a cut that fails never restarts the host and still brings the network back.
 function run(who, o, { env, now, verifyRecord, exec, fs = require('fs'), hostname }) {
   const refuse = (why) => ({ code: 1, out: `outage-drill.js: ${why}` });
-  const v = consent(who.root, o.record, verifyRecord, hostOf(env, hostname));
+  const v = consent(who.root, o.record, verifyRecord, hostOf(env, hostname), o.bead);
   if (!v.ok) return refuse(`refused: ${v.why}; nothing scheduled or cut`);
   const used = L.drillOf(who.root, o.record);
   if (used) return refuse(`refused: ${o.record} was already used for a drill started ${used.started_at}; one drill per consent, nothing scheduled or cut`);

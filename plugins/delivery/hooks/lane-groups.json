@@ -124,9 +124,6 @@
   "assumptions": [
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/assumptions.js", "sub": ["add", "observe", "refute", "ack", "reopen", "retire", "relink"] }
   ],
-  "stories": [
-    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/stories.js", "sub": ["new", "set", "criterion", "section", "index"] }
-  ],
   "probe": [
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/assumptions.js", "sub": ["probe"] }
   ],

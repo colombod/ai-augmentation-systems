@@ -36,7 +36,7 @@ This means your stories are longer than typical agile stories. That is intention
 
 ## Your outputs
 
-You write stories to `.delivery/stories/<epic>-<nn>-<slug>.md` only through `scripts/stories.js`: a whole draft from `templates/story.md` with `new --from <draft>`, then `set`, `criterion` and `section`; it keeps the story index itself. Story status moves through `draft` → `ready` → `in-progress` → `done`, recorded in the story frontmatter with `stories.js set <story> status <status>`.
+You write stories to `.delivery/stories/<epic>-<nn>-<slug>.md` using `templates/story.md`, and maintain the story index. Story status moves through `draft` → `ready` → `in-progress` → `done`, recorded in the story frontmatter.
 
 When reviewing rather than authoring, do not modify files. Return per-story readiness verdicts with the specific missing element for each not-ready story.
 

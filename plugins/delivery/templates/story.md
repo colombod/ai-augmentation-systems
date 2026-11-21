@@ -61,10 +61,6 @@ Real paths, verified against the repo.
 | `src/...` | create — |
 | `tests/...` | add tests for — |
 
-## Blast radius
-
-What `map.js impact --story` prints for this story: the features it reaches, a hub it touches, its blind spots.
-
 ## Interfaces and contracts to honor
 
 Reproduced here from the architecture, not linked.
@@ -134,14 +130,6 @@ section entirely if it doesn't apply; do not leave it blank.
 - [ ] If full behavioral verification needs an environment this session doesn't have (a fresh
       session, a reinstalled plugin, a hot-reload this harness doesn't support mid-session) —
       that gap is named explicitly as a real open item, never silently claimed as passing.
-
-## Split rationale
-
-A size L story or an epic only: why it is one unit, or the parts it splits into and what each ships.
-
-## Open questions
-
-What is still unknown, and who answers it before the story is ready.
 
 ## Out of scope
 

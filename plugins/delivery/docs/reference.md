@@ -458,23 +458,6 @@ Gates keep work flowing. Each check has one of three levels:
   refusal for starting the next wave arrives with waves (phase 2). `bug` and `security` beads are
   exempt.
 
-**Story files change through `stories.js`.** The gates read a story as a recipe, so each change to one
-is checked when it is made, with the gates' own parser, and a bad value is refused naming its field,
-with the file left byte for byte as it was (exit 1). `node ${CLAUDE_PLUGIN_ROOT}/scripts/stories.js new --from <draft> [--file <name>.md]`
-creates a story from a whole draft written to a temporary file first, and writes nothing unless every
-field passes: a frontmatter value outside the template's (a size other than S, M or L, a status other
-than draft, ready, in-progress, done or superseded), a criterion holding text in angle brackets outside
-a code span, or a criterion whose probe is missing or names no `where:` or no `by: test|reality-check`.
-After that, `set <story> <field> <value>` changes one frontmatter field, `criterion <story> <n> --text '...' --probe '...'`
-replaces criterion n or adds the next one and leaves every other criterion line as it was (so their
-hashes and evidence rows stand), and `section <story> --heading '<heading>' (--body '...' | --body-file <f>)`
-writes a prose section under a heading of `templates/story.md`, matched on the text before any `:` or
-`(`. `<story>` is a file name or a story id. The command rewrites the story index
-(`.delivery/stories/README.md`) on `new` and on a status, title, phase or id change, and `index`
-rewrites it on demand; `plan-sync.js apply` moves a status through the same writer after a merge.
-Only the Delivery Manager runs it in a role session. Every lane, `any` included, refuses a Write, Edit,
-redirect, `sed -i`, `cp` or `mv` onto a story file or the index, naming the command.
-
 **The warnings ledger.** `.delivery/warnings/<instance>.ndjson` in the project repo, one file per
 instance (a session with no role writes `local-<host hash>.ndjson`), so sessions on different hosts
 never write the same file. Append-only: `{type: "warning", id: "w-<instance>-<time><random>", kind,
@@ -1692,14 +1675,20 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   nothing is scheduled or cut. `DELIVERY_HOST`, when set, must name this machine (its short hostname), and `plan` says so when
   it does not. It refuses a record that is not the owner's
   verified word, a cut outside 1 to 30 minutes, a run without `--restart`, and a second drill on the same
-  record. The record must be consent to this drill: its scope carries the label `outage-drill:<host>`
-  for the host the drill would cut, and the owner's own words name the network cut and the restart
+  record. The record must be consent to this drill, scoped one of two ways: its scope carries the label
+  `outage-drill:<host>` for the host the drill would cut, or, when the run is given `--bead <id>`, its
+  scope names that drill bead or the story it hangs under (an ancestor by dotted id). The second way is
+  for the owner's consent recorded against the drill's bead rather than the label: the owner answers a
+  question scoped to the bead (`bead:<id>`), which `operator.js` will not re-scope to the label, so the
+  Reality Checker passes `--bead` the drill bead instead. Either way the owner's own words name the
+  network cut and the restart
   with no negation. Those words are the verified quote, or, for an answer to a confirmation, the
   question the owner was shown and the answer they picked, captured with their input; a question that
   negates the cut or the restart ("but do not restart", "without cutting") is refused as negated owner
   words are; the scope and the
   statement the recording agent wrote never count as the owner's words. Any other verified owner
-  record is refused. Before it schedules anything a run claims the record with an exclusive
+  record is refused. The host stays bound by `DELIVERY_HOST` and this machine's name whichever way the
+  record is scoped, so a bead-scoped consent still cuts only this host. Before it schedules anything a run claims the record with an exclusive
   `drill-<id>.claim` file beside `drills.ndjson`, so a second run started at the same time is refused; a
   run that fails before its row is written gives the claim back, and one killed between the two leaves
   it, for `plan` to show. The cut drops the session that runs it, so in this order it schedules the restore
