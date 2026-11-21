@@ -158,7 +158,6 @@ function contextOf(rows) {
   return null;
 }
 
-// { at, resetsAt, window, text } when the transcript's last word is a usage limit; null otherwise.
 // the newest reply a transcript tail holds (ms), -Infinity for none: a turn the session took. An API
 // error row is no turn; a hook's record, an attachment or the owner's input is not one either.
 function lastTurnOf(rows) {
@@ -167,6 +166,7 @@ function lastTurnOf(rows) {
   return at;
 }
 
+// { at, resetsAt, window, text } when the transcript's last word is a usage limit; null otherwise.
 function limitOf(rows) {
   if (!Array.isArray(rows)) return null;
   let i = rows.length - 1;
