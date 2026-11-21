@@ -300,8 +300,17 @@ function registerScope(root, unit, sdFetch, now) {
   } catch (err) { /* the next pass registers it */ }
 }
 
-function restartStale(root, f, a, { env, bin, spawn, stop, relist, systemdRun = null, restartUnit = null, unitSettle = null, touchLock = null, sdFetch }) {
+// The scope a role's session runs in, as the ledger knows it: the unit of its last start or restart that
+// ran, when that was a scope (a row through a user unit, or a plain start, names none).
+function lastScope(root, instance) {
+  const row = R.ledger(root).filter((x) => x.instance === instance && (x.type === 'start' || x.type === 'restart') && !x.error).pop();
+  return row && row.unit && row.via !== 'unit' ? row.unit : null;
+}
+
+function restartStale(root, f, a, { env, bin, spawn, stop, relist, systemdRun = null, restartUnit = null, unitSettle = null, touchLock = null, sdFetch: givenFetch }) {
   const out = {};
+  const SD = require('./lib/service-directory.js');
+  const sdFetch = SD.passFetch(givenFetch);
   for (const i of a.stale.filter((x) => !x.stale.skip && !x.stale.held)) {
     const st = i.stale;
     const now = relist();
@@ -332,6 +341,15 @@ function restartStale(root, f, a, { env, bin, spawn, stop, relist, systemdRun = 
       R.record(root, { type: 'restart', at, instance: i.instance, unit: st.unit, via: 'unit', session_id: st.remoteId, from_session: st.session, from: st.version, to: st.installed, ...forced });
       const down = settleUnit(root, unitSettle, { instance: i.instance, unit: st.unit, at, what: 'restart', touchLock });
       out[i.instance] = down ? { why: `${down}; a failed start, retried at the next pass within the daily cap`, failed: true } : { unit: st.unit };
+      continue;
+    }
+    // a session outside a user unit is stopped only after the directory is read; refused, nothing was
+    // stopped, so no cap counts it
+    const scope = lastScope(root, i.instance);
+    const g = SD.beforeReplace(scope, { fetch: sdFetch, env });
+    if (!g.ok) {
+      R.record(root, { type: 'restart-refused', at, instance: i.instance, ...(scope ? { unit: SD.scopeName(scope) } : {}), server: st.server, from: st.version, to: st.installed, why: g.why, ...forced });
+      out[i.instance] = { why: `its session was not restarted: ${g.why}` };
       continue;
     }
     if (!stop(st.server, st.pid)) {

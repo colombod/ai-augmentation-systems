@@ -181,6 +181,24 @@ test('a directory that lost every entry: the missing names are registered again 
   assert.equal(SD.directoryReset([], { fetch: fakeDirectory({ registered: [HM], registeredAt: '2026-11-16T07:00:00Z' }).fetch, now }), false);
 });
 
+// The first registration after a wipe stores the loss before its POST: its entry would otherwise hide the
+// wipe from the next read, and an older name would read as removed.
+test('a new scope registered first after a wipe does not hide the loss: an older listed name is still lost, not removed', () => {
+  const d = fakeDirectory({ registered: [HM, TICK], registeredAt: new Date(Date.now() - 60e3).toISOString() });
+  assert.deepEqual(SD.register('delivery-role-builder-9.scope', { fetch: d.fetch }), { ok: true });
+  assert.equal(SD.removedByOther(HM, { fetch: d.fetch, entries: d.entries }), false);
+  assert.deepEqual(SD.beforeChange(HM, { action: 'restart', fetch: d.fetch }), { ok: true });
+  assert.equal(d.entry(HM).owner, 'delivery plugin');
+  // one read used for several names: the first one registered is not stamped as older than the loss
+  const r = fakeDirectory({ registered: [HM, TICK], registeredAt: new Date(Date.now() - 60e3).toISOString() });
+  const entries = [];
+  assert.deepEqual(SD.register(HM, { fetch: r.fetch, entries }), { ok: true });
+  const first = r.names()[HM].at;
+  assert.deepEqual(SD.register(TICK, { fetch: r.fetch, entries }), { ok: true });
+  assert.ok(entries.some((e) => e.name === HM), 'the read shows what was just registered');
+  assert.ok(Date.parse(first) >= Date.parse(JSON.parse(fs.readFileSync(r.fetch.namesFile, 'utf8'))['@lost_at']), 'the loss is not stamped after it');
+});
+
 // register refuses a removed name as it does a held one: an install or a pass never brings it back
 test('register does not post a name the plugin registered whose entry someone removed; a free or expired name is posted', () => {
   const now = '2026-11-16T09:20:00Z';

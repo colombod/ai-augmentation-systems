@@ -157,8 +157,14 @@ function register(unit, o = {}) {
   if (e && e.owner !== OWNER) return { ok: false, held: e.owner || null, why: `${heldWhy(unit, e)}, so the plugin leaves that entry as it is` };
   // one the plugin registered that someone removed is not posted again either (an install, a pass)
   if (!e && removedByOther(unit, { ...o, entries })) return { ok: false, removed: true, why: removedWhy(unit) };
+  // the loss is stored before the POST: once this entry is listed, the next read no longer shows a
+  // directory with none of the plugin's entries, and the older names would read as removed
+  if (directoryReset(entries, o)) markLost(o);
   const r = call(o.fetch, 'POST', '/api/services', entryFor(unit, o.description));
   if (r.status !== 200) return { ok: false, why: why(r) };
+  // a read the caller goes on using shows this entry too, so its next name does not see the loss again
+  // and stamp it later than this registration
+  if (o.entries && !e) o.entries.push(entryFor(unit, o.description));
   const w = remembered(unit, o);
   return w ? { ok: true, unremembered: w } : { ok: true };
 }
@@ -227,6 +233,21 @@ function beforeChange(unit, o = {}) {
   return { ok: true };
 }
 
+// Before a running role session outside a user unit is stopped and replaced. The directory must be
+// readable. scope: the scope its last start or restart ran in, when known: another owner's entry or one
+// the plugin registered that someone removed refuses, as beforeChange does. A scope with no entry is not
+// registered here: the session is about to leave it. -> { ok: true } | { ok: false, why }
+function beforeReplace(scope, o = {}) {
+  const l = local({ fetch: o.fetch });
+  if (l.unreadable) return { ok: false, why: `${l.unreadable}, and a restart of a running session is not made without reading the directory first` };
+  if (!scope) return { ok: true };
+  const unit = scopeName(scope);
+  const e = l.entries.find((x) => x && x.name === unit);
+  if (e && e.owner !== OWNER) return { ok: false, why: `${heldWhy(unit, e)}, so the plugin does not restart it` };
+  if (!e && removedByOther(unit, { ...o, entries: l.entries })) return { ok: false, removed: true, why: `${removedWhy(unit)}, and the plugin does not restart it` };
+  return { ok: true };
+}
+
 // One pass's requests (a watchdog run): after the first that cannot reach the directory, the rest of the
 // pass answers the same at once, so a directory that hangs costs one timeout per pass, not one per call.
 function passFetch(fetch) {
@@ -250,7 +271,7 @@ function unreachableRecorder(root, { now, raisedBy = 'host job' } = {}) {
   };
 }
 
-module.exports = { BASE, OWNER, CATEGORY, TAGS, TTL, HM_UNITS, WATCHDOG_UNIT, isPluginUnit, scopeName, entryFor, describe, defaultFetch, passFetch, namesFile, registeredNames, remember, forget, removedByOther, directoryReset, register, remove, heartbeat, local, health, beforeChange, unreachableRecorder };
+module.exports = { BASE, OWNER, CATEGORY, TAGS, TTL, HM_UNITS, WATCHDOG_UNIT, isPluginUnit, scopeName, entryFor, describe, defaultFetch, passFetch, namesFile, registeredNames, remember, forget, removedByOther, directoryReset, register, remove, heartbeat, local, health, beforeChange, beforeReplace, unreachableRecorder };
 
 // The child the default fetch runs: one request, its status and JSON body on stdout.
 if (require.main === module) {

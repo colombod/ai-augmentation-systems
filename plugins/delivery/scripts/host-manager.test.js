@@ -1992,6 +1992,7 @@ test('the owner\'s restart reads each host job unit\'s directory entry first: a 
   const n = machine({ beads: WORK });
   const nb = tag(n.beta.root);
   SD.remember(`delivery-watchdog-${nb}.timer`, { fetch: n.dir.fetch });
+  n.dir.entries.push(SD.entryFor(HM.TICK_TIMER)); // the directory still lists the plugin's: it lost nothing
   const rn = n.run(['restart']);
   assert.ok(!n.sd.calls.includes(`${SC} restart delivery-watchdog-${nb}.timer`), n.sd.calls.join('\n'));
   assert.equal(n.dir.entry(`delivery-watchdog-${nb}.timer`), null, 'not registered again');
