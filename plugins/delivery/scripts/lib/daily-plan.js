@@ -75,6 +75,64 @@ function ownerQuestions(root, pending) {
   return p.open_questions || [];
 }
 
+// Admission as the claim check decides it (bd-guard): the stop-the-line findings (a stopped area takes
+// only its linked fixes, a red main only its fixes), the assumption gate, and the area pause on a refuted
+// external assumption, each story read against its own initiative (Copilot 778). The plan and the
+// Delivery Manager's pass (lib/role-watch.js) offer only what this admits, so neither offers a claim the
+// hook refuses, nor hides recovery work the hook allows (Copilot 459). The waves, budget and new-area
+// refusals (waves.js claimFindings: wave-half-built, area-unchecked, new-area-near-limit, new-area) are
+// the hook's too (rv-221). Returns (bead, taken = []) => boolean, where taken lists the beads already
+// given out in the same pass: as the hook budgets the starts earlier in one command (bd-guard projected),
+// each counts as in progress and its share comes off the free budget, so one pass never hands out more
+// than the hook would let start.
+function claimAdmission(root, { bd, team, now, stories, beadOf, ctx, ci, verifyRecord } = {}) {
+  const W = require('./waves.js');
+  const A = require('./assumptions.js');
+  const AN = require('./andon.js');
+  const B = require('./budget.js');
+  const all = stories || bd.list({ label: 'story', all: true }) || [];
+  const known = new Map(all.map((b) => [b.id, b]));
+  const show = beadOf || ((id) => known.get(id) || safe(() => bd.show(id), null));
+  const c = ctx || W.contextFor(root, { bd, team, beads: all, now, verifyRecord });
+  const ciState = ci || AN.ciState(root, { team });
+  const regs = A.registers(root, { bd, verifyRecord });
+  const base = c.budget || { set: false };
+  // the share a start holds, as the hook projects it: none for a story already built
+  const shareOf = (b) => (base.set && !W.built(b) ? B.estimate(b, { t: base.table, team }).units * (1 + base.table.reserve) : 0);
+  const waveBlocks = (b, taken) => {
+    const ids = new Set(taken.map((x) => x.id));
+    const seen = all.map((s) => (ids.has(s.id) ? { ...s, status: 'in_progress' } : s));
+    const extra = taken.reduce((n, x) => n + shareOf(x), 0);
+    const st = base.set && extra ? { ...base, inflightNeed: base.inflightNeed + extra, free: base.free - extra, nearLimit: base.free - extra < base.table.units.S * (1 + base.table.reserve) } : base;
+    return W.claimFindings(b, { ...c, beads: seen, budget: st, fix: c.fixOf(b), reason: c.reasonOf(G.areaOf(b)) });
+  };
+  const rows = (s) => regs.rowsFor(G.initiativeOf(s));
+  // a child of a story answers to its story's assumptions, for the criterion it serves (or, naming none,
+  // for all), and to its story's area pause with its own labels counted (a fix label goes on): as the
+  // claim hook reads it (bd-guard, Copilot 911; rv-221 round 3)
+  // the story id the register names: the bead's, else its story file's, as the claim hook falls back
+  const storyIdOf = (s) => String((s.metadata || {}).story || ((c.storyOf && c.storyOf(s)) || { meta: {} }).meta.id || '');
+  const parentGates = (b, parent) => {
+    return [...A.forStory(root, parent, { bd, team, verifyRecord, atClaim: true, regs, storyId: storyIdOf(parent), criterion: (b.metadata || {}).criterion }).findings,
+      A.areaAndon({ ...parent, labels: [...(parent.labels || []), ...(b.labels || [])] }, all, rows)].filter(Boolean);
+  };
+  return (b, taken = []) => {
+    if (!b) return false;
+    const parent = b.parent ? show(b.parent) : null;
+    const story = G.isStoryBead(b);
+    const blocks = [...AN.claimFindings(b, { root, parent, fix: c.fixOf(b), stories: all, beadOf: show, team, now, ci: ciState }),
+      ...(story ? A.forStory(root, b, { bd, team, verifyRecord, atClaim: true, regs, storyId: storyIdOf(b) }).findings : []),
+      ...(story ? [A.areaAndon(b, all, rows)].filter(Boolean) : []),
+      ...(!story && parent && G.isStoryBead(parent) ? parentGates(b, parent) : []),
+      // the claim check's own ready gate (bd-guard readyFindings and claimDivergence: criteria changed
+      // since ready, an unknown or missing surface, no planned check script, a child naming a criterion
+      // its story lacks), as waves.rank reads it for the plan (rv-221 round 2)
+      ...(c.gateBlocks ? c.gateBlocks(b) : []),
+      ...waveBlocks(b, taken)].filter((x) => x.level === 'block');
+    return !blocks.length;
+  };
+}
+
 // Everything the sheet, the plan and the brief read. deps: bd (lib/bd.js store), team, now, gh (for
 // pull requests), ci (the main build state), budget, verifyRecord. Throws a ReadError when bd, the owner
 // queue, the operator records or the review records cannot be read, so no view stands on a guess.
@@ -120,15 +178,10 @@ function facts(root, { bd, team, now, gh, ci, budget, budgetOpts, verifyRecord, 
   // admission as the claim check decides it (bd-guard): the stop-the-line findings and the assumption
   // gate on top of select's own, so the plan never offers a claim the hook refuses, nor hides recovery
   // work the hook allows (Copilot 459)
-  const regsAt = A.registers(root, { bd, verifyRecord });
+  const admits = claimAdmission(root, { bd, team, now, stories, beadOf, ctx, ci: ciState, verifyRecord });
   const admitted = (r) => {
     const b = byId.get(r.id) || known.get(r.id);
-    if (!b) return false;
-    const blocks = [...AN.claimFindings(b, { root, parent: b.parent ? beadOf(b.parent) : null, fix: ctx.fixOf(b), stories, beadOf, team, now, ci: ciState }),
-      ...(G.isStoryBead(b) ? A.forStory(root, b, { bd, team, verifyRecord, atClaim: true, regs: regsAt }).findings : []),
-      // the area pause on a refuted external assumption, each story read against its own initiative (Copilot 778)
-      ...(G.isStoryBead(b) ? [A.areaAndon(b, stories, (s) => regsAt.rowsFor(G.initiativeOf(s)))].filter(Boolean) : [])].filter((x) => x.level === 'block');
-    return !blocks.length;
+    return Boolean(b) && admits(b);
   };
   const next = ranked.filter((r) => !r.refused && admitted(r)).slice(0, 3);
   const prs = must(() => require('../team-status.js').reviewStatus(root, { team, gh }), 'the review records');
@@ -481,4 +534,4 @@ function sheet(f, { verifyRecord } = {}) {
   return out;
 }
 
-module.exports = { ownerQuestions, installHoldOf, restartLine, isRecovery, resumesAt, stallItems, ReadError, REL, SECTIONS, ROUTES, ACCEPTANCE, IMPLEMENTATION, ROLE_WORD, routeOf, facts, items, record, latest, previous, rowsOf, recipient, carries, noteSent, unrouted, brief, sheet, today };
+module.exports = { claimAdmission, ownerQuestions, installHoldOf, restartLine, isRecovery, resumesAt, stallItems, ReadError, REL, SECTIONS, ROUTES, ACCEPTANCE, IMPLEMENTATION, ROLE_WORD, routeOf, facts, items, record, latest, previous, rowsOf, recipient, carries, noteSent, unrouted, brief, sheet, today };
