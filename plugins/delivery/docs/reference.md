@@ -1436,7 +1436,14 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   id the roster has. A role with a live session is never given a second one. A busy one is left to
   work; an idle one is handed the wake as a message on its own socket
   (`<runtime dir>/cc-socks/<pid>.sock`, `lib/session-message.js`), sent under the host job's name,
-  `Watchdog (a host job, not the owner)`. The hand-over is logged as a wake (mode `message`), so the
+  `Watchdog (a host job, not the owner)`. A message held for a role while its session was not running
+  is kept whole in its inbox file, `watchdog/inbox/<role>.ndjson` among the project's records
+  (`lib/inbox.js`), up to 65536 UTF-16 code units, with its real length past that (the sender is told
+  only part was kept), and reaches the role whole in its wake up to 4000 code units; a longer one, a
+  send-back note and a holder's blocker note past that length end `[shortened: N of M characters; ...]`,
+  counted on the stored text and never splitting a character, naming the line of that file, or the bead,
+  that holds the full text, and with more than five held the wake names the lines of the earlier ones.
+  The hand-over is logged as a wake (mode `message`), so the
   caps and the doubling hold; when the socket does not take it, the line says so and nothing is
   started. The frame format is Claude Code's own and undocumented (read on 2.1.318), and a session in
   another permission mode may hold a peer message for its user's approval, so a hand-over is not proof

@@ -26,10 +26,13 @@ function keepUndelivered(input, valid, now) {
   const root = valid.marker.project_root;
   IB.queue(root, { to: r.to, from: valid.marker.instance, summary: ti.summary, message: ti.message, at: now });
   const label = r.via === 'steward' ? `${r.to} (this host's steward)` : r.to;
+  // a message over the inbox's bound is kept only in part (rv-224): the sender is told, so it can send the rest
+  const size = String(ti.message || '').length;
+  const part = size > IB.MAX_TEXT ? ` Only its first ${IB.MAX_TEXT} of ${size} characters were kept: send the rest in another message, or put it in a file and name the file.` : '';
   let started = true;
   try { started = Boolean(require('../../scripts/lib/roster.js').readRoster(root).instances[r.to]); } catch (err) { /* unreadable: assume started */ }
   if (!started) return `${label} has never been started on this team, so the message is kept for it but the watchdog cannot wake it: nobody reads it until ${r.to} is started (start.js prints its command). Do not wait on it; record the blocker on its bead (bd update <id> --append-notes "...") and carry on.`;
-  return `${label} is not running, so the message is kept for it: the watchdog wakes ${r.to} with it at its next run. Carry on; do not ask the operator to pass it on (team rule 0).`;
+  return `${label} is not running, so the message is kept for it: the watchdog wakes ${r.to} with it at its next run.${part} Carry on; do not ask the operator to pass it on (team rule 0).`;
 }
 
 // { context } or null. Never throws.
