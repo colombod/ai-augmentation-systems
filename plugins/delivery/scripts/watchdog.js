@@ -82,7 +82,9 @@ function roleContext(cwd, env) {
 
 function check(root, { bd, now, team, rows, record = true }) {
   const store = bd || require('./lib/bd.js').makeBd({ cwd: root, timeoutMs: 10000 });
-  const res = WD.read(root, { bd: store, now, team, rows });
+  // one slow bd answer is no outage: a read that failed is tried once more before the pass says so
+  let res = WD.read(root, { bd: store, now, team, rows });
+  if (res.unreadable) res = WD.read(root, { bd: store, now, team, rows });
   if (record && !res.unreadable) WD.recordAll(root, res, res.polls, { now });
   // a handed-over step the record shows taken is closed here, with no wake (lib/handoff.js); a file
   // another writer holds is left for the next pass, which closes it then: the pass itself goes on
@@ -93,7 +95,8 @@ function check(root, { bd, now, team, rows, record = true }) {
 }
 
 function checkLines(res) {
-  if (res.unreadable) return [`Watchdog: the record could not be read (${res.unreadable}); no stall is reported. Check: bd where`];
+  // quiet is a failure: a pass that read nothing cannot say the team is fine, or that nothing has stalled
+  if (res.unreadable) return [`Watchdog: the record could not be read after a second try (${res.unreadable}), so the team state is unknown: whether work is moving or stalled cannot be said. Check: bd where`];
   if (res.paused) return [`Paused by the owner (${res.paused === true ? 'a verified pause' : res.paused}): no stall is raised and nobody is woken.`];
   const lines = res.stalls.map((s) => s.line);
   lines.push(...res.polls.map((p) => p.line));
@@ -214,6 +217,35 @@ const endedPids = (kicks) => new Set(kicks.map((k) => Number((/a wake ended \(pi
 // the plugin's self-update, so both read a reused or unreadable pid the same way (hjx.1.6.20).
 function wakeAlive(ended, now) {
   return (pid, since) => !ended.has(pid) && WD.pidAlive(pid, { since, now });
+}
+
+// The Chief of Staff is told once per outage that the record cannot be read: a row opens the outage and a
+// readable pass closes it. wake() sends nothing while the record is unreadable, so a live Chief of Staff is
+// messaged on its socket; with none, or one that does not take it, the alert is kept for its next start.
+// -> a line for the pass, or null.
+function alertUnreadable(root, res, { team, now, env = process.env, live, deliver = defaultDeliver }) {
+  const at = now || new Date().toISOString();
+  const last = WD.logRows(root).filter((r) => r.type === 'record-unreadable' || r.type === 'record-readable').pop();
+  const open = Boolean(last && last.type === 'record-unreadable');
+  if (!res.unreadable) {
+    if (open) WD.log(root, { type: 'record-readable', at });
+    return null;
+  }
+  if (open) return null;
+  const chief = WD.chiefOf(team);
+  const message = `The watchdog (a host job) here: it could not read the team's record after a second try (${res.unreadable}), so the team state is unknown: it cannot say whether work is moving or stalled, and it wakes nobody for a stall until it can read it. Check: bd where.`;
+  let how = null;
+  try {
+    const dir = (require('./lib/roster.js').readRoster(root).instances[chief] || {}).role_dir;
+    const sessions = live !== undefined ? live : liveSessions(env.DELIVERY_CLAUDE_BIN || 'claude', env);
+    const s = dir ? (sessions || []).find((x) => x && x.cwd === dir && x.pid) : null;
+    if (s && deliver(require('./lib/session-message.js').socketOf(Number(s.pid), env), message).ok) how = 'message';
+  } catch (err) { how = null; }
+  try {
+    if (!how) { require('./lib/inbox.js').queue(root, { to: chief, from: 'watchdog', summary: 'the team record cannot be read', message, at }); how = 'kept'; }
+    WD.log(root, { type: 'record-unreadable', at, why: res.unreadable, to: chief, how });
+  } catch (err) { return `Alert: ${chief} could not be told that the record is unreadable (${String(err.message || err).split('\n')[0].slice(0, 200)}); the next pass tries again.`; }
+  return how === 'message' ? `Alert: ${chief} was told the record cannot be read.` : `Alert: kept for ${chief}: the record cannot be read.`;
 }
 
 function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWake, ended = new Set(), deliver = defaultDeliver, stopWake = WD.stopWake, home = os.homedir(), sdFetch }) {
@@ -834,6 +866,10 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
     }
     let swept = kicked.length ? [`Kicked: ${kicked.length} (${[...new Set(kicked.map((k) => k.replace(/^\S+\s*/, '').replace(/ \(pid \d+\)$/, '') || 'a kick'))].join('; ').slice(0, 300)})`] : [];
     if (cmd === 'run' && first) {
+      if (!o.dryRun) {
+        const told = alertUnreadable(who.root, res, { team: who.team, now, env, live, ...(deliver ? { deliver } : {}) });
+        if (told) swept.push(told);
+      }
       // a job installed before the kick watch existed gets it here, so an update needs no reinstall
       const kw = o.dryRun ? null : ensureKickWatch(who.root, { home, exec });
       if (kw) swept.push(kw);

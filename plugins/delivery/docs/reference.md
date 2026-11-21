@@ -1354,7 +1354,10 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   Each is a warning in the ledger (`idle`, `stall`, `p0-unclaimed`, `usage-limit`, `install-refused`, `tight-poll`), once per
   stall, in this host's own ledger file. A review record that cannot be read is a line of its own
   ("Unreadable: the review record of PR <n> ...; a stall waiting on it is not known"), and a pass with
-  one never says "No stall: work is moving". Nothing is paused or blocked. An owner pause that verifies silences all of it, the polling
+  one never says "No stall: work is moving". A pass whose read of the beads fails or times out tries once
+  more; if that fails too it says the record could not be read and the team state is unknown, never that
+  nothing has stalled, and `watchdog.js run` tells the Chief of Staff once per outage (on its live session's
+  socket, else kept for it), again only after a pass has read the record. Nothing is paused or blocked. An owner pause that verifies silences all of it, the polling
   warnings included; an open andon (a failed check row) silences idle, quiet and P0 stalls for beads in
   its area only (they wait for its fix); a message telling the team to stop is not a pause. `plan.js
   today` lists stalls first ("0. Stalls first"), each routed to the session the watchdog wakes for it

@@ -2493,3 +2493,73 @@ test('5q3 rv-224: a sender is told when a message over the inbox bound was kept 
   assert.match(big.context, new RegExp(`Only its first ${IB.MAX_TEXT} of ${IB.MAX_TEXT + 10} characters were kept`));
   assert.doesNotMatch(send('short').context, /Only its first/, 'a message within the bound says nothing of the kind');
 });
+
+// A pass that cannot read the record knows nothing about the team: quiet would read as healthy.
+const timedOutBd = (h, failures) => {
+  const ok = memStore(h);
+  const c = { reads: 0 };
+  return { c, store: { ...ok, list: (...x) => { c.reads += 1; if (c.reads <= failures()) throw Object.assign(new Error('bd list: spawnSync bd ETIMEDOUT'), { code: 'ETIMEDOUT' }); return ok.list(...x); } } };
+};
+const unreadableRows = (h) => WD.logRows(h.root).filter((x) => x.type === 'record-unreadable' || x.type === 'record-readable').map((x) => x.type);
+
+test('a bd read that times out once is tried again: the pass reads the team, and nobody is alerted', () => {
+  const t0 = '2026-11-21T18:00:00Z';
+  const h = harness({});
+  session(h, 'chief-of-staff', { seen: t0 });
+  const f = timedOutBd(h, () => 1);
+  const sent = [];
+  const r = at(h, t0, ['run'], { spawn: spawner(), bd: f.store, live: [], deliver: (x, m) => { sent.push(m); return { ok: true }; } });
+  assert.equal(f.c.reads, 2, 'one retry');
+  assert.doesNotMatch(r.out, /could not be read|state is unknown/);
+  assert.deepEqual(sent, []);
+  assert.deepEqual(unreadableRows(h), []);
+});
+
+test('a bd read that keeps timing out: the team state is unknown, never no stall; the Chief of Staff is told once per outage', () => {
+  const t0 = '2026-11-21T18:00:00Z';
+  const later = (m) => iso(Date.parse(t0) + m * 60e3);
+  const h = harness({});
+  session(h, 'chief-of-staff', { seen: t0 });
+  const live = [{ sessionId: 'sess-cos', cwd: h.roleDir('chief-of-staff'), status: 'idle', pid: 4321 }];
+  const sent = [];
+  const deliver = (socket, m) => { sent.push({ socket, m }); return { ok: true }; };
+  let down = true;
+  const f = timedOutBd(h, () => (down ? Infinity : 0));
+  const run = (m) => at(h, later(m), ['run'], { spawn: spawner(), bd: f.store, live, deliver, env: { ...fakeEnv(h), XDG_RUNTIME_DIR: '/r' } });
+  const first = run(0);
+  assert.equal(f.c.reads, 2, 'tried twice');
+  assert.match(first.out, /could not be read after a second try \(bd list: spawnSync bd ETIMEDOUT\).*team state is unknown/);
+  assert.doesNotMatch(first.out, /no stall/i);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].socket, '/r/cc-socks/4321.sock');
+  assert.match(sent[0].m, /could not read the team's record.*team state is unknown/);
+  assert.doesNotMatch(run(15).out, /no stall/i);
+  assert.equal(sent.length, 1, 'once for this outage');
+  down = false;
+  assert.doesNotMatch(run(30).out, /state is unknown/);
+  down = true;
+  run(45);
+  assert.equal(sent.length, 2, 'a new outage is told again');
+  assert.deepEqual(unreadableRows(h), ['record-unreadable', 'record-readable', 'record-unreadable']);
+  // what watchdog.js check prints says the same, and alerts nobody
+  assert.doesNotMatch(at(h, later(50), ['check'], { bd: f.store, live, deliver }).out, /no stall/i);
+  assert.equal(sent.length, 2);
+});
+
+test('with the record unreadable and no live Chief of Staff, or a socket that refuses, the alert is kept for it; a dry run alerts nobody', () => {
+  const t0 = '2026-11-21T18:00:00Z';
+  const IB = require('./lib/inbox.js');
+  for (const [live, deliver] of [[[], () => { throw new Error('no session to reach'); }], [null, () => ({ ok: false, why: 'ECONNREFUSED' })]]) {
+    const h = harness({});
+    session(h, 'chief-of-staff', { seen: t0 });
+    const open = live || [{ sessionId: 'sess-cos', cwd: h.roleDir('chief-of-staff'), status: 'idle', pid: 4321 }];
+    const f = timedOutBd(h, () => Infinity);
+    at(h, t0, ['run', '--dry-run'], { spawn: spawner(), bd: f.store, live: open, deliver });
+    assert.deepEqual(IB.pending(h.root), [], 'a dry run keeps nothing');
+    assert.deepEqual(unreadableRows(h), []);
+    at(h, t0, ['run'], { spawn: spawner(), bd: f.store, live: open, deliver });
+    assert.equal(IB.pending(h.root).length, 1, JSON.stringify(IB.pending(h.root)));
+    assert.match(JSON.stringify(IB.pending(h.root)), /chief-of-staff/);
+    assert.deepEqual(unreadableRows(h), ['record-unreadable']);
+  }
+});
