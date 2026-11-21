@@ -61,12 +61,14 @@ const failText = (r) => String((r && (r.stderr || r.error)) || `exit ${r ? r.sta
 //     answer nor the question may carry a negation. The scope and the statement the agent wrote never
 //     count as the owner's words.
 const DRILL_LABEL = (host) => `outage-drill:${host}`;
-// A scope bead names this drill when it is the drill's own bead (--bead) or one of its ancestors, which
-// is the story the bead hangs under: bead ids are dotted, so an ancestor is a dotted prefix. hjx.1.6.6's
-// story hjx.1.6 names it this way. This is the second way to scope consent (hjx.1.6.6.4): the owner's
-// record of dec-chief-of-staff-000299 is scoped bead:hjx.1.6, which operator.js will not re-scope to the
-// label. The host stays bound by DELIVERY_HOST and this machine's name (hostMismatch), not by the bead.
-const beadNamesDrill = (scopeBeads, bead) => !!bead && scopeBeads.some((s) => s === bead || String(bead).startsWith(`${s}.`));
+// A scope bead names this drill when it is the drill's own bead (--bead) or its direct story, the bead one
+// dotted level up (hjx.1.6.6's story is hjx.1.6). Only those two: a broader ancestor (hjx.1, hjx) would
+// widen what can authorise a network cut and a host restart, so it does not count. This is the second way
+// to scope consent (hjx.1.6.6.4): the owner's record of dec-chief-of-staff-000299 is scoped bead:hjx.1.6,
+// which operator.js will not re-scope to the label. The host stays bound by DELIVERY_HOST and this
+// machine's name (hostMismatch), not by the bead.
+const storyOf = (bead) => { const s = String(bead); const i = s.lastIndexOf('.'); return i > 0 ? s.slice(0, i) : null; };
+const beadNamesDrill = (scopeBeads, bead) => !!bead && scopeBeads.some((s) => s === bead || s === storyOf(bead));
 const CUT = /\bnetwork\b[^.?!]*\b(?:cut|off|down|disconnect\w*)\b|\b(?:cut|disconnect\w*)\b[^.?!]*\bnetwork\b/i;
 const RESTART = /\b(?:restart\w*|reboot\w*)\b/i;
 // fails closed: without the negation lexicon no words are taken as a yes

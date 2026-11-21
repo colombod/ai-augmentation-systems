@@ -1677,7 +1677,7 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   verified word, a cut outside 1 to 30 minutes, a run without `--restart`, and a second drill on the same
   record. The record must be consent to this drill, scoped one of two ways: its scope carries the label
   `outage-drill:<host>` for the host the drill would cut, or, when the run is given `--bead <id>`, its
-  scope names that drill bead or the story it hangs under (an ancestor by dotted id). The second way is
+  scope names that drill bead or its direct story (the bead one dotted level up, not a broader ancestor). The second way is
   for the owner's consent recorded against the drill's bead rather than the label: the owner answers a
   question scoped to the bead (`bead:<id>`), which `operator.js` will not re-scope to the label, so the
   Reality Checker passes `--bead` the drill bead instead. Either way the owner's own words name the

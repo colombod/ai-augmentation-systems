@@ -209,9 +209,15 @@ test('hjx.1.6.6.4: a record scoped to the drill bead or its story is consent whe
   // scoped to the drill bead itself, named by --bead: consent
   const a = setup();
   assert.equal(a.run([...RUN, '--bead', BEAD], { verifyRecord: beadRec([BEAD]) }).code, 0, 'the drill bead in scope with --bead is consent');
-  // scoped to the story (an ancestor of the bead): consent, since the bead hangs under it
+  // scoped to the direct story (one level up): consent, since the bead hangs directly under it
   const b = setup();
-  assert.equal(b.run([...RUN, '--bead', BEAD], { verifyRecord: beadRec([STORY]) }).code, 0, 'the story in scope with --bead is consent');
+  assert.equal(b.run([...RUN, '--bead', BEAD], { verifyRecord: beadRec([STORY]) }).code, 0, 'the direct story in scope with --bead is consent');
+  // a broader ancestor than the direct story (hjx.1, hjx) must NOT pass: it would widen what authorises a
+  // cut and a restart (rv-225 pre-empt). Only the bead and its direct story count.
+  for (const broad of ['delivery-plugin-planning-hjx.1', 'delivery-plugin-planning-hjx']) {
+    const w = setup();
+    assert.equal(w.run([...RUN, '--bead', BEAD], { verifyRecord: beadRec([broad]) }).code, 1, `a broad ancestor ${broad} is not consent`);
+  }
   // the same record without --bead: only the label counts, so it is refused
   const c = setup();
   const cr = c.run(RUN, { verifyRecord: beadRec([STORY]) });
