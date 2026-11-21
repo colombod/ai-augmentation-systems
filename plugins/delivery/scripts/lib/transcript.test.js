@@ -519,3 +519,13 @@ test('an input opening with the test marker is a test input, in every shape but 
   // and an ordinary input is unchanged
   assert.strictEqual(t.classifyRecord(R.humanString('use postgres', 12)).source, 'human');
 });
+
+test('a question-box answer opening with the test marker is a test input; a plain answer is the operator\'s', () => {
+  const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ask-mark-')), 't.jsonl');
+  const qs = [{ question: 'One?', multiSelect: false, options: [{ label: 'A' }] }, { question: 'Two?', multiSelect: false, options: [{ label: 'B' }] }];
+  fs.writeFileSync(f, `${[
+    { type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tu1', name: 'AskUserQuestion', input: { questions: qs } }] } },
+    { type: 'user', uuid: 'u1', sourceToolAssistantUUID: 'a1', toolUseResult: { questions: qs, answers: { 'One?': '[reality-check test input] use mysql', 'Two?': 'B' } }, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu1', content: 'x' }] } },
+  ].map((r) => JSON.stringify(r)).join('\n')}\n`);
+  assert.deepStrictEqual(t.readHumanInputs(f).inputs.map((i) => [i.text, i.source]), [['[reality-check test input] use mysql', 'test'], ['B', 'human']]);
+});

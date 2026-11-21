@@ -174,7 +174,7 @@ function readHumanInputs(file, opts = {}) {
         // when the tool_use is in this read, the result must answer what it asked
         const used = put.find((x) => x && x.question === q.question);
         if (!used) return;
-        out.inputs.push({ line: lineNo, source: 'human', text: tur.answers[q.question], ext_id: `${rec.uuid || lineNo}#q${i}`, timestamp: rec.timestamp || null,
+        out.inputs.push({ line: lineNo, source: marked('human', tur.answers[q.question]), text: tur.answers[q.question], ext_id: `${rec.uuid || lineNo}#q${i}`, timestamp: rec.timestamp || null,
           session_id: rec.sessionId || null, uuid: rec.uuid ? `${rec.uuid}#q${i}` : null,
           // a delivery.confirmation/1 record: the question, choices and choice mode as the tool_use put
           // them, and the harness's own ids for the question and the answer, so any session can check it
@@ -266,4 +266,4 @@ function turnIn(file, size, maxBytes) {
   return out;
 }
 
-module.exports = { classifyRecord, readHumanInputs, formatStatus, currentTurn, WAKE_OPENING, RELAY_MARKER, TEST_MARKER };
+module.exports = { classifyRecord, readHumanInputs, formatStatus, currentTurn, WAKE_OPENING, RELAY_MARKER, TEST_MARKER, marked };

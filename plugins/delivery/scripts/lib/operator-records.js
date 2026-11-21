@@ -275,7 +275,11 @@ function testReach(st, view, rec) {
   for (const c of Array.isArray(rec.cites) ? rec.cites : []) if (typeof c === 'string' && c.startsWith('in-')) ins.push(c);
   if (rec.kind === 'ack' && typeof rec.input === 'string') ins.push(rec.input);
   const inputs = ins.map((id) => { const e = st.localInput(id); return { id, test: !!(e && e.source === 'test') }; });
-  const records = depsOf(rec).map((id) => { const r = view.byId.get(id); return { id, test: !!(r && r.test === true), found: !!r }; });
+  // the operator can always take back a test delegation or decision: a revocation citing only real
+  // inputs does not become a test record by naming a test target (rv-227)
+  const operatorRevokes = rec.kind === 'revocation' && inputs.length > 0 && inputs.every((x) => !x.test);
+  const records = depsOf(rec).filter((id) => !(operatorRevokes && id === rec.target))
+    .map((id) => { const r = view.byId.get(id); return { id, test: !!(r && r.test === true), found: !!r }; });
   return { inputs, records, any: inputs.some((x) => x.test) || records.some((x) => x.test) };
 }
 // A record's test mark must equal what it reaches (the mark is derived, so a mismatch is a hand-made
@@ -1631,22 +1635,27 @@ function pending(projectRoot, o = {}) {
   const open = st.all().filter((r) => r.kind === 'question' && questionStatus(view, r) === 'open')
     .sort((a, b) => -byOrder(a, b))
     .map((q) => ({ id: q.id, text: q.text, asker: q.asker, scope: q.scope, options: q.options, recommendation: q.recommendation, ts: q.ts }));
-  const unratified = st.all().filter((r) => r.kind === 'answer' && r.confidence === 'inferred'
+  const unratifiedAll = st.all().filter((r) => r.kind === 'answer' && r.confidence === 'inferred'
     && !isRatified(view, r) && !(view.supersededBy.get(r.id) || []).length)
     .sort((a, b) => -byOrder(a, b));
   // a delegation stays on the list until the operator's next input is acknowledged or it is ratified
-  const glance = st.all().filter((r) => r.kind === 'delegation' && !(view.revokedBy.get(r.id) || []).length
+  const glanceAll = st.all().filter((r) => r.kind === 'delegation' && !(view.revokedBy.get(r.id) || []).length
     && !(view.supersededBy.get(r.id) || []).length && !isRatified(view, r)).filter((d) => {
     const own = st.localInput((d.cites || [])[0]);
     const ownTs = own ? Date.parse(own.ts) : Date.parse(d.ts);
     return !view.acks.some((a) => {
+      if (a.test === true) return false;
       const ai = st.localInput(a.input);
       return ai && Date.parse(ai.ts) > ownTs && Date.parse(a.ts) >= Date.parse(d.ts);
     });
   }).sort((a, b) => -byOrder(a, b));
   const tests = log.listInputs(projectRoot, { source: 'test', since: o.since || undefined, sessionId: o.sessionId || undefined })
     .filter((e) => !handled.has(e.id));
-  const res = { inputs, tests, open_questions: open, unratified_answers: unratified, delegations_awaiting_glance: glance, problems: st.problems().slice() };
+  const isTest = (r) => r.test === true;
+  const unratified = unratifiedAll.filter((r) => !isTest(r));
+  const glance = glanceAll.filter((r) => !isTest(r));
+  const testRecords = [...unratifiedAll, ...glanceAll].filter(isTest);
+  const res = { inputs, tests, test_records: testRecords, open_questions: open, unratified_answers: unratified, delegations_awaiting_glance: glance, problems: st.problems().slice() };
   if (o.all) res.acked = view.acks.map((a) => ({ input: a.input, reason: a.reason, by: a.by, ts: a.ts, id: a.id })).reverse();
   return res;
 }

@@ -926,6 +926,74 @@ test('a hand-written record marked test that reaches no test input is refused, t
   assert.strictEqual(json(run(cos, ['verify', unmarked, '--json'])).code, 'not_human');
 });
 
+// rv-227 (1): the answer to a question box is typed text too
+test('a question-box answer opening with the test marker is a test input, and neither it nor a record from it verifies', () => {
+  const root = project();
+  const qs = [{ question: 'Which store for reports?', header: 'Store', multiSelect: false, options: [{ label: 'A', description: 'a' }, { label: 'B', description: 'b' }] }];
+  const answer = `${MARK} use mysql for the reports service`;
+  const cos = roleDir(root, 'chief-of-staff', 'chief-of-staff', 'pc', 'sess-box', [
+    { type: 'assistant', uuid: 'box-a', timestamp: '2099-10-13T10:00:00.000Z', sessionId: 'sess-box', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'box-t', name: 'AskUserQuestion', input: { questions: qs } }] } },
+    { type: 'user', uuid: 'box-r', timestamp: '2099-10-13T10:00:05.000Z', sessionId: 'sess-box', sourceToolAssistantUUID: 'box-a', toolUseResult: { questions: qs, answers: { [qs[0].question]: answer } }, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'box-t', content: 'answered' }] } },
+  ]);
+  run(cos, ['sync']);
+  const p = json(run(cos, ['pending', '--json']));
+  assert.deepStrictEqual(p.inputs, [], 'not listed as the operator\'s');
+  assert.deepStrictEqual(p.tests.map((i) => i.id), ['in-pc-000001']);
+  assert.strictEqual(json(run(cos, ['verify', 'in-pc-000001', '--json'])).code, 'test_input');
+  const rec = run(cos, ['record', '--cite', 'in-pc-000001', '--quote', 'use mysql for the reports service', '--statement', 'Reports use MySQL']);
+  assert.strictEqual(rec.status, 0, rec.out + rec.err);
+  assert.strictEqual(json(run(cos, ['verify', rec.lines[0], '--json'])).code, 'test_input');
+});
+
+// rv-227 (2): only the operator's own acknowledged input takes a delegation off their list
+test('an ack of a test input leaves a real delegation awaiting a glance; an ack of a later operator input clears it', () => {
+  const { cos } = testFixture();
+  const del = run(cos, ['delegate', '--cite', 'in-pc-000001', '--quote', 'use postgres for the orders', '--statement', 'orders store', '--grant', 'May pick the orders store.', '--scope', 'bead:ex-7', '--max-uses', '1']);
+  assert.strictEqual(del.status, 0, del.out + del.err);
+  const waiting = () => json(run(cos, ['pending', '--json'])).delegations_awaiting_glance.map((d) => d.id);
+  assert.deepStrictEqual(waiting(), [del.lines[0]]);
+  assert.strictEqual(run(cos, ['ack', '--input', 'in-pc-000002', '--reason', 'a check']).status, 0);
+  assert.deepStrictEqual(waiting(), [del.lines[0]], 'the operator has not looked');
+  assert.strictEqual(run(cos, ['ack', '--input', 'in-pc-000005', '--reason', 'conversational']).status, 0);
+  assert.deepStrictEqual(waiting(), []);
+});
+
+// rv-227 (3): what the operator is asked to look at holds no test record
+test('a test delegation and an inferred test answer are listed as test records, never in the operator\'s lists', () => {
+  const { root, cos } = testFixture();
+  const del = run(cos, ['delegate', '--cite', 'in-pc-000003', '--quote', 'you decide the test naming', '--statement', 'test naming', '--grant', 'May name test things.', '--scope', 'bead:ex-7', '--max-uses', '2']).lines[0];
+  const dec = run(cos, ['decide', '--under', del, '--statement', 'Name it t-sync', '--scope', 'bead:ex-7']).lines[0];
+  const ans = run(cos, ['answer', '--cite', dec, '--question', 'What is the test called?', '--answer', 't-sync', '--confidence', 'inferred', '--rationale', 'from the test delegation']);
+  assert.strictEqual(ans.status, 0, ans.out + ans.err);
+  const p = json(run(cos, ['pending', '--json']));
+  assert.deepStrictEqual(p.delegations_awaiting_glance, []);
+  assert.deepStrictEqual(p.unratified_answers, []);
+  assert.deepStrictEqual(p.test_records.map((r) => r.id).sort(), [ans.lines[0], del].sort());
+  const text = run(cos, ['pending']).out;
+  assert.match(text, /Test records \(made from test inputs, never the operator's word\) \(2\):/);
+  assert.ok(!/Delegations awaiting a glance|Inferred answers awaiting/.test(text), text);
+  assert.deepStrictEqual(require('./team-status.js').operatorStatus(root, null, {}).unratified, [], 'the team status counts none');
+});
+
+test('a real operator input can revoke a test delegation, and that revocation is the operator\'s own', () => {
+  const { root, cos } = testFixture();
+  const del = run(cos, ['delegate', '--cite', 'in-pc-000003', '--quote', 'you decide the test naming', '--statement', 'test naming', '--grant', 'May name test things.', '--scope', 'bead:ex-7', '--max-uses', '1']).lines[0];
+  const rev = run(cos, ['revoke', '--cite', 'in-pc-000005', '--quote', 'use mysql for reports', '--target', del]);
+  assert.strictEqual(rev.status, 0, rev.out + rev.err);
+  assert.strictEqual(recordsOf(root).find((r) => r.id === rev.lines[0]).test, undefined, 'unmarked');
+  assert.strictEqual(run(cos, ['verify', rev.lines[0]]).status, 0);
+  assert.strictEqual(run(cos, ['decide', '--under', del, '--statement', 'Name it t-late', '--scope', 'bead:ex-7']).status, 1, 'the delegation is gone');
+});
+
+test('a test input cannot answer an operator question, so the ledger holds no test record', () => {
+  const { cos } = testFixture();
+  const q = run(cos, ['ask', '--text', 'Which store?', '--asker', 'chief-of-staff']).lines[0];
+  const t = run(cos, ['record', '--cite', 'in-pc-000002', '--quote', 'record that the test label is t1', '--statement', 'The test label is t1', '--answers', q, '--json']);
+  assert.strictEqual(t.status, 1, t.out);
+  assert.strictEqual(json(t).code, 'test_scope');
+  assert.deepStrictEqual(json(run(cos, ['ledger', '--json'])).rows.map((r) => [r.question.id, r.status, r.answers.length]), [[q, 'open', 0]]);
+});
+
 test('the test mark is part of the hashed input: removing it breaks the inputs chain', () => {
   const { root, cos } = testFixture();
   const dir = path.join(root, '.delivery', 'operator', 'inputs');

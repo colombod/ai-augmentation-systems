@@ -636,6 +636,10 @@ const handlers = {
       lines.push(`Test inputs (Reality Checker, never the operator's word) (${p.tests.length}):`);
       for (const i of p.tests) lines.push(`  ${i.id}  ${i.ts}  [test] ${quoted(i.text.length > 100 ? i.text.slice(0, 100) + '...' : i.text)}`);
     }
+    if (p.test_records && p.test_records.length) {
+      lines.push(`Test records (made from test inputs, never the operator's word) (${p.test_records.length}):`);
+      for (const r of p.test_records) lines.push(`  ${r.id}  [test] ${r.kind}: ${r.kind === 'answer' ? r.answer : r.grant}`);
+    }
     if (p.inputs.length) {
       lines.push(`Operator inputs with no record or ack (${p.inputs.length}):`);
       for (const i of p.inputs) lines.push(`  ${i.id}  ${i.ts}  ${quoted(i.text.length > 100 ? i.text.slice(0, 100) + '...' : i.text)}`);
