@@ -10,8 +10,10 @@
 //      A builder whose pull request sits in review is not stuck: that wait is the manager's own.
 //   2. each instance with a bead in progress: is its session up, did its beads change within
 //      stall_hours, and the count of today's wakes that found nothing to do.
-//   3. one action for each instance that fails a check, and for the team when every builder is stuck
-//      and top-priority work is ready (add a builder through Staffing's roster command, 000265).
+//   3. one action for each instance that fails a check, and the team's: every free live builder is
+//      given a ready builder item of its own that the claim check admits; when none is free, every
+//      builder is stuck and top-priority work is ready, a builder is added through Staffing's roster
+//      command (000265).
 // Data it cannot read is said so, never shown as healthy. `record` keeps the pass in the watchdog's
 // directory (passes.ndjson) and writes the action and its reason as a note on the held bead, once
 // per change of action, so a stall the owner's briefing shows always has the note beside it.
@@ -35,8 +37,14 @@ const instanceOf = (assignee) => { const a = String(assignee || ''); return a.in
 const beadOfKey = (k) => { const m = /^(assigned|quiet|evidence):([^:]+)/.exec(String(k || '')); return m ? m[2] : null; };
 
 // facts: { now, dm, staffing, builders, beads, ready, sessions (lib/watchdog sessions()), wakes (wake rows),
-// prs: [{ pr, state, beads, sentBackAt, note }], handoffs, messages, stallHours, alive, cap (budget.builders_cap), chief }
-function pass({ now, dm = 'delivery-lead', staffing = 'staffing', chief = 'chief-of-staff', cap, builders = [], beads = [], ready = [], sessions = [], wakes = [], prs = [], handoffs = [], messages = [], stallHours = 2, alive = () => false, caps = W.capsOf } = {}) {
+// prs: [{ pr, state, beads, sentBackAt, note }], handoffs, messages, stallHours, alive, cap (budget.builders_cap), chief,
+// live (`claude agents --json` rows, null when unreadable, undefined to judge by the roster alone), prefix
+// (the team's, for its session names), claimable (bead) => boolean: the claim check (daily-plan claimAdmission) }
+// the items a builder takes: stories and fixes; never another role's (a reality check, a phase review, a
+// drift item, a spike) nor an epic
+const BUILDER_LABELS = ['story', 'bug', 'security'];
+const OTHER_LANES = ['reality-check', 'phase-review', 'drift', 'spike'];
+function pass({ now, dm = 'delivery-lead', staffing = 'staffing', chief = 'chief-of-staff', cap, builders = [], beads = [], ready = [], sessions = [], wakes = [], prs = [], handoffs = [], messages = [], stallHours = 2, alive = () => false, caps = W.capsOf, live, prefix = null, claimable = () => true, claimProblem = null } = {}) {
   const t = ms(now || new Date().toISOString());
   const byId = new Map(beads.filter(Boolean).map((b) => [b.id, b]));
   const G = require('./gates.js');
@@ -98,13 +106,63 @@ function pass({ now, dm = 'delivery-lead', staffing = 'staffing', chief = 'chief
 
   // ---- 3. one action for each failing instance, and the team's ----
   const top = (ids) => ids.map((id) => byId.get(id)).filter(Boolean).some((b) => Number(b.priority) === 0);
+  // busy: holding work in progress, or assigned an open item it has not claimed yet (rv-203: an
+  // assigned, unclaimed builder read as free got the next item every pass)
   const busy = new Set(instances.map((x) => x.instance));
-  const free = builders.filter((i) => !busy.has(i) && !(sessions.find((s) => s.instance === i) || {}).limit);
-  for (const x of instances.filter((y) => y.fails.length)) x.action = actionOf(x, { free, top, dm });
-  const p0 = ready.filter((b) => b && Number(b.priority) === 0 && !b.assignee && typeOf(b) !== 'epic' && !shipped(b));
+  for (const b of beads.filter((x) => x && x.assignee && x.status === 'open' && typeOf(x) !== 'epic')) busy.add(instanceOf(b.assignee));
+  // live: a session of it is open on this host (lib/one-session.js liveOf, by its role directory or its
+  // team's session name), not only a roster entry; an unreadable session list makes no builder free
+  const OS = require('./one-session.js');
+  const liveUnknown = live === null;
+  const isLive = (i) => {
+    const s = sessions.find((x) => x.instance === i);
+    if (!s) return false;
+    if (live === undefined) return true;
+    if (live === null) return false;
+    return OS.liveOf(i, { roleDir: s.roleDir, live, prefix }).length > 0;
+  };
+  // a free builder is a live one holding nothing and not stopped on the usage limit: work assigned to a
+  // builder with no session would only wait for it
+  const free = builders.filter((i) => !busy.has(i) && isLive(i) && !(sessions.find((s) => s.instance === i) || {}).limit);
+  // each reassign target is taken from the free builders before the next action and before the team's
+  // pairs, so no builder is told two items in one pass (rv-203)
+  for (const x of instances.filter((y) => y.fails.length)) {
+    x.action = actionOf(x, { free, top, dm });
+    if (x.action && x.action.to && free.includes(x.action.to)) free.splice(free.indexOf(x.action.to), 1);
+  }
+  // the claim check, asked once per item: an item it cannot read is reported by name and not offered,
+  // never a thrown pass (rv-221)
+  const claimErrors = [];
+  const admits = (b, taken = []) => {
+    try { return Boolean(claimable(b, taken)); } catch (err) {
+      if (!claimErrors.some((x) => x.bead === b.id)) claimErrors.push({ bead: b.id, error: String(err && err.message ? err.message : err).split('\n')[0] });
+      return false;
+    }
+  };
+  const p0 = ready.filter((b) => b && Number(b.priority) === 0 && !b.assignee && typeOf(b) !== 'epic' && !shipped(b) && admits(b));
   const holdingBuilders = instances.filter((x) => builders.includes(x.instance));
+  // hjx.1.6.12.1: every free builder is paired with a ready item of its own, highest priority first (bd
+  // ready's order within a priority), P0 or not; an epic, a spike (the Spike Researcher's), an assigned or
+  // a shipped item is never offered. One pass assigns them all, so no free builder waits a pass per item.
+  const prio = (b) => (Number.isFinite(Number(b.priority)) && b.priority !== null && b.priority !== '' ? Number(b.priority) : 4);
+  const has = (b, l) => (b.labels || []).includes(l);
+  const offer = ready.filter((b) => b && b.status !== 'closed' && !b.assignee && typeOf(b) !== 'epic' && !shipped(b)
+    && BUILDER_LABELS.some((l) => has(b, l)) && !OTHER_LANES.some((l) => has(b, l)) && admits(b))
+    .map((b, i) => ({ b, i })).sort((x, y) => prio(x.b) - prio(y.b) || x.i - y.i).map((x) => x.b);
+  // each pair is admitted with the ones before it counted as started, as the hook budgets several
+  // starts in one command (bd-guard projected): the pass never gives out more than the hook lets start
+  const given = [];
+  for (const b of offer) {
+    if (given.length >= free.length) break;
+    if (!given.length || admits(b, given)) given.push(b);
+  }
   let team = null;
-  if (p0.length && free.length) team = { kind: 'assign', bead: p0[0].id, to: free[0], why: `top-priority ${p0[0].id} is ready and ${free[0]} holds no work`, command: `bd update ${p0[0].id} --assignee <actor>/${free[0]}, then message ${free[0]} (--record does both)` };
+  if (given.length && free.length) {
+    const pairs = given.map((b, k) => ({ bead: b.id, to: free[k], priority: prio(b) }));
+    team = { kind: 'assign', bead: pairs[0].bead, to: pairs[0].to, pairs,
+      why: `${pairs.map((x) => `${x.bead} to ${x.to}`).join(', ')}: ready, and ${pairs.length === 1 ? 'that builder holds' : 'those builders hold'} no work`,
+      command: `${pairs.map((x) => `bd update ${x.bead} --assignee <actor>/${x.to}`).join('; ')}, then message each (--record does both)` };
+  }
   // a builder whose only failure is work waiting on the manager is not stuck: that wait is the manager's,
   // and another builder would only queue behind the same review
   else if (p0.length && builders.length && holdingBuilders.length === builders.length && holdingBuilders.every((x) => x.fails.length && !x.quietOnly)) {
@@ -115,7 +173,8 @@ function pass({ now, dm = 'delivery-lead', staffing = 'staffing', chief = 'chief
     else team = { kind: 'add-builder', bead: p0[0].id, count: builders.length + 1, to: staffing,
       why, command: `Message ${staffing} to add one with its roster command (approved, dec-chief-of-staff-000265; the owner is not asked): node \${CLAUDE_PLUGIN_ROOT}/scripts/team-role.js add builder --count ${builders.length + 1}; then assign ${p0[0].id} to the new builder (--record queues the message; the pass after the builder registers assigns it)` };
   }
-  return { at: new Date(t).toISOString(), dm, own, instances, team };
+  return { at: new Date(t).toISOString(), dm, own, instances, team, liveUnknown: liveUnknown && !team && offer.length > 0,
+    claimProblem: claimProblem || null, claimErrors };
 }
 
 // the one action for an instance that fails a check, most specific first
@@ -150,7 +209,7 @@ function prsOf(root) {
 }
 
 // facts from the project's record, or { unreadable } with what could not be read
-function read(root, { bd, now, team, rows } = {}) {
+function read(root, { bd, now, team, rows, live } = {}) {
   try {
     const M = require('./manifest.js');
     const t = team || M.loadManifest(root).team;
@@ -162,8 +221,13 @@ function read(root, { bd, now, team, rows } = {}) {
     const builders = expanded.filter((i) => i.role.id === 'builder' && !i.role.retired).map((i) => i.instance);
     const beads = bd.list({ all: true }) || [];
     const ready = bd.ready() || [];
+    // the claim check the plan uses: an item it refuses is never offered; one it cannot read offers nothing
+    let claimable = () => false;
+    let claimProblem = null;
+    try { claimable = require('./daily-plan.js').claimAdmission(root, { bd, team: t, now }); } catch (err) { claimProblem = String(err.message).split('\n')[0]; }
     return { now, dm, staffing, chief, cap, builders, beads, ready, sessions: W.sessions(root, { team: t, rows }), wakes: W.logRows(root).filter((r) => r.type === 'wake'), prs: prsOf(root),
-      handoffs: require('./handoff.js').pending(root), messages: require('./inbox.js').pending(root), stallHours: require('./goal.js').value(root, 'stall_hours'), alive: (pid, since) => W.pidAlive(pid, { since, now }) };
+      handoffs: require('./handoff.js').pending(root), messages: require('./inbox.js').pending(root), stallHours: require('./goal.js').value(root, 'stall_hours'), alive: (pid, since) => W.pidAlive(pid, { since, now }),
+      live, prefix: t.prefix || null, claimable, claimProblem };
   } catch (err) { return { unreadable: String(err.message).split('\n')[0] }; }
 }
 
@@ -179,6 +243,10 @@ function lines(res) {
     if (x.action) out.push(`     fails: ${x.fails.join('; ')}`, `     action: ${x.action.kind}${x.action.to ? ` to ${x.action.to}` : ''}: ${x.action.why}${x.action.message ? `. Message ${x.instance}: "${x.action.message}"` : ''}`);
   }
   if (res.team) out.push(`3. Team: ${res.team.kind}: ${res.team.why}. ${res.team.command}`);
+  else if (res.liveUnknown) out.push('3. Team: ready work waits, but no builder is called free: the open sessions could not be read (`claude agents --json`); check them, then pass again.');
+  // the claim check could not be built: nothing is offered, and the pass says why (rv-221)
+  if (res.claimProblem) out.push(`   No ready item is offered: the claim check could not be read (${res.claimProblem}); check it with plan.js today, then pass again.`);
+  for (const e of res.claimErrors || []) out.push(`   ${e.bead} is not offered: the claim check could not read it (${e.error}).`);
   return out;
 }
 
@@ -195,7 +263,7 @@ function previous(root) {
 // the same action on the same beads for the same reasons is noted once; a count in a reason may grow
 const actionKey = (x) => (x.action ? `${x.action.kind}:${x.action.to || ''}:${(x.action.beads || []).join(',')}:${x.fails.map((f) => f.replace(/\d+(\.\d+)?/g, 'n')).join('|')}` : null);
 // the team's action, once per change: the same kind on the same bead to the same instance
-const teamKey = (t) => (t ? `${t.kind}:${t.bead}:${t.to || ''}:${t.count || ''}` : null);
+const teamKey = (t) => (t ? `${t.kind}:${(t.pairs || [{ bead: t.bead, to: t.to || '' }]).map((x) => `${x.bead}>${x.to}`).join(',')}:${t.count || ''}` : null);
 // the bead's assignee for an instance, in the recording actor's form (<user>@<host>/<instance>)
 const assigneeFor = (actor, to) => (actor ? `${String(actor).replace(/\/[^/]*$/, '')}/${to}` : to);
 function record(root, res, { bd, actor } = {}) {
@@ -224,8 +292,11 @@ function record(root, res, { bd, actor } = {}) {
     const I = require('./inbox.js');
     try {
       if (T.kind === 'assign') {
-        bd.update(T.bead, { assignee: assigneeFor(actor, T.to), appendNotes: `${res.at.slice(0, 10)} ${dm} pass: assigned to ${T.to}: ${T.why}` });
-        I.queue(root, { to: T.to, from: dm, summary: `${T.bead} assigned to you`, message: `${dm} here: top-priority ${T.bead} is assigned to you (${T.why}). Claim it and build it.`, at: res.at });
+        for (const x of T.pairs || [{ bead: T.bead, to: T.to, priority: 0 }]) {
+          const what = x.priority === 0 ? `top-priority ${x.bead}` : `ready ${x.bead} (P${x.priority})`;
+          bd.update(x.bead, { assignee: assigneeFor(actor, x.to), appendNotes: `${res.at.slice(0, 10)} ${dm} pass: assigned to ${x.to}: ${what} is ready and ${x.to} holds no work` });
+          I.queue(root, { to: x.to, from: dm, summary: `${x.bead} assigned to you`, message: `${dm} here: ${what} is assigned to you (${x.to} holds no work). Claim it and build it.`, at: res.at });
+        }
       } else if (T.kind === 'raise-cap') {
         bd.update(T.bead, { appendNotes: `${res.at.slice(0, 10)} ${dm} pass: ${T.why}; asked ${T.to} once for the owner to raise builders_cap to ${T.count}` });
         I.queue(root, { to: T.to, from: dm, summary: `builders_cap for ${T.bead}`, message: `${dm} here: ${T.why}. One more builder needs the owner to raise builders_cap to ${T.count} (team-role.js set-cap builders ${T.count} --record <dec-id>); please put it in the owner queue once. Staffing adds the builder after it.`, at: res.at });
@@ -234,7 +305,7 @@ function record(root, res, { bd, actor } = {}) {
         I.queue(root, { to: T.to, from: dm, summary: `add a builder for ${T.bead}`, message: `${dm} here: ${T.why}. Add one builder with your roster command (approved, dec-chief-of-staff-000265): node \${CLAUDE_PLUGIN_ROOT}/scripts/team-role.js add builder --count ${T.count}. My next pass assigns ${T.bead} to it.`, at: res.at });
       }
       teamDone = T.kind;
-      noted.push(T.bead);
+      noted.push(...(T.pairs ? T.pairs.map((x) => x.bead) : [T.bead]));
     } catch (err) { /* the pass row keeps the action; the next pass tries again */ }
   }
   W.ensureDir(root);

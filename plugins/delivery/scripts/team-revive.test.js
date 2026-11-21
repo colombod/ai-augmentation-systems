@@ -13,6 +13,8 @@ const TR = require('./team-revive.js');
 const R = require('./lib/team-revive.js');
 const RO = require('./lib/roster.js');
 const watchdog = require('./watchdog.js');
+const SD = require('./lib/service-directory.js');
+const { fakeDirectory } = require('./testing/fake-service-directory.js');
 
 // revive() reads the process this runs in as well as what a caller passes: the tests run from a directory
 // that is no role directory, with no role in the environment, and put both back after.
@@ -548,11 +550,11 @@ function staleTeam({ version = '0.43.55', status = 'idle', rosterSession = 'sess
   return { p, live };
 }
 const RC_OF_CHIEF = (pid) => (pid === 5100 ? { pid: 5000, self: false } : null);
-function restartRun(p, argv, { live, server = RC_OF_CHIEF, stop = () => true, relist, pause, installed = '0.43.74', spawnThrows } = {}) {
+function restartRun(p, argv, { live, server = RC_OF_CHIEF, stop = () => true, relist, pause, installed = '0.43.74', spawnThrows, dir = fakeDirectory() } = {}) {
   const spawn = spawner();
   if (spawnThrows) spawn.fn = () => { throw new Error(spawnThrows); };
   const stops = [];
-  const r = TR.main(argv, { cwd: p.root, env: { DELIVERY_HOST: 'pc' }, now: T0, bd: store(BUSY), live, prs: [], alive: () => false, configDir: p.config, spawn: spawn.fn, installed, server, stop: (s, c) => { stops.push([s, c]); return stop(s, c); }, relist, pause, who: { root: p.root, team: p.team, roleId: null } });
+  const r = TR.main(argv, { cwd: p.root, env: { DELIVERY_HOST: 'pc' }, now: T0, bd: store(BUSY), live, prs: [], alive: () => false, configDir: p.config, spawn: spawn.fn, installed, server, stop: (s, c) => { stops.push([s, c]); return stop(s, c); }, relist, pause, sdFetch: dir.fetch, who: { root: p.root, team: p.team, roleId: null } });
   return { ...r, calls: spawn.calls, stops };
 }
 
@@ -1003,13 +1005,58 @@ test('force: a running role on the installed plugin is restarted through the sta
   assert.deepEqual(none.stops, []);
   const spawn = spawner();
   const stops = [];
-  const r = TR.revive(p.root, p.team, { start: true, env: { DELIVERY_HOST: 'pc' }, now: T0, bd: store(BUSY), live, prs: [], alive: () => false, configDir: p.config, spawn: spawn.fn, installed: '0.43.74', server, stop: (s, c) => { stops.push([s, c]); return true; }, force: ['builder'] });
+  const r = TR.revive(p.root, p.team, { start: true, env: { DELIVERY_HOST: 'pc' }, now: T0, bd: store(BUSY), live, prs: [], alive: () => false, configDir: p.config, spawn: spawn.fn, installed: '0.43.74', server, stop: (s, c) => { stops.push([s, c]); return true; }, force: ['builder'], sdFetch: fakeDirectory().fetch });
   assert.deepEqual(stops, [[5300, 5200]]);
   assert.deepEqual(spawn.calls.map((c) => c.args), [['remote-control', '--name', 'builder@ex', '--session-id', 'session_b', '--permission-mode', 'auto']]);
   assert.match(r.lines.join('\n'), /^Restarted: builder on 0\.43\.74 \(pid 4001\): stop its Remote Control server \(pid 5300\)/m);
   const row = R.ledger(p.root).find((x) => x.type === 'restart');
   assert.equal(row.forced, true);
   assert.equal(row.session_id, 'session_b');
+});
+
+// A stale session outside a user unit is stopped only after the directory is read: unreadable, or its
+// scope (the unit of its last start or restart in the ledger) held by another owner or removed, nothing
+// is stopped, a restart-refused row says why, and no start cap counts it.
+test('the stale-session replace reads the directory before the stop: down, a scope another owner holds or a removed scope stop nothing; the plugin\'s own scope, or no known scope, restarts', () => {
+  const SCOPE = 'delivery-role-chief-of-staff-1763000000000';
+  const OTHER = 'delivery-host-manager-tick.timer';
+  const go = (dir, { scoped = true, later = null } = {}) => {
+    const { p, live } = staleTeam();
+    if (scoped) R.record(p.root, { type: 'start', at: new Date(Date.parse(T0) - 2 * 86400e3).toISOString(), instance: 'chief-of-staff', pid: 5100, unit: SCOPE });
+    if (later) R.record(p.root, { type: 'start', at: new Date(Date.parse(T0) - 86400e3).toISOString(), instance: 'chief-of-staff', ...later });
+    const r = restartRun(p, ['start'], { live, dir });
+    const refused = R.ledger(p.root).filter((x) => x.type === 'restart-refused');
+    const restarted = R.ledger(p.root).filter((x) => x.type === 'restart');
+    return { r, refused, restarted };
+  };
+  const notStopped = (x, re) => {
+    assert.deepEqual(x.r.stops, [], x.r.out);
+    assert.equal(x.r.calls.length, 0, x.r.out);
+    assert.equal(x.restarted.length, 0);
+    assert.equal(x.refused.length, 1);
+    assert.match(x.refused[0].why, re);
+    assert.match(x.r.out, /its session was not restarted: /, x.r.out);
+    assert.match(x.r.out, re, x.r.out);
+  };
+  notStopped(go(fakeDirectory({ down: true })), /could not be reached .*a restart of a running session is not made without reading the directory first/);
+  notStopped(go(fakeDirectory({ down: true }), { scoped: false }), /could not be reached/);
+  const held = fakeDirectory({ entries: [{ name: `${SCOPE}.scope`, url: 'http://x', owner: 'colombod' }] });
+  notStopped(go(held), /owned by "colombod", not by the delivery plugin, so the plugin does not restart it/);
+  assert.equal(held.entry(`${SCOPE}.scope`).owner, 'colombod');
+  const removed = fakeDirectory({ entries: [SD.entryFor(OTHER)], registered: [`${SCOPE}.scope`, OTHER] });
+  notStopped(go(removed), /was removed from the service directory/);
+  assert.equal(removed.entry(`${SCOPE}.scope`), null, 'not registered again');
+  // a later start that failed ran nothing: the scope is still the one before it
+  notStopped(go(fakeDirectory({ entries: [{ name: `${SCOPE}.scope`, url: 'http://x', owner: 'colombod' }] }), { later: { unit: 'delivery-role-chief-of-staff-1.service', via: 'unit', error: 'failed' } }), /owned by "colombod"/);
+  // the last start went through a user unit: that names no scope, so an entry on that unit's name is not this check's
+  const viaUnit = go(fakeDirectory({ entries: [{ name: 'delivery-role-chief-of-staff-1.service', url: 'http://x', owner: 'colombod' }] }), { scoped: false, later: { unit: 'delivery-role-chief-of-staff-1.service', via: 'unit' } });
+  assert.deepEqual(viaUnit.r.stops, [[5000, 5100]], viaUnit.r.out);
+  for (const [what, x] of [['its own entry', go(fakeDirectory({ entries: [SD.entryFor(`${SCOPE}.scope`)] }))], ['no known scope', go(fakeDirectory(), { scoped: false })]]) {
+    assert.deepEqual(x.r.stops, [[5000, 5100]], what);
+    assert.equal(x.r.calls.length, 1, what);
+    assert.equal(x.restarted.length, 1, what);
+    assert.equal(x.refused.length, 0, what);
+  }
 });
 
 // ---- the plugin's own role unit, and a unit someone else wrote (hjx.1.6.10.1.2.1) ----
