@@ -52,12 +52,19 @@ function done(bead, inp) {
 
 // Append a row and record the new chain head in the bead (evidence_head), so the gate can tell a row
 // written here from one written by hand, the last row included.
+// A bead that cannot be read back is never rewritten from nothing: its metadata would be replaced by the
+// head alone. The row stands, the head is left unrecorded, and the caller says so (headProblem).
 function record(store, root, id, row) {
   const full = G.appendEvidence(root, id, row);
-  const fresh = store.show(id) || { metadata: {} };
-  store.update(id, { metadata: { ...(fresh.metadata || {}), evidence_head: full.head } });
+  const fresh = require('./lib/bd.js').lookupBead(store, id);
+  if (!fresh.bead) {
+    full.headProblem = `warning: ${full.id} is written, but ${require('./lib/bd.js').lookupProblem(id, fresh)}, so its evidence_head is not recorded: record it with evidence.js add again once bd answers, or message the Delivery Manager`;
+    return full;
+  }
+  store.update(id, { metadata: { ...(fresh.bead.metadata || {}), evidence_head: full.head } });
   return full;
 }
+const headNote = (row) => (row.headProblem ? `\n${row.headProblem}` : '');
 
 // state-verified follows the rows: set when every criterion counts, removed when they no longer do
 function syncVerified(store, bead, inp) {
@@ -92,8 +99,9 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
   const wp = reading ? null : writerProblem(who, cmd === 'add' ? EVIDENCE_WRITERS : ['delivery-lead']);
   if (wp) return refuse(wp);
   const store = bd || require('./lib/bd.js').makeBd({ cwd: who.root });
-  const bead = store.show(id);
-  if (!bead) return refuse(`no bead ${id}`);
+  const found = require('./lib/bd.js').lookupBead(store, id);
+  if (!found.bead) return refuse(require('./lib/bd.js').lookupProblem(id, found));
+  const bead = found.bead;
   const inp = { ...gateInputs(who.root, bead, { bd: store, team: who.team }), recordOk: recordChecker(who.root, verifyRecord) };
   const at = now || new Date().toISOString();
   const m = bead.metadata || {};
@@ -141,7 +149,10 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
       if (a.version) meta.deployed_version = a.version;
       else if (!same) delete meta.deployed_version;
       store.update(id, { addLabels: [G.STATE.merged, G.STATE.deployed], metadata: meta });
-      const d = syncVerified(store, store.show(id), inp);
+      // read back for the verified label and the check: a failed read is reported, never a throw on null
+      const back = require('./lib/bd.js').lookupBead(store, id);
+      if (!back.bead) return refuse(`${id} is recorded deployed at ${meta.deployed_sha}, but ${require('./lib/bd.js').lookupProblem(id, back)}, so its verified label and its check were not set up: record the deploy again once bd answers (evidence.js state ${id} deployed --sha ${meta.deployed_sha})`);
+      const d = syncVerified(store, back.bead, inp);
       // the check on the customer's app is the next step: handed to the watchdog (lib/handoff.js), which
       // wakes the Delivery Manager for it at its next pass if this turn ends first
       let handed = '';
@@ -152,9 +163,12 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
       const checks = [];
       if (!d.ok && G.checkCovered(inp.checkStory, inp.surface).length) {
         const rc = require('./reality-check.js');
-        const fresh = store.show(id);
-        rc.writeScript(who.root, fresh, inp, { at, by: who.instance });
-        checks.push(...rc.dispatch(who, store, fresh, inp, meta.deployed_sha));
+        const again = require('./lib/bd.js').lookupBead(store, id);
+        if (!again.bead) checks.push(`warning: ${require('./lib/bd.js').lookupProblem(id, again)}, so its reality-check script was not stamped and its check was not dispatched: record the deploy again once bd answers`);
+        else {
+          rc.writeScript(who.root, again.bead, inp, { at, by: who.instance });
+          checks.push(...rc.dispatch(who, store, again.bead, inp, meta.deployed_sha));
+        }
       }
       // a bead checked on a surface with no story to plan from (a bug or a fix): no script can be planned
       // for it, so nothing would ever run its check; say so rather than pass in silence (7k3.1.1)
@@ -170,7 +184,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
     if (bad) return refuse(bad);
     const row = record(store, who.root, id, { type: 'cut', record: a.record, reason: a.reason, by, actor, at });
     store.update(id, { addLabels: [G.STATE.cut], removeLabels: [G.STATE.verified] });
-    return { code: 0, out: `${row.id}: ${id} cut under ${a.record}; it may close without verification` };
+    return { code: 0, out: `${row.id}: ${id} cut under ${a.record}; it may close without verification${headNote(row)}` };
   }
 
   const criteria = inp.checkStory ? inp.checkStory.criteria : [];
@@ -185,7 +199,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
     const bad = unverifiedRecord(who, a.record, verifyRecord);
     if (bad) return refuse(bad);
     const row = record(store, who.root, id, { type: 'waiver', criterion: c.n, criterion_hash: G.criterionHash(c), record: a.record, risk: a.risk, by, actor, at });
-    return { code: 0, out: `${row.id}: criterion ${c.n} waived under ${a.record}` };
+    return { code: 0, out: `${row.id}: criterion ${c.n} waived under ${a.record}${headNote(row)}` };
   }
 
   if (cmd !== 'add') return { code: 2, out: USAGE };
@@ -214,7 +228,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
   if (why) return { ...refuse(`not verification of ${id} (${gate}): ${why}. Kept as side arm ${row.id}.`), row };
   const d = syncVerified(store, bead, { ...inp, rows: [...inp.rows, row] });
   const note = inp.noSurface ? '\nwarning: the story declares no customer surface, so the surface was not checked (R-09)' : '';
-  return { code: 0, row, out: `${row.id}: criterion ${c.n} ${a.result} at ${a.sha}${note}\n${doneText(d)}` };
+  return { code: 0, row, out: `${row.id}: criterion ${c.n} ${a.result} at ${a.sha}${note}${headNote(row)}\n${doneText(d)}` };
 }
 
 module.exports = { main, done };

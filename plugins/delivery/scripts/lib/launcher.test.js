@@ -1,6 +1,7 @@
 // scripts/lib/launcher.test.js — run through scripts/testing/run-tests.js
 // The project's script launcher (delivery-plugin-planning-8wz.1): it finds the installed plugin when it
 // runs, so a command naming it survives plugin installs, and only an unedited launcher is trusted.
+require('../testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
@@ -139,4 +140,37 @@ test('resolveLauncher trusts only this project\'s unedited launcher', () => {
 test('the watchdog job shim ranks installs with the launcher\'s own function, so the two cannot drift', () => {
   const shim = require('../watchdog.js').shimBody('/p', '/x', null);
   assert.ok(shim.includes(L.resolveInstalledRoot.toString()));
+});
+
+// A service that runs a script through the launcher (the host manager's unit runs host-manager.js
+// run-session this way) must hold that script, and whatever it execs, as its own main process. A
+// launcher that waited on a child left the unit holding the launcher: a stop of the unit
+// (KillMode=process) killed only the launcher and left the host manager's claude running outside it.
+test('the launcher replaces itself with the script (process.execve): the script runs as the launcher\'s own pid, with the same output and exit code', () => {
+  const f = fakeConfig();
+  const proj = project();
+  f.list([['0.43.30', { scope: 'user' }]]);
+  const d = path.join(f.cache, '0.43.30');
+  fs.writeFileSync(path.join(d, 'scripts', 'pid.js'), 'console.log(JSON.stringify({ pid: process.pid, args: process.argv.slice(2) })); process.exit(Number(process.argv[2]) || 0);\n');
+  assert.equal(L.ensureLauncher(proj, d, f.cfg), null);
+  const file = L.launcherPath(proj);
+  const env = { ...process.env, CLAUDE_CONFIG_DIR: f.cfg };
+  const pre = (src) => { const p = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-pre-')), 'pre.js'); fs.writeFileSync(p, src); return p; };
+  if (typeof process.execve === 'function') {
+    const r = spawnSync(process.execPath, [file, 'pid.js', '5', 'a b'], { encoding: 'utf8', env });
+    assert.equal(r.status, 5, r.stderr);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.pid, r.pid, 'the script is the launcher\'s own process, not a child it waits on');
+    assert.deepEqual(out.args, ['5', 'a b']);
+  }
+  // an injected execve (a preload): the launcher hands it node, the script and the arguments, and runs no child
+  const seen = pre('process.execve = (file, argv, e) => { process.stdout.write(JSON.stringify({ file, argv, config: e.CLAUDE_CONFIG_DIR })); process.exit(0); };\nrequire("child_process").spawnSync = () => { throw new Error("a child was spawned"); };\n');
+  const r2 = spawnSync(process.execPath, ['-r', seen, file, 'pid.js', 'x'], { encoding: 'utf8', env });
+  assert.equal(r2.status, 0, r2.stderr);
+  assert.deepEqual(JSON.parse(r2.stdout), { file: process.execPath, argv: [process.execPath, path.join(d, 'scripts', 'pid.js'), 'x'], config: f.cfg });
+  // a node without process.execve: the launcher runs the script as a child and passes its exit code, as before
+  const none = pre('delete process.execve;\n');
+  const r3 = spawnSync(process.execPath, ['-r', none, file, 'pid.js', '6'], { encoding: 'utf8', env });
+  assert.equal(r3.status, 6, r3.stderr);
+  assert.notEqual(JSON.parse(r3.stdout).pid, r3.pid, 'a child, where execve is missing');
 });

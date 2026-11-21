@@ -1,5 +1,6 @@
 // scripts/lib/one-session.test.js — hjx.1.6.17: one live session per role instance, and a wake for a
 // live idle session handed to it as a message on its socket, sent under the host job's own name.
+require('../testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

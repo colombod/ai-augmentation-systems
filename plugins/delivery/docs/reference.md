@@ -188,7 +188,26 @@ session its role and keep it:
   spikes into beads: one epic per phase chained by a phase-review bead, one task per story, one task
   per spike blocking what it derisks. Deterministic ids (`<prefix>-<initiative>-ph<N>`,
   `<prefix>-<story id>`, `<prefix>-<initiative>-spike-<key>`), idempotent, never touches closed
-  beads; `--check` reports drift. It also writes `.delivery/team/denylist.txt`.
+  beads; `--check` reports drift. It also writes `.delivery/team/denylist.txt`. A story already
+  tracked by a bead of its own is mapped to that bead instead of getting a second. A bead tracks the
+  story when its metadata has `roadmap_ref` `<initiative>/<story id>`, or `story` equal to the story
+  id with a `roadmap_ref` in the same initiative (what materialise writes, its `roadmap_ref` then
+  being `<initiative>/roadmap.md@<sha> phase <n>`, so a renamed story file still maps), or
+  `story_file` equal to the story's file. A closed one is skipped. An open one gets the roadmap
+  metadata and the managed `size-*` and `wave-*` labels (so a large story is costed and staffed as
+  large), and keeps its own title, parent, type and other labels (a bug stays a bug, under its own
+  parent). It is not marked as materialise's own bead: materialise records on it, in
+  `materialise_deps`, the dependencies it gave it, and removes only those when the plan drops them,
+  so a dependency someone else gave it stays. A dependency the plan put on one of materialise's own
+  beads toward a mapped bead goes when the plan drops it, and `--check` reports the same. A mapped bead
+  is marked `materialise_mapped: <initiative>`, and keeps the mark, its `materialise_deps` and the
+  dependencies they name if it stops being mapped (its story leaves the plan, or another bead takes it):
+  materialise no longer changes that bead, so those dependencies stay until someone removes them, the
+  record saying which they are; a dependency from materialise's own beads toward it still goes when the
+  plan drops it. materialise writes a bead's metadata by copying in what the bead holds, since `bd`
+  replaces a bead's metadata on `--metadata`. Both keys are gate fields only materialise may set. The plan's dependencies and the story's reality-check script go to it, and each
+  mapping is printed (`map <planned> -> <bead>` in a dry run). Two beads naming one story is a
+  warning, and the open one is used; so is a bead naming a story whose planned bead already exists.
 - **Runners.** A builder's manifest entry names its runner: `superpowers`, `attractor` or `plain`.
   Delivery plans, dispatches and reviews; the runner builds.
 - **Spikes are standing work**: the Spike Researcher claims `spike` beads and records answers in the bead and the ADR or roadmap they gate; in a team without one, builders take spike beads first (`bd ready --label spike`).
@@ -555,11 +574,33 @@ script.
 driven by commands) has no screen, so the Reality Checker checks it with
 `verify-run.js run <bead> --criterion <n>` (the `verify-run` lane group, the Reality Checker's only).
 The Delivery Manager puts the command in the script step with `reality-check.js refine <bead>
---criterion <n> --step <k> --command '<shell command>' [--match '<pattern stdout must show>']`, or, for
+--criterion <n> --step <k> --command '<shell command>' [--match '<what stdout must show>' [--literal|--regex]
+[--sample '<output>']]`, or, for
 commands that hold quotes, from a JSON file with `reality-check.js refine <bead> --from <file>`, where the
-file is `{"<criterion>": {"command": ..., "match": ..., "step": <k, default 1>, "as_role": <bool>}}`;
-the whole file is checked (known criteria and steps, known keys, a valid `match`) before anything is
-written. Plan writes steps with actions only, so on a command-line surface a story is neither ready
+file is `{"<criterion>": {"command": ..., "match": ..., "match_mode": "literal"|"regex", "sample": ...,
+"step": <k, default 1>, "as_role": <bool>}}`;
+the whole file is checked (known criteria and steps, known keys, each `match` in its mode) before anything
+is written. **A match is literal text unless it is marked a pattern.** `--literal` (`"match_mode":
+"literal"`) finds it as written; `--regex` (`"match_mode": "regex"`) reads it as a regular expression,
+which must parse. A match with no mode and no regex characters is literal. One that holds a regex
+character (`\ ^ $ . * + ? ( ) [ ] { } |`) is refused until the refine says which it is, and the refusal
+names both forms: the text with `--literal`, or the escaped pattern with `--regex`. Text with parentheses
+read as a pattern makes a group, so the line it names never matches and a passing run is recorded as a
+fail. `--sample` (`"sample"`) is output the step is meant to print: a match not found in it, in its mode,
+is refused, so a match naming text the output never shows is caught before a run. The refine's output
+names each match's mode (`match (literal): ...` or `match (regex): /.../`), and so does the run's capture.
+`verify-run.js` reads the match in the mode stored with the step; a step refined before modes passes when
+its text is found as written or its pattern matches, so regex characters in it cannot fail a passing run
+and the patterns already stored keep working. Each new command is checked without being run (refine runs no product code): it refuses, and
+saves nothing, a command whose `DELIVERY_TEST_FILES` names a path that is not a file under the plugin
+root (a relative path counts only after a `cd` that says where it runs; otherwise name it
+`${DELIVERY_PLUGIN_ROOT}/...`); with `--from`, one refused command keeps every other one in the file from
+being applied, and `--unchecked '<why>'` saves it anyway and keeps the reason on the steps that had the
+problem. A command that ends in a pipe is a warning: its exit is then the last command's alone, so a pass
+rests on the match. `verify-run.js run` checks the same paths before it runs the step, and after it, a
+run of the sealed runner or of `node --test` that reports no test (`# tests 0`, or no test file found):
+either way the command checks nothing, so nothing is recorded and no andon is raised, and the Reality
+Checker is told to have the Delivery Manager refine it. Plan writes steps with actions only, so on a command-line surface a story is neither ready
 (`ready.js` blocks with `reality-check-command`, R-33) nor deployed (`evidence.js state <bead> deployed`
 refuses) while a planned step group has no step carrying a command; both name the criteria still
 without one. A bead with no script yet (one that states its own criteria) is refused deployed on a
@@ -872,16 +913,32 @@ owner and is reviewed again; gates block only on authority or serious divergence
   would merge new code at a version already installed, so the self-update would never install it. The
   refusal names both versions and the send-back command; a plugin.json that cannot be read, or one on
   the base branch with no valid version, refuses too, and a product with no plugin directory is never
-  asked. When gh cannot read the pull request or its list of changed files, the gate already stands
+  asked. The marketplace beside the plugins directory (`.claude-plugin/marketplace.json`) carries the
+  version an install reads, so when the base branch's marketplace lists the plugin with a version, the
+  head's entry must name the same version as the head's plugin.json and be above the base's entry; a
+  marketplace that cannot be read, or that is gone at the head, refuses too. When gh cannot read the pull request or its list of changed files, the gate already stands
   on the record for the head and CI, and the version step is skipped with it. A new commit changes the head, so the old
   review no longer counts. A change users can see also needs a doc-impact line in its description,
   at the start of a line: `Doc-impact: <the docs it updates>`, with at least one doc file (Markdown,
   a `docs/` tree, a README) changed in the same pull request, or `Doc-impact: none (<why users see
   no change>)`. Tests, generated files, lockfiles and the team's own record directories need no
   line (a tool users run, such as `scripts/testing/run-tests.js`, still does, and a `.txt` file counts
-  as a doc only inside `docs/`), and a pull request that changes only docs is its own doc impact. Editing the description is
-  not a new commit, so the review still counts. Where gh cannot read the pull request, the check is
-  a warning. The lane runs the same check before it allows the Delivery Manager's
+  as a doc only inside `docs/`), and a pull request that changes only docs is its own doc impact. The line counts from the
+  description, from a commit message in the pull request, or from a comment on it by the pull
+  request's author or by someone GitHub lists as the repository's owner, a member or a collaborator
+  (the repository is public: a stranger's comment neither clears a refusal nor blocks a pull
+  request). The description is the base; the commit messages override it in the pull request's
+  commit order (never by commit date, which whoever commits can set to any time); and those comments
+  override both, in the order they were posted (the time GitHub received each, not when it was last
+  edited), one with no readable time counting before every dated one. Every comment and commit is
+  read, past 100 too: `gh pr view` gives at most 100 of each, so at that cap they are read again,
+  page by page, through REST. A builder posts the line as a comment,
+  `gh pr comment <pr> --body 'Doc-impact: ...'`, since it cannot edit the description on every
+  host; a comment or a description edit is not a new commit, so the review still counts, and the
+  refusal names that command. A pull request created before the gate shipped (a fixed time in
+  `lib/doc-impact.js`, the merge of the release that added it, so nothing on disk can reset or
+  extend it) is warned at every check and never refused; one created after, or with no creation
+  time, is refused. Where gh cannot read the pull request, the check is a warning. The lane runs the same check before it allows the Delivery Manager's
   `gh pr merge`, which must name the pull request by number with `-R <product>` (or by its URL in
   that repository) and the full 40-character head with `--match-head-commit`, so GitHub merges
   exactly what was reviewed; `--admin`, `--auto` and `-a`, in any form, are refused, and so is the
@@ -1327,8 +1384,23 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
      that hands it the sent-back review), `note-block` (wasted wakes on, or quiet work in, what waits on
      the manager),
      `restart` (not running and not moving), `reassign` to a builder holding nothing, else `raise`.
-     For the team: a ready, unassigned top-priority bead goes to a builder holding nothing (`assign`);
-     with none free and every builder failing, `add-builder` names `team-role.js add builder --count
+     For the team: every free builder (a session of it open on this host, by its role directory or its
+     team's session name in `claude agents --json`; holding nothing in progress and no open item assigned to
+     it; not stopped on the usage limit) is paired with a ready, unassigned builder item of its own (a story,
+     a bug or a security bead, never another role's reality check, phase review, drift item or spike, never
+     an epic or a shipped item, and only what the claim check admits, as the plan does: nothing whose
+     criteria changed since it was made ready, with an unknown surface or no planned reality-check script,
+     no child naming a criterion its story lacks; in a stopped area
+     only its linked fixes, nothing resting on an external-host assumption not yet observed, no later wave
+     that would leave the current one half-built, no start the owner-set budget cannot finish, no new area
+     near the limit), highest priority first, P0 or not (`assign`, all pairs in one pass). The pairs of one
+     pass are budgeted against each other, as the claim check budgets several starts in one command: each
+     counts as started for the next, so a pass gives out no more than could all start. A builder
+     named as a reassign target is taken out of the free ones first, so no builder is told two items; when
+     the session list cannot be read no builder is called free, and the pass says so; when the claim check
+     itself cannot be read nothing is offered and the pass says why, and an item it cannot read is named
+     and left out; with none free,
+     every builder failing and top-priority work the claim check admits ready, `add-builder` names `team-role.js add builder --count
      <n+1>` for Staffing to run. A builder whose only failure is work waiting on the manager is not
      stuck (that wait is the manager's), so it never adds a builder. At `budget.builders_cap`, where the
      roster command refuses, `raise-cap` asks the Chief of Staff instead, for the owner to raise the cap.
@@ -1336,8 +1408,8 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   `--record` appends the pass to `passes.ndjson` in the watchdog's directory and writes the action and
   its reason as a note on every bead the failing instance holds, once per change of action (a count in
   a reason may grow without a new note). It also carries out the team's action, once per change:
-  `assign` sets the bead's assignee to the free builder (in the recording `BEADS_ACTOR`'s form) and
-  queues it a message; `add-builder` queues Staffing the roster command (only Staffing's lane runs
+  `assign` sets each paired bead's assignee to its builder (in the recording `BEADS_ACTOR`'s form) and
+  queues each builder a message; `add-builder` queues Staffing the roster command (only Staffing's lane runs
   `team-role.js`) and notes the bead, and the pass after the new builder is on the team assigns it;
   `raise-cap` queues the Chief of Staff one message and notes the bead. "Once per change" is against the
   last pass that carried a team action, so a pass with none in between does not queue it again.
@@ -1362,7 +1434,14 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   id the roster has. A role with a live session is never given a second one. A busy one is left to
   work; an idle one is handed the wake as a message on its own socket
   (`<runtime dir>/cc-socks/<pid>.sock`, `lib/session-message.js`), sent under the host job's name,
-  `Watchdog (a host job, not the owner)`. The hand-over is logged as a wake (mode `message`), so the
+  `Watchdog (a host job, not the owner)`. A message held for a role while its session was not running
+  is kept whole in its inbox file, `watchdog/inbox/<role>.ndjson` among the project's records
+  (`lib/inbox.js`), up to 65536 UTF-16 code units, with its real length past that (the sender is told
+  only part was kept), and reaches the role whole in its wake up to 4000 code units; a longer one, a
+  send-back note and a holder's blocker note past that length end `[shortened: N of M characters; ...]`,
+  counted on the stored text and never splitting a character, naming the line of that file, or the bead,
+  that holds the full text, and with more than five held the wake names the lines of the earlier ones.
+  The hand-over is logged as a wake (mode `message`), so the
   caps and the doubling hold; when the socket does not take it, the line says so and nothing is
   started. The frame format is Claude Code's own and undocumented (read on 2.1.318), and a session in
   another permission mode may hold a peer message for its user's approval, so a hand-over is not proof
@@ -1381,7 +1460,12 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   that, the last plugin path its own commands named). A session not open whose last version is older
   than the one the watchdog runs (the installed one) is woken fresh instead of resumed, told which
   version it ran and which is installed. A running wake is never stopped, and an open idle session is
-  handed the wake as a message, as above, never forked or started fresh beside it. A conversation resumed any other way is told at its start that the plugin moved
+  handed the wake as a message, as above, never forked or started fresh beside it. The host manager is
+  the exception: its session belongs to its unit, so while its recorded version trails the installed
+  plugin it gets no wake of any kind, open or not (`Not woken: ... the host manager is moved onto it
+  only by a restart of its unit delivery-host-manager.service (when idle), never woken in place`), and
+  the start pass's stale-session restart moves it through that unit. A host manager on the installed
+  plugin gets its wake as a message, as every role does. A conversation resumed any other way is told at its start that the plugin moved
   and where its scripts are now; and when the lane refuses a path to another installed version of
   this plugin, its reason says so and gives the same command at the current plugin root (or says
   that the lane would refuse it there too) (delivery-plugin-planning-8wz).
@@ -1434,7 +1518,17 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   other role (its handovers likewise go up to 96 a day, against 48 for other roles); each stall waits
   1, 2, 4, 8 ... hours after each wake that carried it; never while that session's last wake still runs, however long ago it started (each wake runs in its own process group
   under `lib/wake-run.js`, which stops the whole group after 2 hours, SIGTERM then SIGKILL, and lives
-  until the group is gone; the guard checks that the logged pid is alive and is still that supervisor); never before the session's own usage limit resets (then once,
+  until the group is gone; the guard checks that the logged pid is alive and is still that supervisor, reading its command and start time from /proc where there is one: a pid that runs another program, or started more than a minute after its wake row, is not that wake, and a pid whose command and start cannot be read counts only within the 2-hour wake timeout plus the 30-second kill grace of its row; the wake plan, the Delivery Manager's pass and the plugin's self-update all ask this about a wake pid with its own row's time before they hold anything. The supervisor and
+  its session run in a systemd user scope of their own, `delivery-role-<instance>-<ms>.scope` with
+  `TasksMax=1000` and `MemoryMax=3G`, wherever the user's systemd manager can be reached
+  (`lib/role-scope.js`), as `team-revive.js` starts and `start.js --launch` do: started straight from the
+  host job, a woken session ran in the watchdog service's cgroup and shared its task limit. Elsewhere it
+  is a plain detached child. When systemd-run refuses the scope (it does so at once, before the session
+  runs), the session is started once as a plain child, and only while the role still has no live
+  session in a fresh list; otherwise nothing starts, no wake is logged and its messages stay waiting
+  (`start.js --launch` says "not started"). The host manager's own unit is its own cgroup already; a unit written by
+  hand outside the plugin, such as a Chief of Staff's Remote Control service, is the one start path the
+  plugin cannot reach); never before the session's own usage limit resets (then once,
   for everything due). Past a limit the stall stays an alarm: "Alarm only: <session>: <reason>". A usage
   limit with no known reset keeps one key and one warning however often a wake is rejected again. A
   usage-limit wake starts within the 5-minute grace plus one job interval of the reset (at most 20 minutes at
@@ -1465,7 +1559,7 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   marketplace clone shallow, so a clone that lacks the installed sha is first deepened (`git fetch --deepen`,
   50, then 200, then 1000 commits) until it holds it. It never installs
   while a wake is running (held to the next cycle), and while an install is held it starts no new wake,
-  so the running wakes end and the next cycle (or the kick a wake leaves as it ends) installs. A hold past the wake timeout and a cycle (2.5 h) means a wake outlived its stop: it is logged once as `held-overdue` and the owner briefing says which version waits, until it installs. It refuses an ungated or older version, retries a failed
+  so the running wakes end and the next cycle (or the kick a wake leaves as it ends) installs. A wake still running past the wake timeout plus the kill grace outlived its supervisor's own stop: before it looks at the install, the pass ends it (SIGTERM to its session's process group and to its supervisor, which stops the whole group as at the limit), logs a `wake-stopped` row with what it signalled, counts it as ended so the install goes in that pass, and kicks the next run, which starts the role fresh under the installed plugin. A later pass, once the kill grace has passed and within an hour of the stop, sends SIGKILL to any signalled target that is still that wake's (the supervisor while it reads as that wake by its row's time, a group while its leader started before the stop), once, as a `wake-killed` row; a number reused since, or an old row after a host restart, is never killed. A hold past the wake timeout and a cycle (2.5 h) is logged once as `held-overdue`, the Chief of Staff is sent one alert naming the roles waiting with work in progress, and the owner briefing says which version waits, until it installs. While a hold lasts the pass names every idle role with in-progress work (`Waiting for the install: ...`), and the run after the hold ends wakes those roles first. A wake whose row cannot be written after its spawn is stopped at once, so no run goes untracked. It refuses an ungated or older version, retries a failed
   update once an hour, and logs each outcome as a `self-update` row. If main moved during the update, so
   the installed sha is not the one checked, the row says `ungated-install` and an `install-ungated`
   warning is recorded. After an install the pass wakes no one and kicks the next run, which runs the new
@@ -1539,7 +1633,8 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   nor started: the check names it. A start pass holds `revive.lock` in the watchdog directory, so the
   Chief of Staff's `start` and the host job's never start the same instance twice; a pass that finds
   it held starts nothing and names the holder's pid, and a lock older than two minutes or whose pid is
-  gone is broken. Each start is a row in the watchdog directory's `revive.ndjson` (instance, pid,
+  gone is broken. A running pass refreshes its lock around each 60 s settle, so a pass that settles
+  several unit starts keeps its lock however long it runs. Each start is a row in the watchdog directory's `revive.ndjson` (instance, pid,
   time, arguments, the id it reattached), its output in `logs/revive-<instance>-<time>.log` beside it.
   `claude remote-control` takes no prompt, so a session it starts comes up with no turn. The watchdog
   reads these rows: the newest start (or restart onto the installed plugin) of an instance, from two
@@ -1555,6 +1650,80 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   on that host. `--project <root>` names the team to check or start from anywhere, a role directory of
   another team included. An instance of the `host-manager` role is never started here: its session is
   its own user unit's.
+- **The outage drill.** Recovery after an outage is seen working once, on a host whose owner consented
+  to it. `outage-drill.js plan [--cut-minutes <n>] [--record <id>]` starts,
+  schedules and writes nothing: it prints the cut length, when the network comes back and when the host
+  restarts, whether the consent record verifies and whether a drill already spent it, each claim a run
+  left on a record (how long ago and by which run it was made, and the `rm` that clears it, or that the
+  record's drill row spends it anyway), and a pre-flight
+  line naming any leftover `claude` child with both `--print` and `--sdk-url` (a process-group kill can
+  leave one, and it must be gone before a reattach). `outage-drill.js run --record <id> --cut-minutes <n>
+  --restart` is the Reality Checker's only: its lane group `outage-drill` runs it, and every other lane,
+  the open ones and the host manager's included, refuses it per command: under the script's name with or
+  without a `.js`, `.cjs` or `.mjs` extension or through a glob that could expand to it, through the
+  launcher, `sh -c`, `env -S`, a word the shell builds at run time, `node -e` code that names the script,
+  behind `sudo`, `doas`, `nice` and the other wrappers, or fed its arguments through `xargs` (which cannot
+  be read, so any drill run behind it is refused). Those lanes are also refused a role variable
+  (`DELIVERY_ROLE`, `DELIVERY_ROLE_ID`, `DELIVERY_ROLE_DIR`) naming the Reality Checker, set before a
+  command, through `env` or by `export`. `plan` and a mere mention of the run stay open. A copy of the
+  script under another name, or code that loads it some other way, is not seen by the lane. The script
+  also checks its own role: the role marker found from its working directory upwards, never a role a
+  caller passes, with the role variables agreeing with that marker (`DELIVERY_ROLE` its instance,
+  `DELIVERY_ROLE_DIR`, when set, its directory); any role but the Reality Checker's, variables that
+  disagree, or no role session at all are refused. That check guards against a mistake, not against a
+  session set on running the drill: the working directory and the role variables are the caller's to
+  set, so a script of a builder's own can move into the Reality Checker's directory and set them. The
+  control is the consent record, below: without the owner's verified word for this drill on this host,
+  nothing is scheduled or cut. `DELIVERY_HOST`, when set, must name this machine (its short hostname), and `plan` says so when
+  it does not. It refuses a record that is not the owner's
+  verified word, a cut outside 1 to 30 minutes, a run without `--restart`, and a second drill on the same
+  record. The record must be consent to this drill: its scope carries the label `outage-drill:<host>`
+  for the host the drill would cut, and the owner's own words name the network cut and the restart
+  with no negation. Those words are the verified quote, or, for an answer to a confirmation, the
+  question the owner was shown and the answer they picked, captured with their input; a question that
+  negates the cut or the restart ("but do not restart", "without cutting") is refused as negated owner
+  words are; the scope and the
+  statement the recording agent wrote never count as the owner's words. Any other verified owner
+  record is refused. Before it schedules anything a run claims the record with an exclusive
+  `drill-<id>.claim` file beside `drills.ndjson`, so a second run started at the same time is refused; a
+  run that fails before its row is written gives the claim back, and one killed between the two leaves
+  it, for `plan` to show. The cut drops the session that runs it, so in this order it schedules the restore
+  (`systemd-run --on-active=<n*60>s --unit=delivery-drill-restore-<id> nmcli networking on`), schedules
+  the restart (`--on-active=<(n+1)*60>s --unit=delivery-drill-restart-<id>`, a minute after the network
+  is back; that unit turns networking on itself before it reboots, since NetworkManager keeps its
+  networking state across a reboot and a restore that failed would otherwise leave the host offline), writes the drill's row to the watchdog directory's `drills.ndjson`, and only then runs
+  `nmcli networking off`. The timers are transient system units owned by PID 1, so they outlive the
+  session; they and the cut need root, through `sudo -n` by default (`DELIVERY_DRILL_PRIVILEGE` replaces
+  it, for example with `pkexec`, or empty under root). The sudoers rule the owner adds for the drill
+  allows only its exact commands, for its own unit names: `systemd-run` with the
+  `delivery-drill-restore-*` and `delivery-drill-restart-*` units, `systemctl stop` of those timers, and
+  `nmcli networking off` and `on`; never a shell, `systemctl` in general or another unit. Because that
+  rule lets those commands run without a password, every lane, the Reality Checker's and the host
+  manager's included, refuses switching the network off (`nmcli networking off` or `nmcli radio ... off`,
+  under any abbreviation), powering the host off or restarting it (`shutdown`, `poweroff`, `reboot`,
+  `halt`, `telinit`, `init 0` or `6`, the `systemctl` power verbs and `isolate` of such a target, and the
+  `loginctl` power verbs, which often need no `sudo`), with `sudo` or without, and however a value option
+  is placed before the verb: the drill's script runs them itself. It also refuses the scheduler the rule
+  empowers: `systemd-run` as the system manager (not `--user`), and `systemctl` acting on a
+  `delivery-drill-*` unit (starting one, or stopping a running drill's restore), so a lane cannot schedule
+  or cancel a drill itself; a `systemd-run` or `systemctl` carrying a power or network-off command is
+  refused the same way. These refusals read the command behind the wrappers a shell offers
+  (`sudo`, `doas`, `env`, `pkexec`, `run0`, `nice`, `timeout`, `strace`, `watch`, `xargs`, `flock`, and
+  the command `su`, `runuser`, `script` or `find -exec` carries). What they cannot read is a command in a
+  script file the lane never sees, or fed to a shell on its standard input; there the consent record is the
+  control, as it is for the drill's own role check. A schedule that fails cuts nothing and stops the
+  timer made before it and the one that reported failing, which may still have been made, the restart
+  first. A cut that exits non-zero or times out may still have taken the network down: it stops only the
+  restart timer, runs the restore at once through the same privilege, and keeps the restore timer, so
+  the network is back by the end of the cut whatever the cut did; the record stays spent. Each stop is
+  checked: one that exits non-zero, times out or throws is reported as the timer that may still be
+  scheduled, with its unit (after a failed cut, with the time the host would restart).
+  `outage-drill.js stop --record <id>` then stops that drill's restart timer through the same privilege;
+  it never stops the restore, which only brings the network back, so any role may run it. On a record
+  whose drill never ran, the timer is not loaded (`systemctl` exits 5 or says so), so `stop` reports that
+  no drill restart is scheduled for it, rather than warning of a timer that may still fire. The
+  consent is one cut of up to 30 minutes and one restart, so an offline gap longer than the cut is
+  not covered and no option stretches it.
 - **A running role session moves onto a newly installed plugin.** Claude Code loads a plugin's hooks when
   a session starts, so a role session still open when a new version is installed keeps the old
   version's lane for as long as it runs. `team-revive.js check` names such a session (`Stale:`): open in
@@ -1582,28 +1751,43 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   assigned to the instance, a message or handoff waiting for it, a pull request from its `team/`
   branch), and per host job unit `<unit>: running` or `stopped since <time>` (`systemctl --user show`);
   each source it cannot read is a `SOURCE UNAVAILABLE: <what>` line and is never counted as running.
-  `restart [--json]` starts each stopped host job (its timer and path units, and one run of its
-  service), runs once (`systemctl --user start --no-block`) the service of a host job whose timer is
-  active but which has written no pass for 30 minutes, then starts the instances that are down and
-  hold work, through `team-revive.js`'s start pass with its caps (a start a cap holds is named with
-  when it may run). Asked by the owner, it runs every team's start pass, so a session on an older
-  plugin goes through `team-revive.js`'s stale-session restart, whose read of the sessions just before
-  a stop is a fresh one; the reply names each such restart (`Restarted:`) and each one not made, with
-  why (`Not restarted:`). After the starts it reads again every 10 seconds until each session it started
-  is listed and each host job whose service it ran has written a new pass, inside one 5 minute window
-  counted from the restart's start, every team's start pass included (the call can take that long, and
-  a start that exits at once is named as failed rather than waited for). An instance is
-  `Back:` only when that read lists a session in its role directory and the roster records, for that
-  session, the installed plugin version; otherwise it is `Not back: started (pid N) but not listed
-  after <duration>`, `Not back: running an older plugin (<version>, installed <version>)`, or the
-  reason it was not started. A host job run once is `Back:` when a later read finds a new pass, else
-  named as still silent. An instance that is down and holds nothing is listed and left down.
+  `restart [--down-only] [--json]`: without `--down-only` it is the owner's restart of the team, run
+  only on the owner's own message in the host manager's session; a request from anyone else gets
+  `restart --down-only`, which keeps the tick's rule (it starts what is down or silent and stops nothing
+  that runs). The owner's restart restarts every installed host job,
+  running or not: `systemctl --user restart` of its timer and of its path unit, then one run of its
+  service (`systemctl --user start --no-block`); a job whose timer does not restart gets no run, and
+  the reply says why. It then runs every team's start pass (`team-revive.js`, its caps applying): the
+  instances that are down and hold work are started (a start a cap holds is named with when it may
+  run), and every instance that is running and holds work is restarted onto the installed plugin,
+  even when it runs that version already, through `team-revive.js`'s stale-session restart and all
+  of its rules: only a session idle between turns, read once and again just before the stop; its
+  Remote Control server stopped, then a new one started that reattaches its recorded Remote Control
+  session (`--session-id`); one role at a time; a `restart` row in `revive.ndjson` (marked `forced`)
+  that the hourly and daily caps count. A busy session is never stopped: the reply names it
+  `Busy, not restarted now:` with the reason. A session with no Remote Control server, no recorded
+  Remote Control session id, or running twice is `Not restarted:` with the reason, and one a cap
+  holds is `Not restarted now:` with when it may run. An instance that runs and holds no work is
+  `Not restarted (no work held):`. After the starts and restarts it reads again every 10 seconds until
+  each session it started or restarted is listed and each host job whose service it ran for a
+  silence has written a new pass, inside one 5 minute window counted from the restart's start, every
+  team's start pass included (the call can take that long, and a start that exits at once is named
+  as failed rather than waited for). The reply's first line is the installed plugin version
+  (`Installed delivery plugin: <version>.`). An instance is `Back:` only when that read lists a
+  session in its role directory and the roster records, for that session, the installed plugin
+  version (a restarted one `Back: <team> <instance> is back on <version>`, never confirmed by the
+  session it replaced); otherwise it is `Not back: started (pid N) but not listed after
+  <duration>`, `Not back: running an older plugin (<version>, installed <version>)`, or the reason it
+  was not started. Each host job is `Restarted:` when its timer runs in the read after, else named
+  with what that read shows. Only when no host job is installed and no role holds work does the reply
+  say `Nothing to restart:`. An instance that is down and holds nothing is listed and left down.
   `tick`, run every five minutes by `delivery-host-manager-tick.timer`, finds three silences of 30
   minutes: an instance holding an in-progress bead with no bead note and no watchdog wake, either down
   (it runs the restart) or still listed as running, and a team's host job that has written no pass to
   its `job.log`. An instance still listed is never stopped or started by the tick, since its session
   may be in the middle of a turn: the alert says what is silent, since when, and that the owner can ask
-  the host manager to restart the team. The outage ledger,
+  the host manager to restart the team. The tick restarts only what is down or silent: never a
+  running session on the installed plugin, and never a host job that is running. The outage ledger,
   `${XDG_STATE_HOME:-~/.local/state}/delivery/host-manager/outages.ndjson`, keeps one outage per
   silence, keyed by team and instance or by team and host job: an `open` row when that silence is
   first seen, an `alert` row on the pass that opened any (one alert, naming those), and a `close` row
@@ -1613,6 +1797,75 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   which that team's watchdog hands to the session as a wake, a resume of it or a copy when it is open,
   not as a line in the open Remote Control conversation; with no such instance the ledger row is the
   only record.
+- **A role a user unit serves.** A role whose role directory is the `WorkingDirectory=` of a service
+  in `~/.config/systemd/user` is served by that unit (`lib/team-revive.js` `servingUnits`): the
+  plugin's own when its `ExecStart=` runs `host-manager.js run-session`, one the plugin did not write
+  when its `ExecStart=` runs `claude remote-control` itself. Such a role has one start path, its unit:
+  no start pass, stale-session restart, watchdog wake, `start.js --launch` or host manager restart
+  starts it in a scope of its own or in a wake beside the unit, which would put a second session in
+  one directory (on a real host, a hand-written Chief of Staff unit beside a scoped start failed with
+  "This folder is already served" and restarted over 5,000 times). A missing role the plugin's own
+  unit serves is started with `systemctl --user reset-failed` and `systemctl --user start <unit>`, a
+  `start` row with the unit and `via: unit` under the same caps (one start an hour, the daily cap); a
+  missing one a unit the plugin did not write serves is named with its unit (`not started: it is served
+  by the user unit <unit>`) and nothing is started; with both units on one directory, it is named as two
+  start paths and the plugin starts neither. A watchdog wake for such a role starts no session (`Not
+  woken: ... served by the user unit <unit>`); a live session of it still gets the wake as a message.
+  One on an older plugin, or one the owner's restart asks for, is restarted only through the plugin's
+  own unit (`systemctl --user restart <unit>`, only when its session is idle on the read just before, a
+  `restart` row with the unit; busy, it is named busy and not restarted). A role served by a unit the
+  plugin did not write is never restarted: the reply names it (`served by <unit>, which the plugin did
+  not write; not restarted: <the fix>`), and with both units on one directory neither is restarted. The
+  unit file is read as systemd reads it: `%h` and `~` are the home, `%%` one `%`, and a quoted word one
+  word (`--name "Chief of Staff"`). A unit the plugin did not write that `systemctl --user is-enabled`
+  and `is-active` say is neither enabled nor active (stopped and disabled, as the fix says) no longer
+  serves its directory, though its file stays; a state that cannot be read counts as serving. The
+  plugin's own unit stays its role's start path while it rests inactive. The plugin never edits, stops, disables or removes a
+  unit it did not write: `start.js --check` names it, one `role unit <instance>` row per role directory
+  a unit serves on this host, a warning with the fix: stop and disable that unit (`systemctl --user
+  disable --now <unit>`), then, for the Chief of Staff, install the plugin's own (`host-manager.js
+  install-role --project <root>` through the project's launcher). The plugin's own unit alone is a pass
+  row.
+- **The Chief of Staff's own unit.** `host-manager.js install-role [--dry-run] --project <root>
+  [--instance <id>]` writes `delivery-role-<instance>-<team tag>.service` (the tag is the watchdog's,
+  from the project root, so two teams' units on one machine never share a name) for the team's Chief
+  of Staff on this host, whose role directory must hold its role marker. It runs `host-manager.js
+  run-session --project <root> --instance <id>` in that directory through the project's launcher, so
+  it starts by the host manager's rules below (the recorded session reattached once, otherwise a server
+  that stays up, never beside a live session, exit 3 when one is live), named `<instance>@<team>` and
+  recorded as `role-unit-session` rows of `revive.ndjson`. It has the same bounded restarts
+  (`Restart=always`, `RestartSec=30`, `RestartSteps=5`, `RestartMaxDelaySec=30min`,
+  `StartLimitIntervalSec=15min`, `StartLimitBurst=5`), `KillMode=process`, and `TasksMax=1000`, the
+  limit `lib/service-limits.js` asks of a unit that holds one role session; claude replaces run-session
+  (`process.execve`), so it runs in the unit's own cgroup. It reloads systemd and enables the unit,
+  starting it at once only when no session of the Chief of Staff is live (otherwise the start pass
+  starts it through the unit once that session is gone). While a unit the plugin did not write serves
+  the same directory it installs nothing and names that unit with the fix. `start.js --launch
+  --keep-alive` runs it before the launch on a host with systemctl, so the launch leaves the Chief of
+  Staff to its unit. Install-role is refused in every role session, and run-session runs for the Chief
+  of Staff only in its own role (or outside any role session, as its unit runs it).
+- **The host manager on an older plugin.** Its `delivery-host-manager.service` is the plugin's own
+  unit, and it is moved onto the installed plugin through that unit on every start pass (the
+  watchdog's each run, and the owner's restart), not only the owner's: a host-manager session whose
+  roster entry records a plugin version below the installed one is restarted with `systemctl --user
+  restart delivery-host-manager.service` only when a fresh read of the sessions, made just before,
+  finds it idle (a `restart` row with the unit, from and to, and the session it meant to replace as
+  `from_session`; the same caps as every restart). A unit restart after which that same session is
+  still the open one did not take (the unit's run-session found it live and exited 3), so it does not
+  hold the next try: once the start caps allow, a later pass or the owner's restart restarts the unit
+  again; only a restart that brought up a new session that still records the older version is not
+  tried again for that version, as for every role. Every start or restart through the plugin's own
+  unit (this one, and a missing role's start) is settled as a spawned start is: the pass waits the same
+  60 seconds and reads `systemctl --user is-active <unit>`; a unit not active by then (inactive, failed,
+  or still activating, as a session that exits within seconds leaves it) gets a `failed` row naming the
+  start, the reply says `Failed`, and the next pass tries again instead of holding the hour; the daily
+  cap still counts it, so a unit that keeps failing stays bounded. An answer that cannot be read is not
+  judged. Busy on
+  either read, it is named and left; with that unit not installed for its role directory it is named
+  and left, since nothing else restarts it; a unit the plugin did not write on that directory is
+  named with its fix, as above, and nothing is restarted. Its server is never stopped and no session
+  is spawned in a scope for it, and a start pass never starts a host manager that is down: its unit
+  does. A host manager on the installed plugin is left as it is.
 - **The host manager's units.** `host-manager.js install [--dry-run] --project <root> [--instance <id>]`
   takes the role directory of that team's `host-manager` instance (the roster's, else the team layout's)
   and writes three systemd user units: `delivery-host-manager.service` runs `host-manager.js
@@ -1623,15 +1876,36 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   recorded one never joined or already ran (a reattach is single-session and ends after its task), a
   server that stays up after each task (`--spawn same-dir --capacity 1`); always in the team's
   permission mode. Each start is a `host-manager-session` row of the team's `revive.ndjson`, with the
-  dropped id and why, so the once-only rule holds across the unit's restarts. run-session replaces itself
-  with claude (`process.execve`), so the unit's main process is claude; on a node before 22.15, which has
-  no `process.execve`, it starts nothing and says so, since claude as its child would outlive a stop of
-  the unit and the next start would add a second host manager. Before it starts, run-session lists the
+  dropped id and why, so the once-only rule holds across the unit's restarts. The project's launcher
+  replaces itself with the script it runs (`process.execve`), and run-session replaces itself with
+  claude, so the unit's main process is the `claude remote-control` session itself, never the launcher
+  or a node waiting on it: a stop or restart of `delivery-host-manager.service` stops that session, and
+  no host-manager claude is left running outside the unit. On a node before 22.15, which has no
+  `process.execve`, the launcher runs the script as a child as before, and run-session starts nothing
+  and says so, since claude as its child would outlive a stop of the unit and the next start would add a
+  second host manager. Before it starts, run-session lists the
   open sessions: one live in the host manager's role directory or under its name `<instance>@<host>`
   means no second session (one live session per role), and so does a list that cannot be read. A live
   host manager is exit 3, a success the unit does not restart (`SuccessExitStatus=3`,
   `RestartPreventExitStatus=3`): the unit rests inactive, so it never runs into its start limit and the
-  watchdog's reset; the watchdog's next pass starts it once again. A list that cannot be read is a
+  watchdog's reset; the watchdog's next pass starts it once again. One exception replaces the live
+  session: when run-session runs in the unit and the one live host-manager session's `claude
+  remote-control` server runs in no service unit at all (its `/proc/<pid>/cgroup` holds only scopes and
+  slices under the user manager: a session started by hand in a terminal or login session, a role
+  scope, one an older unit left behind), no unit the plugin did not write serves the host manager's
+  directory, and a fresh second read of the sessions finds it idle, run-session stops that server (the
+  same stop, and wait for the server and its session to end, that team-revive's restart uses), writes a
+  `host-manager-replaced` row, and execs the unit's own session as above, reattaching the recorded
+  session once. A leftover is replaced the same way: a server in `delivery-host-manager.service`'s own
+  cgroup (and no other service's) that is not the unit's main process, as `systemctl --user show
+  delivery-host-manager.service -p MainPID --value` reads it (0 while the unit is down, or another
+  process). A unit stopped with `KillMode=process` leaves its processes in its cgroup, so a session an
+  older unit left there is moved onto the unit's own session, idle only, with the same row (marked
+  `leftover`). A server that is the unit's main process, a MainPID that cannot be read, a server in
+  any other `.service` (one the plugin did not write: the plugin never stops what such a unit runs), a
+  hand-written unit on the directory, busy on either read, a cgroup or process list that cannot be
+  read, or two live sessions: exit 3, nothing changed; a server
+  that does not stop: exit 1, and no session is started beside it. A list that cannot be read is a
   failure, and `Restart=` tries again later. Its restarts are bounded:
   `Restart=always` with a delay growing from 30 seconds to 30 minutes over 5 restarts (`RestartSec=30`,
   `RestartSteps=5`, `RestartMaxDelaySec=30min`, systemd 254 and later; an older systemd warns of the
@@ -1644,11 +1918,35 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   fails the service when that directory is missing). An `XDG_STATE_HOME` or `XDG_CONFIG_HOME` set at
   install is written into both services' `Environment=`, so the units read the same host file and
   ledger as the shell that installed them. It reloads systemd, enables
-  and starts the service and the timer, and says, without running it, when `loginctl enable-linger` is
+  and starts the service and the timer (the service is started at once only when no host-manager
+  session is live and the open sessions could be read; otherwise it is only enabled, and the
+  watchdog's start check, which makes the same match, starts it), and says, without running it, when `loginctl enable-linger` is
   needed for the units to start at boot. A host without systemctl, a team with no `host-manager`
-  instance (Staffing adds one: `team-role.js add host-manager`) or a role directory not yet prepared
-  installs nothing and says why. `watchdog.js install --apply` runs the same install when the service
-  file is missing. Each watchdog `run` checks `delivery-host-manager.service` and starts it when it is
+  instance (Staffing adds one: `team-role.js add host-manager`), a role directory not yet prepared (it
+  must exist and hold its role marker `.delivery-role.json`, as `prepare-role.js` writes it, naming the
+  role `host-manager` and that very instance; the directory is the roster's `role_dir` when one is
+  recorded) or a `team.json` that cannot be read
+  (missing, not JSON, no roles list) installs nothing and says why. Install is refused in every role
+  session. `watchdog.js install --apply` runs the same install when the service file is missing, and so
+  does each watchdog `run` (the host job, outside any role session): when
+  `delivery-host-manager.service` is missing, the team's manifest has a `host-manager` instance on this
+  host and its role directory is prepared, the run calls the same install (the same reload, enable and
+  start) and writes one `host-manager-install` row to `revive.ndjson` with the files it wrote. These two
+  installs write only the unit files that are missing: a tick service or tick timer already there (an
+  owner's edit included) is kept as it is. Every attempt that gets past the checks is one row, a write
+  that fails included (the row carries the `error`, and the next run tries again). When the last
+  `host-manager-install` row carries an error (an enable that failed after the files were written), the
+  next run repeats the reload and the enables, writing nothing that exists. It writes a row only when
+  the result differs from the last row, so an enable that keeps failing the same way is tried at every
+  run but stays one row, and a new error or the success is the next. On such a retry the unit file is
+  already there: when the install can no longer go ahead (no host manager on this host, its directory no
+  longer prepared, a `team.json` that cannot be read, no systemctl), the run skips it, says why
+  (`install not repeated (<reason>)`, or the `team.json` that could not be read), and still starts the
+  unit when it is stopped. So a host manager that Staffing prepares after the watchdog was installed
+  gets its units at the next run, with no step from the owner. A team with no host manager on this host,
+  a role directory not yet prepared or a host without systemctl are left as they are and write no row;
+  a `team.json` that cannot be read is said in the run's output, with no row. An installed unit is never
+  rewritten by the watchdog; `host-manager.js install`, run by hand, writes all three. Each watchdog `run` then checks `delivery-host-manager.service` and starts it when it is
   installed and not active; a unit that hit its start limit is failed, and the pass runs
   `systemctl --user reset-failed delivery-host-manager.service` (that unit only) before the start, so it
   is tried again every 15 minutes. While a host-manager session is already live (in its role directory or
@@ -1656,15 +1954,85 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   neither resets nor starts the unit, writes no row and says so; nor when the open sessions cannot be
   listed. One `host-manager-start` row in `revive.ndjson` per start: the host jobs restart the host
   manager and the host manager restarts the host jobs.
+- **The service directory.** On a host where the owner runs a service directory (`service-directory`
+  on 127.0.0.1:8085), every unit the plugin writes is an entry there: `delivery-host-manager.service`
+  and its tick service and timer (registered by `host-manager.js install`), a role's own unit
+  (`install-role`), each watchdog host job's `delivery-watchdog-<tag>.service`, `.timer` and `.path`
+  (registered by `watchdog.js install --apply`), and the `delivery-role-*.scope` of each role start in a
+  scope (registered when the start runs, under the name `systemctl --user` lists it by). Each entry is a
+  dynamic one with `owner` "delivery plugin", category `delivery`, tags `systemd-user` and `delivery`, a
+  `url` that names the unit (`systemd-user://<unit>`, never a network address) and a `ttl` of one hour.
+  The directory's registration replaces any entry of the same name, so every registration reads this
+  node's entries (`GET /api/services/local`) first: a name listed under another owner is never posted,
+  and the reply (an install's lines, the watchdog pass line, start.js's line for a scope, or a
+  `directory-held` row for a scope a start pass made) names it and its owner. Each name the plugin
+  registers is kept on a local list, `directory-names.json` beside the host manager's state
+  (`$XDG_STATE_HOME/delivery/host-manager/`, else `~/.local/state/delivery/host-manager/`), with the time
+  of its last registration or heartbeat; the plugin takes a name off the list when it removes the entry
+  itself, and an ended scope's name whose ttl ran out is dropped as the list is written. Each watchdog `run` registers a plugin unit file or active role scope that has no entry (so one
+  written while the directory was down is registered once it is back), sends a heartbeat for each one
+  that is active (the directory's health then reads the heartbeat, not a TCP probe), and removes an entry
+  it owns whose unit is gone, only for a name on its local list (an entry another host or user wrote is
+  left alone); a scope that ended simply expires. An entry the plugin registered that is missing while
+  its ttl has not yet run out since the last registration or heartbeat was removed by someone else: the
+  owner may have taken the unit out of the plugin's hands, so it is not registered again by anything
+  (the watchdog pass, `host-manager.js install` and `install-role`, `watchdog.js install --apply`: no
+  POST, and the reply or pass line names it), and the unit is not started, stopped or restarted, so an
+  install's start of it is refused and the unit is enabled only (an entry that merely expired with its
+  ttl is registered again). A directory that lost every entry does not lock the plugin's units out (its registry is a file on disk, so a plain host restart keeps it; it
+  reads empty only when that file is missing or corrupt): the directory reports no start time or uptime, so a read
+  in which every name on the plugin's list that is still within its ttl is missing, and no entry of the
+  plugin's is listed, is taken as that loss. Its time is kept on the list; a name last seen before it is
+  lost, not removed, and is registered again, so the changes go ahead, while a name seen again after it
+  and then missing is refused as before. The plugin cannot tell an owner who removed every one of its
+  entries at once from a lost directory, and registers them again. A unit that is not active (a oneshot service between runs, a timer's service)
+  gets no heartbeat, so its entry reads up while its ttl lasts after a registration and then expires;
+  the next pass registers it again: its health in the directory says the entry is fresh, not that the
+  unit runs. Writes go from 127.0.0.1, which the directory lets through without a token; the plugin
+  holds none. A directory that cannot be reached never fails an install or a start: the units go in,
+  the reply says they were not registered, and the next pass registers them; within one watchdog run,
+  after the first request that cannot reach the directory the rest of the run does not wait on it again.
+  Before a start, stop, restart or replace of a plugin unit (the owner's restart and the tick restarting
+  or starting a role's own unit, the owner's restart of each host job's timer and path unit and its one
+  run of the job's service, `restart --down-only` and the tick starting a host job unit that is down and
+  running a silent job's service once, the stale-session restart of the host manager, the stale-session replace of a role outside a user unit
+  (the directory must be readable, and the scope of its last start or restart in the ledger, when it has
+  one, must not be another owner's or removed; refused, nothing is stopped, with a `restart-refused` row), the watchdog's start of
+  `delivery-host-manager.service`, `team-revive.js start` starting a role's own unit, an install's
+  `enable --now`, run-session's replace of a leftover or
+  outside session), the unit's entry is read with `GET /api/services/local`. A missing entry the plugin
+  never registered is registered and read again; a missing entry the plugin registered and someone
+  removed, an entry owned by anyone but the plugin, or a unit the plugin did not write, is refused, with
+  the reason in the reply and a `restart-refused` or `start-refused` row that no start cap counts (a
+  refused host job unit is named in the reply with its reason, and the rest of the restart goes ahead). When
+  the directory cannot be read, a stop, restart or replace of a running unit is refused and the reply
+  says the directory could not be read; starting a plugin unit that is down goes ahead, since after a
+  host restart the directory may come up later than the host manager, with a `directory-unreachable`
+  row and a `service-directory-unreachable` warning, and the next pass that reaches the directory
+  registers it. `host-manager.js directory [--json]` reads this node's entries and their health
+  (`GET /api/services/local` and `GET /api/health`), the plugin's own first; it changes nothing and runs
+  in any role session.
 - **The host manager's lane.** Its brief writes nothing and runs `read`, `bd-read`, `bd-notes`,
-  `operator-read`, `judge` and the `host-manager` group: `host-manager.js status|restart|tick`,
-  `team-revive.js check|start`, `systemctl --user` (`status`, `is-active`, `show`, `start`, `restart`,
-  `stop`, which must name a unit, and `list-units`, `list-timers`, `daemon-reload`) where every unit
-  named matches `delivery-watchdog-*.service|.timer|.path` or one of the host manager's three units,
+  `operator-read`, `judge` and the `host-manager` group: `host-manager.js status|directory|restart|tick`,
+  `team-revive.js check|start`, `systemctl --user` reads only (`status`, `is-active`, `show`, which
+  must name a unit, and `list-units`, `list-timers`) where every unit named matches
+  `delivery-watchdog-*.service|.timer|.path` or one of the host manager's three units (a start, stop,
+  restart, enable or reload of those units goes through `host-manager.js`, which reads each unit's
+  entry in the service directory first, never by hand),
   `amplifier run`, `ps`, `df`, `free`, `uptime`, and `sort` and `uniq` with no option or operand that
   writes a file. A lane rule's `positional_match` lists those unit globs (with `positional_required`
-  for the commands that act on a unit). Every other lane, the `any` lanes included, is refused
-  `systemctl --user` and `host-manager.js restart|tick|install|run-session`, with the way out (message
+  for the commands that act on a unit). Every lane may read the plugin's own user units:
+  `systemctl --user show`, `status`, `is-active` or `list-units` where every unit named matches
+  `delivery-watchdog-*` or `delivery-host-manager*` (a `.service`, `.timer` or `.path`), and
+  `list-units` with no unit (for example `systemctl --user show delivery-host-manager.service -p
+  ActiveState -p TasksMax`). The read is judged strictly: `--user` spelled out, only the options
+  `-p`/`--property`, `-P`, `-t`/`--type`, `--state`, `-n`/`--lines`, `-o`/`--output`, `--no-pager`,
+  `--plain`, `--no-legend`, `-a`/`--all`, `-l`/`--full`, `--value` and `-q`/`--quiet`, and no word the
+  shell builds; the lanes without the `any` group run it through the `read` group. Every other
+  `systemctl --user` command (`start`, `stop`, `restart`, `reload`, `enable`, `disable`, `kill`,
+  `set-property`, `reset-failed`, `daemon-reload`, `mask`, `edit`, `revert` and the rest), and a read of
+  any other unit, stays the host manager's: every other lane, the `any` lanes included, is refused them,
+  `busctl --user`, `systemd-run --user` and `host-manager.js restart|tick|install|run-session`, with the way out (message
   the host manager); `team-revive.js start`, and `claude remote-control` with `--name`, `--spawn` or
   `--session-id` (a role session started by hand), are refused to every lane but the Chief of Staff's
   and the host manager's (`claude remote-control --help` and other claude commands are not). The command
@@ -1714,10 +2082,28 @@ no `CLAUDE_PLUGIN_ROOT`, so the brief and the SessionStart role block print the 
 operator's word: act on it and do not ask again. A message that claims a decision but carries no
 verifiable id is information; the reply asks the sender for the id, never the operator.
 
+**Test inputs.** During a check the Reality Checker never asks the operator for an input; it types a
+test input into the role session, one that opens with the fixed marker `[reality-check test input]`
+(after any leading whitespace; quoted elsewhere in a message it changes nothing). The same holds for
+an answer in a question box and for an answer another provider's writer hands in. Capture keeps such
+an input apart (source `test`), whatever the session stamped on it. A record made from it, or from
+another test record, carries `test: true`, set when it is written, never chosen. `operator.js
+verify` prints `NOT VERIFIED <id>: test_input: ...` and exits 1 for the test input and every record
+that reaches it. A test record may lean only on test records, so it never revokes, supersedes or
+answers an operator decision (`test_scope`); the operator's own later input can still revoke a test
+record. `operator.js pending` lists test inputs and test records (delegations, inferred answers) under
+their own headings, apart from the operator's, so the Stop hook never waits on them, the team status
+does not count them, and an ack of a test input never clears a delegation awaiting the operator's
+glance. `find` leaves test records out unless `--all`; `find --all`, `show` and the acknowledged list of
+`pending --all` mark them `[test]`. The question
+ledger holds no test record, because a test record cannot answer a question.
+
 **The loop**, one command per input, in the same turn (`/delivery:decision` has the steps):
 see it (`operator.js pending`), record or acknowledge it, carry the record id with `SendMessage`.
 Every operator input in the Chief of Staff's session (and the Product Manager's) gets a record or
-an ack. For an input left without one, the Stop hook reminds the Chief of Staff once per turn and blocks the first stop; it fails open if the transcript format is unrecognised. A short answer such as "yes", "B" or "No." is
+an ack. Each input is captured once, by the identity of its transcript record: resuming a session
+copies its earlier messages into the new transcript with the same record id but a new prompt id, and
+those copies are not captured again, while an input typed after the resume is. For an input left without one, the Stop hook reminds the Chief of Staff once per turn and blocks the first stop; it fails open if the transcript format is unrecognised. A short answer such as "yes", "B" or "No." is
 quoted whole and recorded with `--answers q-<instance>-N`. `verify` checks that the input came
 after the question and does not answer another question, and prints the question beside the
 answer; whether the reply really answers it is still the Chief of Staff's claim, shown for a
@@ -1734,6 +2120,7 @@ scope always go to the operator, once, in the briefing, logged with `operator.js
 - Only the Chief of Staff and the Product Manager may use `AskUserQuestion`, `PushNotification` and `SendUserFile`.
 - Their Stop hook reminds once per turn, blocking the first stop, when a turn leaves an operator input unrecorded or asks the operator to relay (including "approve the permission prompt in X"); the relay check is a heuristic, and both checks fail open if the transcript format is unrecognised.
 - Every role, the unrestricted builder lane included, runs tests only through the sealed runner: a direct `node --test`, or a test file run with node, is refused, because a suite run that way leaves its fixtures in the host's shared /tmp. The refusal names the sealed form of the refused command, `node <plugin>/scripts/testing/run-tests.js -- '<command>'`: after `--` the runner runs any command (one word is a shell line as written, several are quoted one by one) through the shell in the current directory, in the same seal with the same caps, inode guard, signal handling and cleanup, and the same unsealed fallback; only `--clock <iso>` goes before `--`. So any product's test command runs sealed, `node --test` included. `run-tests.js` without `--` runs delivery's own suite (`DELIVERY_TEST_FILES` picks files). A run of delivery's own suite with a failure ends with `# failing tests (n):` and one `# not ok - <name> (<file>:<line>)` line per failing top-level test (a failing subtest is named through the top-level test that holds it), so a capture cut short still names what failed; a caller's own `--test-reporter` turns that summary off. Its standard output is TAP whenever it is not a terminal (a pipe or a file), and node's spec reporter on a terminal. The lane reads node's options as node does (options that take a value are read with it, `-i` takes none, redirections are the shell's, apart or attached), and behind that parse sits a fail-safe: the whole command, with backslash-newline continuations joined and every quote and backslash dropped, is refused when `node` or `nodejs` appears as a word followed anywhere by `--test` or a `.test.js`-style file, unless the whole command is exactly the sealed form: optionally `DELIVERY_TEST_FILES=<plain path characters>`, then `node` (or a path ending in `/node`), then the runner's path, each in plain characters or as one single-quoted literal (a plugin under a path with spaces; the reason quotes it so), optionally `--clock <iso>`, and optionally `-- '<command>'` in single quotes, inside which the outer shell expands nothing, so the command, substitutions and newlines included, runs inside the seal. A command that holds a single quote goes in a script file, run as `-- 'sh <file>'`; the refusal says so. The fail-safe has one other exact form: `node <plugin>/scripts/reality-check.js refine ...` (or the same through the project's launcher, `delivery.js reality-check.js refine ...`) whose every argument is made only of plain characters and single-quoted literals. `refine` stores `--command` and `--match` as text and runs neither, so a stored step that runs the test runner is not a test run; with no operator, redirect, substitution or double quote outside the single quotes, the outer shell runs nothing else either. It over-refuses on purpose (`node helper.js --test` is refused): a false refusal costs one retry with the sealed form the reason gives, a false allow fills the host's /tmp. A sealed run started from a directory under the host's /tmp (a review clone, a CI workspace) binds that directory, and the plugin when it lives there, back over the private /tmp, so the checkout stays visible and the rest of the host's /tmp stays hidden; `seal-check.js` proves it in a fresh seal.
+- **Tests and the clock.** `run-tests.js --clock <iso>` moves the clock of every node process in the run to that instant (`scripts/testing/fake-clock.js`); a clock outside node, such as `git`'s commit times or a process start time read from the kernel, does not move. CI runs the whole suite a second time with the clock 45 days ahead, and the merge gate refuses a pull request while that run, like any check, is red. In the normal suite, `scripts/testing/clock-guard.test.js` is a first line on the builder's machine: it picks the test files that call the calendar getters, cut a month or day key from a date, name a month boundary, read a clock the fake one cannot move (the kernel's boot or process start times), or carry a line `// clock-sensitive` (for a test whose dependence sits in the code it calls), runs them under that 45-day shift and under the last half minute of a year, and fails naming each test that breaks. A file that depends on the date some other way is not picked, so CI's month-ahead run of the whole suite stays the backstop.
 - The team leaves no files in the host's temporary directory: an unrestricted (`any`) lane's shell write whose target is under os.tmpdir(), `$TMPDIR` or `/tmp` (by real path) is refused, and the reason names the role's `scratch/` (or beside the file in its worktree). Judged are redirect targets (`>`, `>>`, `>|`, `&>`, `2>`; not `/dev/null` or `2>&1`), `tee`, `truncate`, `mkdir`, `touch`, the destination of `cp`, `mv`, `ln`, `install` and `rsync`, `dd of=`, `sort -o`, and `mktemp` unless it is given a directory (`-p`, `--tmpdir=`) or a template outside tmp, including inside `$(...)`. Reads from /tmp, `rm` there, writes inside the role directory (its lane patterns decide, even under tmp) and the sealed runner's `-- '<command>'`, which runs in its own private /tmp, are not affected. Best effort: a write inside `sh -c '...'` or through a variable other than `$TMPDIR` and `$HOME` is not followed.
 - Every watchdog run (`watchdog.js run`, the host job) first sweeps the test runs' leftovers from the host's /tmp with `scripts/testing/sweep.js`, and logs what it removed. Nothing is chosen by its name: a test run that is not sealed records the directory it makes, when it makes it, in `$XDG_STATE_HOME/delivery/tmp-created.ndjson` (under `~/.local/state` by default), and forgets it once it has removed it. The sweep removes only a recorded path directly in `/tmp` (whatever TMPDIR says) that is a real directory owned by the user running it, whose recording process is gone, with nothing changed inside for an hour; nothing else is ever touched. Run it by hand with `node scripts/testing/sweep.js [--dry-run] [--min-age <minutes>] [--json]`.
 - Lanes deny writes to the operator store (`.git/delivery-operator/`, in the project and in a role's clone, case-folded and through symlinks), to the legacy `.delivery/operator/`, and git commands that would write the store or push its branch; only the manager lanes include the writer commands. Workers with unrestricted Bash can record or acknowledge only inputs their own session captured; the check is cooperative (it compares a session id the session's own Bash can rewrite).

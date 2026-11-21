@@ -194,6 +194,7 @@ function checkPrerequisites({ env = process.env, project, platform = process.pla
   }
   rows.push(sealRow({ env: runEnv }));
   if (platform === 'linux') rows.push(...serviceLimitRows({ project, env: runEnv, services }));
+  if (platform === 'linux') rows.push(...roleUnitRows({ project, env: runEnv }));
   // Amplifier is not a prerequisite; where it is installed it owns the machine's setup (skills/amplifier)
   const A = require('./lib/amplifier.js');
   rows.push(...A.checkRows(A.detect({ env: runEnv, platform, run: (c, a) => run(c, a, { env: runEnv, timeout: 60000 }) })));
@@ -215,6 +216,41 @@ function serviceLimitRows({ project, env = process.env, team, services, host } =
   if (team === undefined && project) team = readJsonFile(path.join(path.resolve(project), TEAM_REL)) || null;
   const here = host || require('./lib/team-revive.js').hostOf(env);
   return SL.serviceRows(services, SL.sessionsOn(team, here));
+}
+
+// The user units that serve the team's role directories on this host (lib/team-revive.js servingUnits).
+// One the delivery plugin did not write (its ExecStart runs claude remote-control itself) is named with
+// the exact fix: stop and disable it, then install the plugin's own. The plugin never changes that unit:
+// it is the owner's. While it serves a directory, the plugin's own unit is not installed there, and when
+// both serve it, that is two start paths for one directory, so the plugin starts neither. No row for a
+// directory no unit serves. home: the user's home (HOME, as a test sets it).
+function roleUnitRows({ project, env = process.env, team, host, home } = {}) {
+  if (!project) return [];
+  const root = path.resolve(project);
+  if (team === undefined) team = readJsonFile(path.join(root, TEAM_REL)) || null;
+  if (!team || !Array.isArray(team.roles)) return [];
+  const R = require('./lib/team-revive.js');
+  const here = host || R.hostOf(env);
+  const h = home || env.HOME || os.homedir();
+  let roster = {};
+  try { roster = require('./lib/roster.js').readRoster(root).instances || {}; } catch (err) { roster = {}; }
+  const rows = [];
+  for (const { instance, role } of expandInstances(team).filter((i) => !(i.role && i.role.retired) && i.role.host === here)) {
+    const roleDir = (roster[instance] && roster[instance].role_dir) || path.join(root, '..', `${team.project}-team`, instance);
+    const all = R.servingUnits(roleDir, { home: h });
+    if (!all.length) continue;
+    const name = `role unit ${instance}`;
+    const hand = all.filter((u) => !u.written).map((u) => u.unit);
+    const own = all.filter((u) => u.written).map((u) => u.unit);
+    if (!hand.length) { rows.push({ name, status: 'pass', detail: `${own.join(', ')}, the delivery plugin's own, serves ${roleDir}: it is the role's start path`, hard: false }); continue; }
+    const why = own.length
+      ? `the plugin's own ${own.join(', ')} serves it too: two start paths for one role directory, so the plugin starts neither`
+      : role.id === 'chief-of-staff' ? 'the plugin\'s own unit is not installed while it does' : 'the plugin starts that role only through it';
+
+    rows.push({ name, status: 'warn', detail: `${hand.join(', ')} serves ${roleDir} with claude remote-control, and the delivery plugin did not write it; ${why}`,
+      fix: R.unitFix(hand, { role: role.id, root }), hard: false });
+  }
+  return rows;
 }
 
 // Test runs are sealed (run-tests.js): without bubblewrap they are refused, and each one may fill a
@@ -256,7 +292,12 @@ function launchTeam({ projectRoot, prepared, host, permissionMode, prefix, env, 
   const listed = run(bin, ['agents', '--json'], { env, timeout: 15000 });
   let live = null;
   try { const j = listed.ok ? JSON.parse(listed.out) : null; live = Array.isArray(j) ? j : null; } catch (err) { live = null; }
+  const R = require('./lib/team-revive.js');
+  const home = env.HOME || os.homedir();
   for (const { instance, roleDir } of here) {
+    // a role a user unit serves is started by that unit alone: a session here would be a second beside it
+    const unit = R.remoteControlUnitFor(roleDir, { home });
+    if (unit) { say(`    ${instance}: not started: it is served by the user unit ${unit}, its start path`); continue; }
     const lives = OS.liveOf(instance, { roleDir, live, prefix });
     if (lives === null) { say(`    ${instance}: not started: the open sessions could not be listed (\`${bin} agents --json\`), so a start could put a second session beside a live one`); continue; }
     if (lives.length) { say(`    ${instance}: already running as ${OS.described(lives)}; not started again`); continue; }
@@ -265,17 +306,37 @@ function launchTeam({ projectRoot, prepared, host, permissionMode, prefix, env, 
     const args = ['-p', JOIN_PROMPT, ...(permissionMode && permissionMode !== 'default' ? ['--permission-mode', permissionMode] : []), '--name', sessionName(instance, prefix)];
     if (dryRun) { say(`    ${instance}: would start in ${roleDir}: ${bin} ${args.map((a) => (/\s/.test(a) ? JSON.stringify(a) : a)).join(' ')}`); continue; }
     const logPath = path.join(projectRoot, '.delivery', 'watchdog', 'logs', `launch-${instance}-${at}.log`);
-    fs.mkdirSync(path.dirname(logPath), { recursive: true });
-    const fd = fs.openSync(logPath, 'a');
-    const child = require('child_process').spawn(process.execPath, [path.join(__dirname, 'lib', 'wake-run.js'), String(2 * 3600e3), bin, ...args],
-      { cwd: roleDir, env: require('./lib/fresh-session-env.js').freshSessionEnv(env, { DELIVERY_ROLE: instance, CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0' }), detached: true, stdio: ['ignore', fd, fd] });
-    child.unref();
-    fs.closeSync(fd);
-    say(`    ${instance}: started (pid ${child.pid}), joining the team; log ${path.relative(projectRoot, logPath)}`);
+    // in a scope of its own, never in the cgroup of the shell or service running start.js; a refused scope
+    // is started plain once, while the role still has no live session (lib/role-scope.js startRole)
+    const stillMissing = () => {
+      const again = run(bin, ['agents', '--json'], { env, timeout: 15000 });
+      let rows = null;
+      try { const j = again.ok ? JSON.parse(again.out) : null; rows = Array.isArray(j) ? j : null; } catch (err) { rows = null; }
+      const l = OS.liveOf(instance, { roleDir, live: rows, prefix });
+      return l === null ? null : l.length === 0;
+    };
+    const r = require('./lib/role-scope.js').startRole(process.execPath, [path.join(__dirname, 'lib', 'wake-run.js'), String(2 * 3600e3), bin, ...args],
+      { instance, env: require('./lib/fresh-session-env.js').freshSessionEnv(env, { DELIVERY_ROLE: instance, CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0' }), cwd: roleDir, logPath, stillMissing });
+    if (!r.pid) { say(`    ${instance}: not started: ${r.refused ? `systemd-run refused its scope, and no plain start followed (${r.why})` : 'its start ran nothing'}; log ${path.relative(projectRoot, logPath)}`); continue; }
+    say(`    ${instance}: started (pid ${r.pid}${r.fallbackFrom ? ', a plain start: systemd-run refused its scope' : ''}), joining the team; log ${path.relative(projectRoot, logPath)}`);
+    if (r.directoryHeld) say(`    ${instance}: its scope ${r.unit} is not registered with the service directory: ${r.directoryHeld}`);
   }
   if (elsewhere.length) say(`    not on this machine: ${elsewhere.join(', ')}; run start.js --launch on each of those hosts`);
   if (permissionMode === 'default') say('    warning: --permission-mode default: a headless session cannot ask you, so steps your default would ask about are refused');
   return { code: 0 };
+}
+
+// --keep-alive also gives the Chief of Staff its own user unit (host-manager.js install-role), before the
+// launch, so its session is started and restarted by that unit alone and the launch leaves it to it. On a
+// host without systemctl there is no unit, and the start pass keeps the role up as before.
+function installRoleUnit({ projectRoot, env, dryRun, w, say }) {
+  if (!run('systemctl', ['--version'], { env }).ok) { say('  role unit: no systemctl on this host; the Chief of Staff is kept up by the team\'s start pass'); return; }
+  if (dryRun) { say(`  role unit: ${w}install the Chief of Staff's own unit (host-manager.js install-role)`); return; }
+  let r;
+  try { r = require('./host-manager.js').installRole(projectRoot, {}, { env, home: env.HOME || os.homedir() }); } catch (err) { r = { code: 1, out: err.message }; }
+  const lines = String(r.out || '').split('\n').filter(Boolean);
+  if (r.code) say(`  role unit: not installed: ${lines.map((l) => l.replace(/^host-manager\.js: /, '')).join(' ')}`);
+  else say(`  role unit: ${lines.filter((l) => /^(Installed|Not started now)/.test(l)).join(' ')}`);
 }
 
 // --keep-alive installs the watchdog's host job (launchd, systemd user timer or cron), which resumes a
@@ -749,6 +810,7 @@ function scaffold(opts) {
   }
 
   if (launch) {
+    if (keepAlive) installRoleUnit({ projectRoot, env, dryRun, w, say });
     const launched = launchTeam({ projectRoot, prepared, host, permissionMode, prefix: team.prefix, env, dryRun, w, say });
     if (keepAlive) keepTeamAlive({ projectRoot, env, dryRun, w, say });
     if (launched.code) return { code: launched.code, out };

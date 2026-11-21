@@ -2,6 +2,7 @@
 // story statuses follow their beads, the feature map follows the product at its default branch, the
 // plan is pushed to origin, and the merge gate refuses the next merge while any of that is behind.
 // Run with: node --test scripts/plan-sync.test.js
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

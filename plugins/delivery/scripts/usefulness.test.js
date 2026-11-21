@@ -1,5 +1,6 @@
 // scripts/usefulness.test.js — run with: node --test scripts/usefulness.test.js
 // MJ's Worth Using, in sprint review (owner's ask, 2026-10-24: know when and how to delete a feature)
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

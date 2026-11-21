@@ -1,4 +1,5 @@
 // scripts/lib/plan-graph.test.js — run with: node --test scripts/lib/plan-graph.test.js
+require('../testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { planGraph, denylistFrom, uniqueBeads } = require('./plan-graph.js');

@@ -1,11 +1,11 @@
 // scripts/watchdog.test.js — the stall alarm and the wake (R-04, R-43; tight gh polling, R-25), replayed
 // on Vault moments through the real lane and bd-guard hooks (testing/role-harness.js), through the host
 // job's command line, and through main().
-// owner-facing times are the host's local time: the tests read them in UTC
-process.env.TZ = 'UTC';
 // a role session's own variables are cleared first, as run-tests.js clears them, so a direct run from a
 // role session (a reality check) sees what CI sees (hjx.1.1.2)
 require('./testing/role-env.js').clearRoleEnv();
+// owner-facing times are the host's local time: the tests read them in UTC
+process.env.TZ = 'UTC';
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
@@ -208,6 +208,40 @@ test('R-43 and R-42: idle with ready work wakes the Delivery Manager; a busy ses
   const fresh = (prefix) => WD.wakeCommand({ ...sessions[0], context: WD.FRESH_ABOVE + 1 }, 'go', [], 'auto', { prefix }).args.slice(2, 4);
   assert.deepEqual(fresh('alpha'), ['--name', `${sessions[0].instance}@alpha`]);
   assert.deepEqual(fresh('beta-'), ['--name', `${sessions[0].instance}@beta`]);
+});
+
+test('hjx.1.6.10.1.2.1: a role a user unit serves is never woken by a session the watchdog starts; a live one still gets the wake as a message', () => {
+  const now = Date.parse('2026-10-12T10:20:00Z');
+  const s = { instance: COS, role: COS, session: 's-cos', roleDir: os.tmpdir(), lastActive: now - H };
+  const down = WD.wakeCommand(s, 'go', [], 'auto', { unit: 'claude-rc-chief-of-staff.service' });
+  assert.equal(down.args, undefined, 'nothing is started beside the unit');
+  assert.match(down.skip, /served by the user unit claude-rc-chief-of-staff\.service, which starts it; no wake session is started beside it/);
+  // a fresh wake (context or an older plugin) is a start too
+  assert.equal(WD.wakeCommand({ ...s, context: WD.FRESH_ABOVE + 1 }, 'go', [], 'auto', { unit: 'u.service' }).args, undefined);
+  const idle = WD.wakeCommand(s, 'go', [{ sessionId: 's-cos', status: 'idle', pid: 77 }], 'auto', { unit: 'u.service' });
+  assert.equal(idle.mode, 'message');
+});
+
+test('hjx.1.6.10.1.2.1: the wake pass reads the unit that serves the role directory and starts no session for that role', () => {
+  const t0 = '2026-10-12T22:00:00Z';
+  const beads = { 'ex-p0': { id: 'ex-p0', status: 'open', priority: 0, created_at: iso(Date.parse(t0) - H) } };
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wd-home-'));
+  const units = path.join(home, '.config', 'systemd', 'user');
+  fs.mkdirSync(units, { recursive: true });
+  const run = (withUnit) => {
+    const h = harness({ beads });
+    session(h, DM, { seen: t0 });
+    if (withUnit) fs.writeFileSync(path.join(units, 'dm.service'), `[Service]\nWorkingDirectory=${h.roleDir(DM)}\nExecStart=/opt/x/claude remote-control\n`);
+    const spawn = spawner();
+    const store = memStore(h);
+    const out = every15(t0, 2).map((now) => at(h, now, ['run'], { spawn, bd: store, home }).out).join('\n');
+    return { r: { out }, spawn };
+  };
+  const plain = run(false);
+  assert.ok(plain.spawn.list.length >= 1, plain.r.out);
+  const served = run(true);
+  assert.deepEqual(served.spawn.list, [], served.r.out);
+  assert.match(served.r.out, /Not woken: delivery-lead: it is served by the user unit dm\.service/);
 });
 
 test('R-04: a bead in progress is stalled only when neither the bead nor its holder\'s session moved for stall_hours', () => {
@@ -2288,4 +2322,174 @@ test('hjx.1.6.17: a live session that does not take the wake is reported and lef
   assert.match(rd.out, /^Woke builder-1 \(message to its live session sess-builder-1 .*\) \(it runs twice: /m);
   assert.deepEqual(to, ['/r/cc-socks/1.sock']);
   assert.deepEqual(spawn.list, []);
+});
+
+// rv-202: a wake whose start ran nothing (systemd-run refused the scope, and the role had a live session
+// by then) was still logged as woken, and its messages were marked delivered
+test('a wake that started nothing is no wake: no wake row, and its messages stay waiting for the next pass', () => {
+  const t0 = '2026-11-14T14:00:00Z';
+  const h = harness({});
+  const IB = require('./lib/inbox.js');
+  session(h, 'builder-1', { seen: iso(Date.parse(t0) - 2 * H) });
+  IB.queue(h.root, { to: 'builder-1', from: DM, message: 'merge main into your branch', at: t0 });
+  const seen = [];
+  const r = at(h, t0, ['run'], { spawn: (bin, args, o) => { seen.push(typeof o.stillMissing); return null; }, bd: memStore(h), live: [] });
+  assert.deepEqual(seen, ['function'], 'the spawner is given the live re-check for its plain retry');
+  assert.match(r.out, /^Not woken: builder-1: its start ran nothing \(systemd-run refused the scope; log \S+\); its messages stay waiting\./m);
+  assert.equal(WD.logRows(h.root).filter((x) => x.type === 'wake').length, 0, 'no wake row');
+  assert.equal(IB.pending(h.root).length, 1, 'the message is still waiting');
+});
+
+// rv-204: a wake row is stamped at its spawn on the real clock, not at the pass start: the running-wake
+// check reads the supervisor's start against the row, and a pass's reads and earlier spawns take real
+// time. Every other case injects its clock; this one runs on the real one.
+test('a wake row is stamped at its spawn on the real clock, not at the pass start', () => {
+  const t = Date.now();
+  const h = harness({});
+  session(h, 'builder-1', { seen: iso(t - 9 * H) });
+  require('./lib/inbox.js').queue(h.root, { to: 'builder-1', from: DM, summary: 'PR 75', message: 'merge main into your branch', at: iso(t - 60e3) });
+  let spawnedAt = null;
+  // a spawn that takes a while, as a real one can: the row must not carry the time from before it
+  const spawn = (bin, args, o) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 120); spawnedAt = Date.now(); return 999999999; };
+  watchdog.main(['run'], { cwd: h.root, env: fakeEnv(h), live: [], bd: memStore(h), spawn, sweep: () => ({ removed: [], failed: [] }), revive: () => [] });
+  assert.ok(spawnedAt, 'the wake was spawned');
+  const row = WD.logRows(h.root).filter((r) => r.type === 'wake').pop();
+  assert.ok(row && Date.parse(row.at) >= spawnedAt, `the row (${row && row.at}) is stamped at or after the spawn (${new Date(spawnedAt).toISOString()})`);
+});
+
+// 5q3: held messages reached their role cut at 600 characters mid-sentence ("... Do NOT", and on
+// 2026-11-16 "reference.md now describes thi"), unmarked, so the receiver could act against words it never
+// saw. A message is now delivered whole; one too long for a prompt says it was shortened and where the
+// full text is.
+test('5q3: a held message is delivered whole; one past the cap is marked shortened with the file and line holding it', () => {
+  const t0 = '2026-11-16T18:00:00Z';
+  const h = harness({});
+  const IB = require('./lib/inbox.js');
+  session(h, COS, { seen: iso(Date.parse(t0) - 2 * H) });
+  const long = `${'the order is unchanged and holds. '.repeat(30)}reference.md now describes this. Do NOT merge 104 before 107.`;
+  assert.ok(long.length > 600 && long.length < WD.MESSAGE_CHARS);
+  IB.queue(h.root, { to: COS, from: DM, message: long, at: t0 });
+  const spawn = spawner();
+  const bd = memStore(h);
+  const res = at(h, t0, ['run'], { spawn, bd });
+  assert.equal(spawn.list.length, 1, res.out);
+  assert.ok(spawn.list[0].args[5].includes(long), 'a message under the cap arrives whole');
+  assert.doesNotMatch(spawn.list[0].args[5], /shortened/);
+
+  const huge = `${'x'.repeat(WD.MESSAGE_CHARS)} Do NOT merge.`;
+  IB.queue(h.root, { to: COS, from: DM, message: huge, at: iso(Date.parse(t0) + 60e3) });
+  at(h, iso(Date.parse(t0) + 6 * 60e3), ['run'], { spawn, bd });
+  const p = spawn.list[1].args[5];
+  const file = path.join(h.root, '.delivery', 'watchdog', 'inbox', `${COS}.ndjson`);
+  assert.ok(p.includes(`[shortened: ${WD.MESSAGE_CHARS} of ${huge.length} characters; the full text is line 2 of ${file}]`), p.slice(-300));
+  assert.doesNotMatch(p, /Do NOT merge/);
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8').split('\n')[1]).message, huge, 'the file named holds the full text');
+});
+
+test('5q3: the inbox keeps a message whole up to its bound; past it, the real length is kept and the wake says the file holds its start', () => {
+  const t0 = '2026-11-16T18:00:00Z';
+  const h = harness({});
+  const IB = require('./lib/inbox.js');
+  const file = path.join(h.root, '.delivery', 'watchdog', 'inbox', `${COS}.ndjson`);
+  assert.ok(IB.MAX_TEXT > 1200, 'the old 1200-character store is gone');
+  const whole = 'y'.repeat(IB.MAX_TEXT);
+  IB.queue(h.root, { to: COS, from: DM, message: whole, at: t0 });
+  const row1 = JSON.parse(fs.readFileSync(file, 'utf8').split('\n')[0]);
+  assert.equal(row1.message, whole);
+  assert.equal(row1.length, undefined, 'a message within the bound records no length');
+  IB.markDelivered(h.root, COS, 1);
+  IB.queue(h.root, { to: COS, from: DM, message: `${whole}zz`, at: t0 });
+  const row2 = JSON.parse(fs.readFileSync(file, 'utf8').split('\n')[1]);
+  assert.equal(row2.message.length, IB.MAX_TEXT);
+  assert.equal(row2.length, IB.MAX_TEXT + 2);
+  session(h, COS, { seen: iso(Date.parse(t0) - 2 * H) });
+  const spawn = spawner();
+  at(h, t0, ['run'], { spawn, bd: memStore(h) });
+  assert.ok(spawn.list[0].args[5].includes(`[shortened: ${WD.MESSAGE_CHARS} of ${IB.MAX_TEXT + 2} characters; line 2 of ${file} holds its first ${IB.MAX_TEXT}]`), spawn.list[0].args[5].slice(-300));
+});
+
+test('5q3: more than five held messages: the prompt names the lines of the earlier ones', () => {
+  const t0 = '2026-11-16T18:00:00Z';
+  const h = harness({});
+  const IB = require('./lib/inbox.js');
+  session(h, COS, { seen: iso(Date.parse(t0) - 2 * H) });
+  for (let i = 1; i <= 7; i++) IB.queue(h.root, { to: COS, from: DM, message: `note ${i}`, at: t0 });
+  const spawn = spawner();
+  at(h, t0, ['run'], { spawn, bd: memStore(h) });
+  const file = path.join(h.root, '.delivery', 'watchdog', 'inbox', `${COS}.ndjson`);
+  assert.ok(spawn.list[0].args[5].includes(`7 messages arrived; the earlier 2 are lines 1-2 of ${file}; the last 5:`), spawn.list[0].args[5]);
+  assert.doesNotMatch(spawn.list[0].args[5], /note 2\b/);
+  assert.match(spawn.list[0].args[5], /note 7/);
+});
+
+test('5q3: a send-back note is whole up to the cap; a longer one says it was shortened and names the bead holding it', () => {
+  const t0 = Date.parse('2026-11-16T12:30:00Z');
+  const sessions = [sess6(B2, t0 - 60 * 60e3)];
+  const prompt = (note) => {
+    const review = { pr: '151', state: 'sent-back', beads: ['ex-review'], owners: [B2], sentBack: { id: 'rv-151-delivery-lead-9', at: new Date(t0 - 5 * 60e3).toISOString(), reason: 'changes', note } };
+    return WD.stalls({ now: iso(t0), beads: [], sessions, reviews: [review] }).stalls.find((s) => s.kind === 'review').prompt;
+  };
+  const long = `${'B1 safety: the dry run runs with a writable root. '.repeat(20)}Do NOT push until the result.`;
+  assert.ok(long.length > 600 && long.length < WD.MESSAGE_CHARS);
+  assert.ok(prompt(long).includes(long), 'a note under the cap arrives whole');
+  const huge = `${'y'.repeat(WD.MESSAGE_CHARS)} Do NOT push.`;
+  const p = prompt(huge);
+  assert.ok(p.includes(`[shortened: ${WD.MESSAGE_CHARS} of ${huge.length} characters; the full note is on ex-review]`), p.slice(-300));
+  assert.doesNotMatch(p, /Do NOT push/);
+});
+
+// rv-224: the Delivery Manager's blocked wake carried the holder's blocker note cut at 400 characters,
+// unmarked, the same defect as held messages
+test('5q3: a blocker note reaches the Delivery Manager whole up to the cap; a longer one says it was shortened and names the bead', () => {
+  const now = Date.parse('2026-11-16T12:00:00Z');
+  const prompt = (note) => {
+    const b = { id: 'ex-bk', status: 'in_progress', assignee: `dev@pc/${B2}`, updated_at: iso(now - 3 * H), notes: `2026-11-16 builder-2: Blocked: ${note}` };
+    return WD.stalls({ now: iso(now), beads: [b], sessions: [sess6(B2, now - 30 * 60e3), sess6(DM, now - 5 * 60e3)], stallHours: 2 }).stalls.find((s) => s.kind === 'quiet').prompt;
+  };
+  const long = `${'waits on the review of PR 224 and its round. '.repeat(15)}Do NOT reassign it.`;
+  assert.ok(long.length > 400 && long.length < WD.MESSAGE_CHARS);
+  assert.ok(prompt(long).includes(long), 'a note past the old 400 arrives whole');
+  const huge = `${'z'.repeat(WD.MESSAGE_CHARS)} Do NOT reassign it.`;
+  const p = prompt(huge);
+  assert.match(p, /\[shortened: \d+ of \d+ characters; the full note is on ex-bk\]/);
+  assert.doesNotMatch(p, /Do NOT reassign/);
+});
+
+test('5q3 rv-224: a cut never splits a surrogate pair, and the counts are on the stored text, not the folded one', () => {
+  const smile = '\u{1F600}';
+  const raw = `${'x'.repeat(WD.MESSAGE_CHARS - 1)}${smile} tail`;
+  const out = WD.shorten(raw, raw.length, 'where');
+  assert.ok(out.startsWith('x'.repeat(WD.MESSAGE_CHARS - 1)));
+  assert.doesNotMatch(out, /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/, 'no lone high surrogate');
+  assert.match(out, new RegExp(`\\[shortened: ${WD.MESSAGE_CHARS - 1} of ${raw.length} characters; where\\]`));
+  // runs of whitespace are folded for the prompt only: the counts are the stored text's
+  const spaced = 'a   '.repeat(1500);
+  const s2 = WD.shorten(spaced, spaced.length, 'w');
+  assert.match(s2, new RegExp(`\\[shortened: ${WD.MESSAGE_CHARS} of ${spaced.length} characters; w\\]`));
+  assert.doesNotMatch(s2, / {2}/, 'the prompt folds the whitespace');
+  // and a call site measures the stored note, not the folded one: a send-back note of 6000 stored units
+  // folds to 3000 and would pass whole if measured after folding
+  const t0 = Date.parse('2026-11-16T12:30:00Z');
+  const review = { pr: '151', state: 'sent-back', beads: ['ex-review'], owners: [B2], sentBack: { id: 'rv-151-delivery-lead-9', at: new Date(t0 - 5 * 60e3).toISOString(), reason: 'changes', note: 'b   '.repeat(1500) } };
+  const sb = WD.stalls({ now: iso(t0), beads: [], sessions: [sess6(B2, t0 - 60 * 60e3)], reviews: [review] }).stalls.find((s) => s.kind === 'review').prompt;
+  assert.match(sb, new RegExp(`\\[shortened: ${WD.MESSAGE_CHARS} of 6000 characters; the full note is on ex-review\\]`));
+  // the inbox's own bound steps back the same way
+  const IB = require('./lib/inbox.js');
+  const h = harness({});
+  IB.queue(h.root, { to: COS, from: DM, message: `${'y'.repeat(IB.MAX_TEXT - 1)}${smile}`, at: '2026-11-16T12:00:00Z' });
+  const row = JSON.parse(fs.readFileSync(path.join(h.root, '.delivery', 'watchdog', 'inbox', `${COS}.ndjson`), 'utf8').trim());
+  assert.equal(row.message.length, IB.MAX_TEXT - 1, 'the stored start stops before the pair');
+  assert.equal(row.length, IB.MAX_TEXT + 1, 'and the real length is recorded');
+});
+
+test('5q3 rv-224: a sender is told when a message over the inbox bound was kept only in part', () => {
+  const h = harness({});
+  const RC = require('../hooks/scripts/route-check.js');
+  const IB = require('./lib/inbox.js');
+  const failed = [{ type: 'text', text: JSON.stringify({ success: false, message: "No agent named 'chief-of-staff' is reachable." }) }];
+  session(h, COS, { seen: new Date().toISOString() });
+  const send = (message) => withEnv({ DELIVERY_ROLE: 'builder-1' }, () => RC.check({ tool_name: 'SendMessage', cwd: h.roleDir('builder-1'), tool_input: { to: 'chief-of-staff', message }, tool_response: failed }));
+  const big = send('m'.repeat(IB.MAX_TEXT + 10));
+  assert.match(big.context, new RegExp(`Only its first ${IB.MAX_TEXT} of ${IB.MAX_TEXT + 10} characters were kept`));
+  assert.doesNotMatch(send('short').context, /Only its first/, 'a message within the bound says nothing of the kind');
 });

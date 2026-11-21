@@ -3,6 +3,7 @@
 // 8 of them stale, and one count line about what shipped. The briefing now leads with what shipped,
 // one line per change marked merged, live or checked from the record, then the open problems, and it
 // counts only the questions still waiting on the owner.
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

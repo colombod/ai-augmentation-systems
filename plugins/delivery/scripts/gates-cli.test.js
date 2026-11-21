@@ -1,6 +1,7 @@
 // scripts/gates-cli.test.js — ready.js, evidence.js, warnings.js and surface.js on a Vault project with an
 // in-memory bd. The session's role is passed as `who` (in a real session it comes from the role
 // marker); one test runs the script with no role session and expects writes to be refused.
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
@@ -258,4 +259,33 @@ test('team-runtime-09 c2: evidence.js state deployed with no sha or a bad one, a
   }
   assert.equal(ev('state', ID, 'deployed', '--sha', 'd478aa11').code, 0, 'a well-formed deploy still succeeds');
   assert.equal(G.stateOf(bead()), 'deployed');
+});
+
+// rv-216: a bd read that fails after evidence.js wrote is reported, and nothing is rewritten from an empty bead
+test('evidence.js: a row whose bead cannot be read back keeps the bead\'s metadata and says the head is not recorded', () => {
+  const { root, bd, ev, add, bead } = setup();
+  ev('state', ID, 'deployed', '--sha', 'd478aa11');
+  const before = bead().metadata;
+  const rowsBefore = G.readEvidence(root, ID).length;
+  const show = bd.show;
+  // bd stops answering once the new row is on disk: that is record()'s read-back
+  bd.show = (id) => { if (G.readEvidence(root, ID).length > rowsBefore) throw new Error('bd show x --json: Error: database is locked'); return show(id); };
+  const r = add(1);
+  bd.show = show;
+  assert.equal(G.readEvidence(root, ID).length, rowsBefore + 1, 'the row stands');
+  assert.match(r.out, /warning: ev-\S+ is written, but bead ex-vault-0n9-3 could not be read: Error: database is locked; try again in a moment, so its evidence_head is not recorded/);
+  assert.deepEqual(bead().metadata, before, 'the metadata is not replaced by the head alone');
+});
+
+test('evidence.js: a deploy whose bead cannot be read back after the state write is refused by name, not thrown on', () => {
+  const { bd, ev } = setup();
+  const show = bd.show;
+  bd.show = (id) => { const b = show(id); if (b && (b.labels || []).includes(G.STATE.deployed)) throw new Error('bd show x --json: Error: database is locked'); return b; };
+  let r;
+  assert.doesNotThrow(() => { r = ev('state', ID, 'deployed', '--sha', 'd478aa11'); });
+  bd.show = show;
+  assert.equal(r.code, 1);
+  assert.match(r.out, /ex-vault-0n9-3 is recorded deployed at d478aa11, but bead ex-vault-0n9-3 could not be read: Error: database is locked; try again in a moment, so its verified label and its check were not set up/);
+  // the other direction: with bd answering, the same deploy goes through
+  assert.equal(ev('state', ID, 'deployed', '--sha', 'd478aa11').code, 0);
 });

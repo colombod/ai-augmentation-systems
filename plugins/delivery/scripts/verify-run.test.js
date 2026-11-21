@@ -1,5 +1,6 @@
 // scripts/verify-run.test.js — the Reality Checker's runner for a command-line surface: the deployed sha
 // in a scratch clone, one scripted command, the capture and the row written by the runner, never by hand.
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
@@ -50,7 +51,8 @@ function setup() {
   const whoFor = (instance) => ({ root, team, instance, roleId: instance.replace(/-\d+$/, ''), actor: `t@pc/${instance}`, roleDir });
   const as = (mod, instance, argv, now) => mod.main(argv, { cwd: root, env: {}, bd, now, who: whoFor(instance) });
   const dm = (...argv) => as(rc, 'delivery-lead', argv, T.plan);
-  const refine = (n, command, match) => dm('refine', ID, '--criterion', String(n), '--step', '1', '--command', command, ...(match ? ['--match', match] : []));
+  // a match with regex characters in these tests is a pattern, so the refine says so (hjx.1.7)
+  const refine = (n, command, match) => dm('refine', ID, '--criterion', String(n), '--step', '1', '--command', command, ...(match ? ['--match', match, ...(/[\\^$.*+?()[\]{}|]/.test(match) ? ['--regex'] : [])] : []));
   const deploy = () => as(evidence, 'delivery-lead', ['state', ID, 'deployed', '--sha', prod.deployed], T.deploy);
   const verify = (n, instance = 'reality-checker') => as(vr, instance, ['run', ID, '--criterion', String(n)], T.run);
   const rows = () => G.readEvidence(root, ID).filter((r) => r.type === 'row');
@@ -166,8 +168,85 @@ test('run: a failing exit, a missing match and a timeout are recorded as fail ro
   assert.equal(s.rows()[0].result, 'fail');
   s.refine(2, 'sh tool.sh', 'imported 0 cards');
   const nomatch = s.verify(2);
-  assert.match(nomatch.out, /: fail \(exit 0 but stdout does not match/);
+  assert.match(nomatch.out, /: fail \(exit 0 but stdout does not show the match \((?:literal|regex)\)/);
   assert.equal(s.rows().filter((x) => x.criterion === 2)[0].result, 'fail');
+});
+
+// hjx.1.7 (A3 a3-reality-checker-26, -11, -12): a match written as text with regex characters was read as
+// a pattern, its parentheses became a group, and a passing run was recorded as a fail and stopped the
+// line. A literal match is found as written; a step stored before modes passes on its text or its
+// pattern; the capture names the mode.
+test('run: a literal match with parentheses passes on the line it names, and a step stored with no mode passes on its text or its pattern', () => {
+  const s = ready();
+  const line = 'RD-C1 HOLDS: refine runs nothing (a refined touch leaves no file), and warns on a trailing pipe';
+  assert.equal(s.dm('refine', ID, '--criterion', '1', '--step', '1', '--command', `echo "${line}"`, '--match', line, '--literal').code, 0);
+  const lit = s.verify(1);
+  assert.match(lit.out, /: pass \(exit 0\)/, lit.out);
+  const cap = fs.readdirSync(path.join(s.roleDir, 'project', '.delivery', 'evidence', 'artifacts', ID)).map((f) => fs.readFileSync(path.join(s.roleDir, 'project', '.delivery', 'evidence', 'artifacts', ID, f), 'utf8')).join('\n');
+  assert.ok(cap.includes(`match (literal): ${line}`), 'the capture names the mode');
+  // stored before modes (no match_mode): the same text passes, and so does a real pattern
+  const file = path.join(s.root, rc.scriptRel(ID));
+  const stored = (match, command) => {
+    const sc = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const st = sc.criteria.find((g) => g.criterion === 2).steps[0];
+    Object.assign(st, { command, match });
+    delete st.match_mode;
+    fs.writeFileSync(file, `${JSON.stringify(sc, null, 2)}\n`);
+  };
+  stored('Kicked: 1 (a message)', 'echo "Kicked: 1 (a message)"');
+  assert.match(s.verify(2).out, /: pass \(exit 0\)/);
+  stored('\\nok \\d+ - a case\\n[\\s\\S]*# fail 0', 'printf "x\\nok 7 - a case\\n# fail 0\\n"');
+  const pat = s.verify(2);
+  assert.match(pat.out, /: pass \(exit 0\)/, pat.out);
+  // a no-mode step still FAILS when neither its text nor its pattern appears: it is not a blanket pass
+  // (rv-223: a mutant making the no-mode branch return true survived without this). The match has regex
+  // characters, so this also proves it is not read as a never-matching pattern by accident. A fresh world,
+  // since criterion 2 above is at its run cap.
+  const f = ready();
+  const ffile = path.join(f.root, rc.scriptRel(ID));
+  const fsc = JSON.parse(fs.readFileSync(ffile, 'utf8'));
+  const fst = fsc.criteria.find((g) => g.criterion === 1).steps[0];
+  Object.assign(fst, { command: 'echo "Kicked: 0"', match: 'Kicked: 1 (a message)' });
+  delete fst.match_mode;
+  fs.writeFileSync(ffile, `${JSON.stringify(fsc, null, 2)}\n`);
+  const miss = f.verify(1);
+  assert.match(miss.out, /: fail \(exit 0 but stdout does not show the match \(stored before modes, text or pattern\): Kicked: 1 \(a message\)\)/, miss.out);
+  assert.equal(f.rows().filter((x) => x.criterion === 1).slice(-1)[0].result, 'fail');
+  // the other direction: text the output never shows still fails, whatever the mode
+  const r = ready();
+  r.dm('refine', ID, '--criterion', '1', '--step', '1', '--command', 'echo "Kicked: 0"', '--match', 'Kicked: 1 (a message)', '--literal');
+  assert.match(r.verify(1).out, /: fail \(exit 0 but stdout does not show the match \(literal\): Kicked: 1 \(a message\)\)/);
+});
+
+// 8l1.4.1.2: a command that checks nothing is not a fail of the product: no row, no andon, back to refine.
+// `true run-tests.js` stands for a command that runs the sealed runner (rv-217 F2: only such a command, or
+// node --test, is judged by its test count)
+test('run: a test run that finds no test, or no test file, is refused with no row; the same output from a command that runs no tests is recorded', () => {
+  const s = ready();
+  s.refine(1, "true run-tests.js; echo '# tests 0'");
+  const none = s.verify(1);
+  assert.equal(none.code, 1);
+  assert.match(none.out, /criterion 1 step 1 ran no test \(its test run reports none, or found no test file\): the command checks nothing, so nothing is recorded and no andon is raised\. Message the Delivery Manager to refine it/);
+  // F1: node's "Could not find" a test file is no test too
+  s.refine(2, "true run-tests.js; echo 'Could not find /x/a.test.js'");
+  assert.match(s.verify(2).out, /criterion 2 step 1 ran no test/);
+  assert.deepEqual(s.rows(), [], 'nothing recorded');
+  // the other direction: a command that runs no tests may print what it likes, and its run is recorded
+  s.refine(1, "echo '# tests 0'");
+  const plain = s.verify(1);
+  assert.match(plain.out, /: pass \(exit 0\)/);
+  assert.equal(s.rows().length, 1);
+});
+
+test('run: a step whose test files are not under the plugin root is refused before it runs, with no row', () => {
+  const s = ready();
+  const saved = s.dm('refine', ID, '--criterion', '1', '--step', '1', '--command', 'DELIVERY_TEST_FILES=checkout/x.test.js true run-tests.js', '--unchecked', 'test of the runner refusal');
+  assert.equal(saved.code, 0, saved.out);
+  const r = s.verify(1);
+  assert.equal(r.code, 1);
+  assert.match(r.out, /criterion 1 step 1 cannot check anything: checkout\/x\.test\.js is relative and no cd before it names where it runs/);
+  assert.match(r.out, /Nothing is recorded\./);
+  assert.deepEqual(s.rows(), []);
 });
 
 test('run: only the Reality Checker runs it; the builder and the Delivery Manager are refused and no row is written', () => {
@@ -575,7 +654,7 @@ test('8wz.4 refine: a versioned plugin path is stored version-free: the launcher
   }
   // refine --from rewrites the same way
   const f = path.join(s.root, 'cmds.json');
-  fs.writeFileSync(f, JSON.stringify({ 2: { command: `node ${VCACHE('0.43.3')}/scripts/team-status.js --json`, match: '.' } }));
+  fs.writeFileSync(f, JSON.stringify({ 2: { command: `node ${VCACHE('0.43.3')}/scripts/team-status.js --json`, match: '.', match_mode: 'regex' } }));
   assert.equal(s.dm('refine', ID, '--from', f).code, 0);
   assert.equal(step(2).command, `node ${lp} team-status.js --json`);
   // a path the shell cannot fill in (inside node -e '...', or built in code) is refused, and nothing is written
@@ -587,7 +666,7 @@ test('8wz.4 refine: a versioned plugin path is stored version-free: the launcher
     const r = s.refine(1, bad, '.');
     assert.equal(r.code, 1, bad);
     assert.match(r.out, /names one installed version of the plugin.*process\.env\.DELIVERY_PLUGIN_ROOT/s);
-    fs.writeFileSync(f, JSON.stringify({ 1: { command: bad, match: '.' } }));
+    fs.writeFileSync(f, JSON.stringify({ 1: { command: bad, match: '.', match_mode: 'regex' } }));
     const rf = s.dm('refine', ID, '--from', f);
     assert.equal(rf.code, 1, bad);
     assert.match(rf.out, /criterion 1: the command names one installed version/);

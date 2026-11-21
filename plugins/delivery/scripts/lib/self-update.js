@@ -189,7 +189,7 @@ const brief = (err) => String((err && (err.stderr || err.message)) || err).trim(
 // One pass: returns { lines, installed } and never throws. `roleDirs` are the team's role directories:
 // a local or project install there is what that role's session loads, so it is updated too, or the role
 // would stay on the old version after its fresh wake (criterion c).
-function selfUpdate(root, { pluginRoot, configDir, env = process.env, exec = defaultExec, now, dryRun = false, alive = WD.pidAlive, roleDirs = [] } = {}) {
+function selfUpdate(root, { pluginRoot, configDir, env = process.env, exec = defaultExec, now, dryRun = false, alive = (pid, since) => WD.pidAlive(pid, { since, now }), roleDirs = [] } = {}) {
   const at = now || new Date().toISOString();
   try {
     const own = findInstall(pluginRoot, root, configDir || env.CLAUDE_CONFIG_DIR);
@@ -198,7 +198,12 @@ function selfUpdate(root, { pluginRoot, configDir, env = process.env, exec = def
     const rows = WD.logRows(root).filter((r) => r.type === 'self-update' && r.version === main.version);
     // logRows reads the current log and the one rotation kept; a wake older than both (over 2 MB of
     // rows ago) is not seen, which the wake timeout makes moot: such a wake has long been stopped
-    const running = [...new Set(WD.logRows(root).filter((r) => r.type === 'wake').map((r) => r.pid))].filter((pid) => alive(pid));
+    // each pid is asked about with its own row's time, so a pid the system gave to another program
+    // after its wake ended holds nothing (hjx.1.6.20)
+    // (once per pid, with its newest row: a pid reused by a later wake is asked about as that wake)
+    const newest = new Map();
+    for (const r of WD.logRows(root)) if (r.type === 'wake' && r.pid) newest.set(r.pid, r.at);
+    const running = [...newest].filter(([pid, at]) => alive(pid, at)).map(([pid]) => pid);
     const mergeCommitOf = ghMergeCommit(exec, own.repo, root);
     const prOf = ghPrOfCommit(exec, own.repo, root);
     // a pull request found by its merge commit was matched to `sha` by GitHub already; a recorded
@@ -241,11 +246,13 @@ function selfUpdate(root, { pluginRoot, configDir, env = process.env, exec = def
       if (!since && !dryRun) WD.log(root, { ...base, result: 'held', why: held.d.why });
       const age = since ? Date.parse(at) - Date.parse(since.at) : 0;
       const overdue = age > HOLD_BOUND_MS;
-      if (overdue && !dryRun && !current.some((r) => r.result === 'held-overdue')) WD.log(root, { ...base, result: 'held-overdue', since: since.at, why: held.d.why });
+      // the first pass past the bound says so once: the host job alerts the owner then (hjx.1.6.20.1)
+      const overdueNew = overdue && !current.some((r) => r.result === 'held-overdue');
+      if (overdueNew && !dryRun) WD.log(root, { ...base, result: 'held-overdue', since: since.at, why: held.d.why });
       const line = overdue
         ? `self-update: ${label} held since ${since.at} (over ${Math.floor(age / 3600e3)} h, past the ${HOLD_BOUND_MS / 3600e3} h bound): ${held.d.why}, a wake that outlived its timeout; tried again next cycle.`
         : `self-update: ${label} held: ${held.d.why}; tried again next cycle.`;
-      return { lines: [line, ...refusals], installed: false, held: label };
+      return { lines: [line, ...refusals], installed: false, held: label, overdueNew, heldSince: since ? since.at : at };
     }
     const go = checks.filter((c) => c.d.action === 'install');
     if (!go.length) return { lines: refusals, installed: false };

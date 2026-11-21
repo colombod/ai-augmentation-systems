@@ -26,6 +26,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const RR = require('./review-run.js');
 const RC = require('./reality-check.js');
+const MM = require('./lib/match-mode.js');
 const L = require('./lib/launcher.js');
 const PLUGIN_ROOT = path.join(__dirname, '..');
 const G = require('./lib/gates.js');
@@ -111,8 +112,9 @@ function run(who, store, bead, a, { cwd, env, now, spawn, verifyRecord }) {
   if (wp) return refuse(wp.replace("the Delivery Manager's", "the Reality Checker's"));
   const n = Number(a.criterion);
   if (!Number.isInteger(n) || n < 1) return { code: 2, out: USAGE };
-  const b = store.show(bead);
-  if (!b) return refuse(`no bead ${bead}`);
+  const found = require('./lib/bd.js').lookupBead(store, bead);
+  if (!found.bead) return refuse(require('./lib/bd.js').lookupProblem(bead, found));
+  const b = found.bead;
   const m = b.metadata || {};
   const sha = String(m.deployed_sha || '');
   if (!SHA.test(sha)) return refuse(`${bead} has no full deployed sha (it has "${sha || 'none'}"): a check runs on a deploy recorded with the full sha (evidence.js state ${bead} deployed --sha <full sha>)`);
@@ -129,6 +131,11 @@ function run(who, store, bead, a, { cwd, env, now, spawn, verifyRecord }) {
   const vf = L.versionFree(step.command, who.root);
   if (vf.problem) return refuse(`criterion ${n} step ${step.n}: ${vf.problem}. Message the Delivery Manager to refine it (reality-check.js refine ${bead} --criterion ${n} --step ${step.n} --command ...)`);
   if (vf.command !== step.command) return refuse(`criterion ${n} step ${step.n}: the command names one installed version of the plugin, which the next install deletes. Message the Delivery Manager to refine it to: ${vf.command}`);
+  // a command whose test files are not where it runs them checks nothing: refused before any checkout,
+  // with no row and no andon, since the fault is the command's, not the product's (8l1.4.1.2)
+  const CC = require('./lib/check-command.js');
+  const paths = CC.testFileProblems(step.command, PLUGIN_ROOT);
+  if (paths.length) return refuse(`criterion ${n} step ${step.n} cannot check anything: ${paths.join('; ')}. Nothing is recorded. Message the Delivery Manager to refine it (reality-check.js refine ${bead} --criterion ${n} --step ${step.n} --command ...)`);
   if (!who.roleDir) return refuse('not in a role directory, so the scratch area (verify/) is not known.');
   // refine refuses --as-role on any other command; checked again here for a script edited by hand, and
   // here alone with the checker's role directory, the only directory a cd in such a step may enter
@@ -146,10 +153,19 @@ function run(who, store, bead, a, { cwd, env, now, spawn, verifyRecord }) {
   const timedOut = !!(r.error && r.error.code === 'ETIMEDOUT');
   const code = r.status === null ? null : r.status;
   const stdout = String(r.stdout || '');
+  // a test run that found no test checked nothing: no row, no andon, the command goes back to refine
+  if (CC.zeroTests(step.command, `${stdout}\n${r.stderr || ''}`)) return refuse(`criterion ${n} step ${step.n} ran no test (its test run reports none, or found no test file): the command checks nothing, so nothing is recorded and no andon is raised. Message the Delivery Manager to refine it (reality-check.js refine ${bead} --criterion ${n} --step ${step.n} --command ...)`);
+  // the match is read in the mode refine stored with it: literal text, or a pattern (lib/match-mode.js);
+  // a step stored before modes passes on either, so regex characters in it can never fail a passing run
   let matched = true;
-  if (step.match) { try { matched = new RegExp(step.match).test(stdout); } catch (err) { return refuse(`step ${step.n} has a match that is not a pattern (${err.message})`); } }
+  const mode = step.match_mode;
+  if (step.match) {
+    if (mode !== undefined && !MM.MODES.includes(mode)) return refuse(`step ${step.n} has match_mode ${JSON.stringify(mode)}, which is neither literal nor regex: message the Delivery Manager to refine it`);
+    if (mode === 'regex') { try { new RegExp(step.match); } catch (err) { return refuse(`step ${step.n} has a match that is not a pattern (${err.message})`); } }
+    matched = MM.matches(step.match, mode, stdout);
+  }
   const pass = !timedOut && code === 0 && matched;
-  const why = timedOut ? `stopped after ${minutes} minutes` : code !== 0 ? `exit ${code === null ? 'by signal' : code}` : matched ? 'exit 0' : `exit 0 but stdout does not match /${step.match}/`;
+  const why = timedOut ? `stopped after ${minutes} minutes` : code !== 0 ? `exit ${code === null ? 'by signal' : code}` : matched ? 'exit 0' : `exit 0 but stdout does not show the ${MM.describe(step.match, mode)}`;
   // the refusal of a role-scoped writer run without the role: name the fix, so the fail is not read as the product's
   const hint = !pass && !step.as_role && NO_ROLE.test(`${stdout}${r.stderr || ''}`) && !RC.asRoleProblem(step.command, { roleDir: who.roleDir, projectRoot: who.root })
     ? `\nthe command needs a role identity, which this step does not keep: the Delivery Manager marks it (reality-check.js refine ${bead} --criterion ${n} --step ${step.n} --as-role) and plans a new run` : '';
@@ -158,7 +174,7 @@ function run(who, store, bead, a, { cwd, env, now, spawn, verifyRecord }) {
   const dir = path.join(base, '.delivery', 'evidence', 'artifacts', bead);
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `verify-c${n}-${sha.slice(0, 7)}-${Date.parse(now) || started}.txt`);
-  fs.writeFileSync(file, [`$ ${step.command}`, `sha: ${co.sha}`, `repo: ${co.url}`, `at: ${now}`, `criterion: ${n} step ${step.n}`, step.match ? `match: /${step.match}/` : 'match: none', `as role: ${step.as_role ? who.instance : 'no'}`, `result: ${pass ? 'pass' : 'fail'} (${why})`, '', '--- stdout ---', clip(stdout), '--- stderr ---', clip(String(r.stderr || '')), `--- exit ${code === null ? 'signal' : code} after ${Math.round((Date.now() - started) / 1000)}s ---`, ''].join('\n'));
+  fs.writeFileSync(file, [`$ ${step.command}`, `sha: ${co.sha}`, `repo: ${co.url}`, `at: ${now}`, `criterion: ${n} step ${step.n}`, step.match ? MM.describe(step.match, mode) : 'match: none', `as role: ${step.as_role ? who.instance : 'no'}`, `result: ${pass ? 'pass' : 'fail'} (${why})`, '', '--- stdout ---', clip(stdout), '--- stderr ---', clip(String(r.stderr || '')), `--- exit ${code === null ? 'signal' : code} after ${Math.round((Date.now() - started) / 1000)}s ---`, ''].join('\n'));
   const rec = RC.main(['run-record', bead, '--criterion', String(n), '--result', pass ? 'pass' : 'fail', '--artifact', file, '--observed-version', co.sha], { cwd, env, bd: store, now, verifyRecord, who });
   return { code: rec.code, out: `verify-run.js: criterion ${n} of ${bead}: \`${step.command}\` in verify/${bead}-${sha.slice(0, 12)} at ${co.sha}: ${pass ? 'pass' : 'fail'} (${why})${hint}\n${rec.out}`, row: rec.row };
 }
@@ -195,9 +211,9 @@ function probe(who, store, id, a, { env, now, spawn }) {
   if (wp) return refuse(wp.replace("the Delivery Manager's", "the Reality Checker's"));
   const minutes = a.minutes === undefined ? PROBE_MINUTES : Number(a.minutes);
   if (!(minutes > 0)) return { code: 2, out: USAGE };
-  let b = null;
-  try { b = store.show(id); } catch (err) { b = null; }
-  if (!b) return refuse(`no bead ${id}`);
+  const found = require('./lib/bd.js').lookupBead(store, id);
+  if (!found.bead) return refuse(require('./lib/bd.js').lookupProblem(id, found));
+  const b = found.bead;
   if (!isSpike(b)) return refuse(`${id} is not a spike bead: a story is checked with verify-run.js run ${id} --criterion <n>`);
   const m = b.metadata || {};
   const slug = G.initiativeOf(b);

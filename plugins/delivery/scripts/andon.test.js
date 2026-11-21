@@ -2,6 +2,7 @@
 // bd-guard hook processes with real role markers (testing/role-harness.js): the 10-17 intake failure in
 // the real app, the 2-day red nightly (#195) and the ChatGPT desktop fix chain (#453 to #480, 16 PRs in
 // 7 days).
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
@@ -121,6 +122,16 @@ function bugA3() {
 
 // 6y3: a bug bead with no story file states its criteria in its own "Done when:" (pinned at deploy); its
 // A3 closes on a later pass of the same criterion, read from those criteria as the done gate reads them
+// bd replaces a bead's metadata on --metadata, so a person changing one key writes the bead's metadata with
+// that key changed, as every writer in the plugin does (rv-205): a null in the patch removes the key
+function setMeta(h, id, patch) {
+  const shown = JSON.parse(h.bash('delivery-lead', `bd show ${id} --json`).out);
+  const bead = Array.isArray(shown) ? shown[0] : shown;
+  const meta = { ...((bead && bead.metadata) || {}), ...patch };
+  for (const [k, v] of Object.entries(patch)) if (v === null) delete meta[k];
+  return h.bash('delivery-lead', `bd update ${id} --metadata '${JSON.stringify(meta)}'`);
+}
+
 test('R-22 6y3: the A3 of a failed check on a bug bead with no story file closes on a later pass of the same criterion', () => {
   const { h, BUG, ev, a3, run, close } = bugA3();
   // the draft says what was expected: the criterion as the bead itself words it
@@ -133,12 +144,12 @@ test('R-22 6y3: the A3 of a failed check on a bug bead with no story file closes
   const proof = evIdOf(pass.out);
   // criterion 2 cut from what the bead states after its criteria were pinned (metadata.criteria wins over
   // the description): the pass proves nothing until the failure is re-read against what it states now
-  assert.equal(h.bash('delivery-lead', `bd update ${BUG} --metadata '{"criteria":["the import shows the card count"]}'`).code, 0);
+  assert.equal(setMeta(h, BUG, { criteria: ['the import shows the card count'] }).code, 0);
   const cut = close(proof);
   assert.notEqual(cut.code, 0, cut.out);
   assert.match(cut.out, new RegExp(`the criteria of ${BUG} changed: the criteria stated on the bead changed since its check was pinned`));
   assert.match(cut.out, /re-reading against the criteria/);
-  assert.equal(h.bash('delivery-lead', `bd update ${BUG} --metadata '{"criteria":null}'`).code, 0);
+  assert.equal(setMeta(h, BUG, { criteria: null }).code, 0);
   const closed = close(proof);
   assert.equal(closed.code, 0, closed.out);
 });
@@ -149,7 +160,7 @@ test('R-22 6y3: a story-less bug bead pinned at deploy that later names a story 
   const { h, BUG, run, close } = bugA3();
   const pass = run(1, 'pass', 'v1.4.3');
   assert.equal(pass.code, 0, pass.deny || pass.out);
-  assert.equal(h.bash('delivery-lead', `bd update ${BUG} --metadata '{"story_file":"vault-0n9-3.md"}'`).code, 0);
+  assert.equal(setMeta(h, BUG, { story_file: 'vault-0n9-3.md' }).code, 0);
   const r = close(evIdOf(pass.out));
   assert.notEqual(r.code, 0, r.out);
   assert.match(r.out, new RegExp(`the criteria of ${BUG} changed: the bead's own criteria were pinned \\(.+\\) and it now names story file vault-0n9-3\\.md`));

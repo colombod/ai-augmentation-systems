@@ -8,10 +8,12 @@
 //       with no story file has the criteria it states pinned (metadata.criteria_hash); after its deploy they
 //       change only under the owner's record (--owner-record), which voids the evidence recorded before it
 //   reality-check.js refine <bead> [--criterion <n> (--step <k> | --add-step) | --setup <k>]
-//       [--action ..] [--expect ..] [--command ..] [--match ..] [--as-role|--no-as-role] [--capture a,b] [--pass-rule ..] [--account <name>] [--read-on-screen ..]
-//       [--precondition <o-id>]   Delivery Manager: edit the shared script (the only way to change it)
+//       [--action ..] [--expect ..] [--command ..] [--match .. [--literal|--regex] [--sample ..]] [--as-role|--no-as-role] [--capture a,b] [--pass-rule ..] [--account <name>] [--read-on-screen ..]
+//       [--precondition <o-id>]   Delivery Manager: edit the shared script (the only way to change it). A match
+//       is literal text unless --regex makes it a pattern; one holding regex characters needs --literal or
+//       --regex; --sample is output it must be found in (lib/match-mode.js)
 //   reality-check.js refine <bead> --from <file>   the same, step commands from a JSON file of
-//       {"<criterion>": {command, match, [step], [as_role]}}, checked whole before anything is written
+//       {"<criterion>": {command, match, [match_mode: literal|regex], [sample], [step], [as_role]}}, checked whole before anything is written
 //   reality-check.js show <bead>                                       the script, read only
 //   reality-check.js run-record <bead> --criterion <n> --result pass|fail --artifact <path>
 //       --observed-version <what the surface showed> [--host h] [--app a] [--mode m] [--install-artifact x]
@@ -24,12 +26,13 @@ const path = require('path');
 const crypto = require('crypto');
 const G = require('./lib/gates.js');
 const W = require('./lib/warnings.js');
+const MM = require('./lib/match-mode.js');
 const { tupleOf, TUPLE } = require('./lib/surface.js');
 const { whoAmI, gateInputs, writerProblem, ownerRecord, recordChecker, EVIDENCE_WRITERS } = require('./lib/gate-context.js');
 
-const USAGE = 'usage: reality-check.js plan <bead> [--attempts <n>] [--minutes <n>] [--owner-record dec-...] | refine <bead> --from <file> | refine <bead> [--criterion <n> (--step <k>|--add-step) | --setup <k>] [--action ..] [--expect ..] [--command ..] [--match ..] [--as-role|--no-as-role] [--capture a,b] [--pass-rule ..] [--account <name>] [--read-on-screen ..] [--precondition <o-id>] | show <bead> | run-record <bead> --criterion <n> --result pass|fail --artifact <path> --observed-version <v> [--host h] [--app a] [--mode m] [--install-artifact x]';
+const USAGE = 'usage: reality-check.js plan <bead> [--attempts <n>] [--minutes <n>] [--owner-record dec-...] | refine <bead> --from <file> [--unchecked <why>] | refine <bead> [--criterion <n> (--step <k>|--add-step) | --setup <k>] [--unchecked <why>] [--action ..] [--expect ..] [--command ..] [--match .. [--literal|--regex] [--sample ..]] [--as-role|--no-as-role] [--capture a,b] [--pass-rule ..] [--account <name>] [--read-on-screen ..] [--precondition <o-id>] | show <bead> | run-record <bead> --criterion <n> --result pass|fail --artifact <path> --observed-version <v> [--host h] [--app a] [--mode m] [--install-artifact x]\n  a --match is literal text by default (found with String.includes); one holding a regex character needs --literal (as written) or --regex (a pattern); --sample <output> refuses a match not found in it';
 const VALUE = ['--criterion', '--result', '--artifact', '--observed-version', '--attempts', '--minutes', '--project', '--host', '--app', '--mode', '--install-artifact',
-  '--step', '--setup', '--action', '--expect', '--command', '--match', '--capture', '--pass-rule', '--account', '--read-on-screen', '--precondition', '--from', '--owner-record'];
+  '--step', '--setup', '--action', '--expect', '--command', '--match', '--sample', '--capture', '--pass-rule', '--account', '--read-on-screen', '--precondition', '--from', '--owner-record', '--unchecked'];
 // a test account is named, never given: anything that looks like a password or token is refused
 const SECRETISH = /pass(?:word|wd)?|secret|token|api[_-]?key|[:=]\S|\b[A-Za-z0-9+/_-]{24,}\b/i;
 const DEFAULT_CAP = { attempts: 2, minutes: 30 };
@@ -41,6 +44,8 @@ function parse(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--add-step') out.add_step = true;
+    else if (a === '--regex') out.regex = true;
+    else if (a === '--literal') out.literal = true;
     else if (a === '--as-role') out.as_role = true;
     else if (a === '--no-as-role') out.as_role = false;
     else if (VALUE.includes(a)) { if (argv[i + 1] === undefined) throw new Error(`${a} needs a value`); out[a.slice(2).replace(/-/g, '_')] = argv[++i]; }
@@ -177,8 +182,9 @@ function versionedSteps(script) {
 function plan(who, store, id, a, at, verifyRecord) {
   const wp = writerProblem(who);
   if (wp) return refuse(wp);
-  const bead = store.show(id);
-  if (!bead) return refuse(`no bead ${id}`);
+  const found = require('./lib/bd.js').lookupBead(store, id);
+  if (!found.bead) return refuse(require('./lib/bd.js').lookupProblem(id, found));
+  const bead = found.bead;
   const inp = gateInputs(who.root, bead, { bd: store, team: who.team });
   if (!inp.checkStory) return refuse(`${id} has no readable story file (metadata story_file under .delivery/stories/) and states no criteria of its own (a "Done when:" paragraph in its description, or metadata.criteria)`);
   if (!inp.surface) return refuse(`${id} names no declared customer surface (surface.json), so there is nothing to set up: declare it first (R-09)${inp.story ? '' : `; a bead with no story file takes its parent's initiative, or names one: metadata initiative=<slug> and surface=<id>`}`);
@@ -311,8 +317,9 @@ function runRecord(who, store, id, a, { cwd, env, now, verifyRecord }) {
   const wp = writerProblem(who, EVIDENCE_WRITERS);
   if (wp) return refuse(wp);
   if (!a.criterion || !['pass', 'fail'].includes(a.result) || !a.artifact || !a.observed_version) return { code: 2, out: USAGE };
-  const bead = store.show(id);
-  if (!bead) return refuse(`no bead ${id}`);
+  const found = require('./lib/bd.js').lookupBead(store, id);
+  if (!found.bead) return refuse(require('./lib/bd.js').lookupProblem(id, found));
+  const bead = found.bead;
   const m = bead.metadata || {};
   if (!m.deployed_sha) return refuse(`${id} has no deployed sha: a reality check runs on a deploy (evidence.js state ${id} deployed --sha <sha>)`);
   const script = readScript(who.root, id);
@@ -359,12 +366,15 @@ function runRecord(who, store, id, a, { cwd, env, now, verifyRecord }) {
 
 // The Delivery Manager's edits go through here: the script lives in the shared project checkout, which
 // run-record reads, and no lane writes it directly.
-function refine(who, id, a, at, cwd) {
+function refine(who, id, a, at, cwd, check = {}) {
   const wp = writerProblem(who);
   if (wp) return refuse(wp);
   const s = readScript(who.root, id);
   if (!s) return refuse(`no reality-check script for ${id}: plan it first (reality-check.js plan ${id})`);
-  if (a.from !== undefined) return refineFrom(who, id, s, a, at, cwd);
+  if (a.unchecked !== undefined && !String(a.unchecked).trim()) return refuse('--unchecked needs the reason the command is saved without its check');
+  if (a.from !== undefined) return refineFrom(who, id, s, a, at, cwd, check);
+  let touched = null;
+  let matchLine = null;
   const fields = (step) => {
     if (a.action !== undefined) step.action = a.action;
     if (a.expect !== undefined) step.expect = a.expect;
@@ -374,8 +384,17 @@ function refine(who, id, a, at, cwd) {
       const v = require('./lib/launcher.js').versionFree(a.command, who.root);
       if (v.problem) return v.problem;
       step.command = v.command;
+      touched = step;
     }
-    if (a.match !== undefined) step.match = a.match;
+    // a match is literal text unless --regex says it is a pattern, and one holding regex characters is
+    // refused until the refine says which (lib/match-mode.js); --sample proves it matches that output
+    if (a.match !== undefined) {
+      const c = MM.choose(a.match, { regex: a.regex, literal: a.literal, sample: a.sample });
+      if (c.problem) return c.problem;
+      step.match = a.match;
+      step.match_mode = c.mode;
+      matchLine = MM.describe(step.match, step.match_mode);
+    } else if (a.regex || a.literal || a.sample !== undefined) return `--regex, --literal and --sample go with --match, which sets the step's match`;
     // operator.js sync writes as a role, so it needs the checker's identity, which the runner otherwise
     // clears; --as-role keeps it for this step only, and only for the one form asRoleProblem allows
     if (a.as_role === true) step.as_role = true;
@@ -417,18 +436,47 @@ function refine(who, id, a, at, cwd) {
   if (a.read_on_screen !== undefined) { s.artifact = { ...s.artifact, read_on_screen: a.read_on_screen }; changed.push('version on screen'); }
   if (a.precondition !== undefined) { s.preconditions = [...new Set([...(s.preconditions || []), a.precondition])]; changed.push('preconditions'); }
   if (!changed.length) return { code: 2, out: USAGE };
+  const dry = touched ? checkCommands([{ label: changed[0], step: touched }], a, check) : { lines: [], flagged: [] };
+  if (dry.refusal) return dry.refusal;
+  if (touched) markUnchecked(touched, a, dry.flagged.includes(0));
   s.refined_by = who.instance;
   s.refined_at = at;
   fs.writeFileSync(path.join(who.root, scriptRel(id)), `${JSON.stringify(s, null, 2)}\n`);
-  return { code: 0, out: `${scriptRel(id)}: ${changed.join(', ')}` };
+  return { code: 0, out: [`${scriptRel(id)}: ${changed.join(', ')}`, ...(matchLine ? [matchLine] : []), ...dry.lines].join('\n') };
 }
+
+// Each new command is checked before it is saved, without running it (lib/check-command.js): this lane
+// runs no product code, so the run itself is verify-run.js's, in the Reality Checker's lane. A
+// DELIVERY_TEST_FILES path that is not a file under the plugin root refuses the refine unless --unchecked
+// gives the reason, and only the steps that had a problem keep that reason (rv-217 F3); a command that
+// ends in a pipe is a warning. { lines, flagged: [index of each item with a problem], refusal }
+function checkCommands(items, a, { pluginRoot = path.join(__dirname, '..') } = {}) {
+  const CC = require('./lib/check-command.js');
+  const lines = [];
+  const problems = [];
+  const flagged = [];
+  items.forEach(({ label, step }, i) => {
+    const mine = CC.testFileProblems(step.command, pluginRoot);
+    if (mine.length) flagged.push(i);
+    for (const p of mine) problems.push(`${label}: ${p}`);
+    if (CC.endsInPipe(step.command)) lines.push(`warning: ${label}: ${CC.PIPE_WARNING}`);
+  });
+  if (problems.length && a.unchecked === undefined) {
+    return { refusal: refuse(`${problems.join('; ')}; nothing is saved.\nFix the command, or save it as it is with --unchecked '<why it cannot be checked here>'`) };
+  }
+  if (problems.length) lines.push(`saved unchecked (${String(a.unchecked).trim()}): ${problems.join('; ')}`);
+  return { lines, flagged };
+}
+const markUnchecked = (step, a, isFlagged) => { if (isFlagged && a.unchecked !== undefined) step.unchecked = String(a.unchecked).trim(); else delete step.unchecked; };
 
 // refine --from <file>: { "<criterion>": { command, match, [step], [as_role] } }. Drafted commands hold
 // single quotes, which a lane that refuses quote-escaping cannot pass as --command; a file carries them
 // as data. The whole file is checked before anything is written, so a bad entry changes nothing.
-const FROM_KEYS = new Set(['command', 'match', 'step', 'as_role']);
-function refineFrom(who, id, s, a, at, cwd = process.cwd()) {
-  const other = ['criterion', 'step', 'setup', 'add_step', 'command', 'match', 'action', 'expect', 'as_role', 'capture', 'pass_rule', 'account', 'read_on_screen', 'precondition'].find((k) => a[k] !== undefined);
+// match_mode (literal or regex) says how match is read, as --literal and --regex do; sample, when given,
+// is output the match must be found in (lib/match-mode.js).
+const FROM_KEYS = new Set(['command', 'match', 'match_mode', 'sample', 'step', 'as_role']);
+function refineFrom(who, id, s, a, at, cwd = process.cwd(), check = {}) {
+  const other = ['criterion', 'step', 'setup', 'add_step', 'command', 'match', 'regex', 'literal', 'sample', 'action', 'expect', 'as_role', 'capture', 'pass_rule', 'account', 'read_on_screen', 'precondition'].find((k) => a[k] !== undefined);
   if (other) return { code: 2, out: `reality-check.js: --from takes no other option (got --${other.replace(/_/g, '-')}); run that refine on its own` };
   let text;
   try { text = fs.readFileSync(path.resolve(cwd, a.from), 'utf8'); } catch (e) { return refuse(`cannot read ${a.from} (${e.code || e.message})`); }
@@ -445,7 +493,11 @@ function refineFrom(who, id, s, a, at, cwd = process.cwd()) {
     const extra = Object.keys(e).find((k) => !FROM_KEYS.has(k));
     if (extra) return refuse(`${a.from}: criterion ${n}: unknown key ${extra} (allowed: ${[...FROM_KEYS].join(', ')})`);
     if (typeof e.command !== 'string' || !e.command.trim() || typeof e.match !== 'string' || !e.match.trim()) return refuse(`${a.from}: criterion ${n}: command and match must both be non-empty strings`);
-    try { new RegExp(e.match); } catch (err) { return refuse(`${a.from}: criterion ${n}: match is not a valid regular expression (${err.message})`); }
+    if (e.match_mode !== undefined && !MM.MODES.includes(e.match_mode)) return refuse(`${a.from}: criterion ${n}: match_mode is literal or regex, not ${JSON.stringify(e.match_mode)}`);
+    if (e.sample !== undefined && typeof e.sample !== 'string') return refuse(`${a.from}: criterion ${n}: sample must be a string`);
+    const chosen = MM.choose(e.match, { regex: e.match_mode === 'regex', literal: e.match_mode === 'literal', sample: e.sample });
+    if (chosen.problem) return refuse(`${a.from}: criterion ${n}: ${chosen.problem.replace(/--literal/g, '"match_mode": "literal"').replace(/--regex/g, '"match_mode": "regex"').replace(/--sample/g, 'sample').replace(/--match/g, 'match')}`);
+    e.match_mode = chosen.mode;
     if (e.as_role !== undefined && typeof e.as_role !== 'boolean') return refuse(`${a.from}: criterion ${n}: as_role must be true or false`);
     const v = require('./lib/launcher.js').versionFree(e.command, who.root);
     if (v.problem) return refuse(`${a.from}: criterion ${n}: ${v.problem}`);
@@ -459,22 +511,27 @@ function refineFrom(who, id, s, a, at, cwd = process.cwd()) {
     plan.push({ n, step, e });
   }
   if (!plan.length) return refuse(`${a.from} names no criterion`);
+  // every command is checked before any is applied: one that is refused changes nothing
+  const dry = checkCommands(plan.map(({ n, step, e }) => ({ label: `criterion ${n} step ${step.n}`, step: { command: e.command, match: e.match } })), a, check);
+  if (dry.refusal) return dry.refusal;
   for (const { step, e } of plan) {
     step.command = e.command;
     step.match = e.match;
+    step.match_mode = e.match_mode;
     if (e.as_role === true) step.as_role = true;
     if (e.as_role === false) delete step.as_role;
+    markUnchecked(step, a, dry.flagged.includes(plan.findIndex((x) => x.step === step)));
   }
   s.refined_by = who.instance;
   s.refined_at = at;
   fs.writeFileSync(path.join(who.root, scriptRel(id)), `${JSON.stringify(s, null, 2)}\n`);
-  return { code: 0, out: `${scriptRel(id)}: ${plan.map(({ n, step }) => `criterion ${n} step ${step.n}`).join(', ')}` };
+  return { code: 0, out: [`${scriptRel(id)}: ${plan.map(({ n, step }) => `criterion ${n} step ${step.n}`).join(', ')}`, ...plan.map(({ n, step }) => `criterion ${n} step ${step.n} ${MM.describe(step.match, step.match_mode)}`), ...dry.lines].join('\n') };
 }
 
 // open reality-check beads, for /delivery:team
 const pending = (beads) => (beads || []).filter((b) => (b.labels || []).includes(LABEL) && b.status !== 'closed');
 
-function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRecord, who: given } = {}) {
+function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRecord, who: given, pluginRoot } = {}) {
   const a = parse(argv);
   const [cmd, id] = a._;
   if (!['plan', 'refine', 'show', 'run-record'].includes(cmd) || !id) return { code: 2, out: USAGE };
@@ -487,7 +544,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
   const store = bd || require('./lib/bd.js').makeBd({ cwd: who.root });
   const at = now || new Date().toISOString();
   if (cmd === 'plan') return plan(who, store, id, a, at, verifyRecord);
-  if (cmd === 'refine') return refine(who, id, a, at, cwd);
+  if (cmd === 'refine') return refine(who, id, a, at, cwd, pluginRoot ? { pluginRoot } : {});
   return runRecord(who, store, id, a, { cwd, env, now: at, verifyRecord });
 }
 

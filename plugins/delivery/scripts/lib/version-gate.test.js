@@ -1,4 +1,5 @@
 // scripts/lib/version-gate.test.js — a pull request that changes a plugin must raise its version
+require('../testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { checkVersions, pluginDirs, parse, compare } = require('./version-gate.js');
@@ -60,4 +61,49 @@ test('r7w: plugin directories and versions are read as the gate needs them', () 
   assert.equal(compare(parse('0.43.10'), parse('0.43.9')), 1, 'numeric, not text');
   assert.equal(compare(parse('1.0.0-rc.1'), parse('1.0.0')), -1);
   assert.equal(parse('one'), null);
+});
+
+// 8l1.5: the marketplace beside the plugins directory carries the version an install reads
+const MK = '.claude-plugin/marketplace.json';
+const market = (v, extra = []) => JSON.stringify({ name: 'm', plugins: [{ name: 'other', version: '9.0.0' }, ...extra, ...(v === undefined ? [] : [{ name: 'app', source: './plugins/app', ...(v === null ? {} : { version: v }) }])] });
+const both = (head, base) => ({ h1: { [M]: manifest(head[0]), [MK]: market(head[1]) }, main: { [M]: manifest(base[0]), [MK]: market(base[1]) } });
+const check = (files) => checkVersions({ paths: ['plugins/app/a.js'], headRef: 'h1', baseRef: 'main', read: reader(files) });
+
+test('8l1.5: the marketplace entry must name the same version as plugin.json at the head, and be above main', () => {
+  // the case behind the bead: plugin.json raised, the marketplace entry left at main's
+  const left = check(both(['0.43.121', '0.43.120'], ['0.43.120', '0.43.120']));
+  assert.equal(left.ok, false);
+  assert.match(left.why, /^\.claude-plugin\/marketplace\.json lists app at 0\.43\.120 at the head while plugins\/app\/\.claude-plugin\/plugin\.json is at 0\.43\.121: the two must name the same version$/);
+  // the two files disagree the other way
+  assert.match(check(both(['0.43.121', '0.43.122'], ['0.43.120', '0.43.120'])).why, /lists app at 0\.43\.122 at the head while .* is at 0\.43\.121/);
+  // main's marketplace ahead of its own plugin.json: the head must clear the marketplace too
+  const behind = check(both(['0.43.121', '0.43.121'], ['0.43.120', '0.43.125']));
+  assert.equal(behind.ok, false);
+  assert.match(behind.why, /lists app at 0\.43\.121 at the head, not above 0\.43\.125 on main, so the merged change would never install/);
+  // the boundary: a head entry equal to main's marketplace entry is not above it, even when it clears
+  // main's plugin.json (rv-213: < 0 for <= 0 passed the suite)
+  const equal = check(both(['0.43.121', '0.43.121'], ['0.43.120', '0.43.121']));
+  assert.equal(equal.ok, false);
+  assert.match(equal.why, /not above 0\.43\.121/);
+  // the other direction: both raised to one version above main passes
+  assert.deepEqual(check(both(['0.43.121', '0.43.121'], ['0.43.120', '0.43.120'])), { ok: true, checked: [{ dir: 'plugins/app', base: '0.43.120', head: '0.43.121' }] });
+});
+
+test('8l1.5: no marketplace, no entry or an entry without a version asks nothing more; an unreadable one is refused', () => {
+  const noMarket = { h1: { [M]: manifest('1.0.1') }, main: { [M]: manifest('1.0.0') } };
+  assert.equal(check(noMarket).ok, true, 'a repository with no marketplace');
+  assert.equal(check(both(['1.0.1', undefined], ['1.0.0', undefined])).ok, true, 'a marketplace that does not list the plugin');
+  assert.equal(check(both(['1.0.1', null], ['1.0.0', null])).ok, true, 'an entry with no version');
+  const down = { h1: { [M]: manifest('1.0.1'), [MK]: market('1.0.1') }, main: { [M]: manifest('1.0.0') } };
+  const r = checkVersions({ paths: ['plugins/app/a.js'], headRef: 'h1', baseRef: 'main', read: (p, ref) => (p === MK && ref === 'main' ? { unavailable: 'HTTP 502' } : reader(down)(p, ref)) });
+  assert.match(r.why, /marketplace\.json on main could not be read \(HTTP 502\)/);
+  assert.match(check({ h1: { [M]: manifest('1.0.1') }, main: { [M]: manifest('1.0.0'), [MK]: market('1.0.0') } }).why, /marketplace\.json is gone at the head, while main lists app at 1\.0\.0/);
+  assert.match(check({ h1: { [M]: manifest('1.0.1'), [MK]: market(undefined) }, main: { [M]: manifest('1.0.0'), [MK]: market('1.0.0') } }).why, /at the head lists no valid version for app/);
+  assert.match(check({ h1: { [M]: manifest('1.0.1'), [MK]: market('1.0.1') }, main: { [M]: manifest('1.0.0'), [MK]: 'not json' } }).why, /on main is not a readable marketplace/);
+});
+
+test('8l1.5: the marketplace is the one beside the plugins directory, at any depth', () => {
+  const { marketplaceOf } = require('./version-gate.js');
+  assert.equal(marketplaceOf('plugins/app'), '.claude-plugin/marketplace.json');
+  assert.equal(marketplaceOf('vendor/plugins/b'), 'vendor/.claude-plugin/marketplace.json');
 });

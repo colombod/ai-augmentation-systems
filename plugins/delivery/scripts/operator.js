@@ -586,7 +586,7 @@ const handlers = {
     const lines = res.length ? res.map((r) => {
       const sc = Object.entries(r.scope || {}).flatMap(([k, v]) => v.map((x) => `${k.slice(0, -1)}:${x}`)).join(',');
       const extra = [r.confidence ? `[${r.confidence}${r.ratified === true ? ', ratified' : ''}]` : '', sc ? `scope ${sc}` : '', r.superseded_by ? `superseded by ${r.superseded_by}` : ''].filter(Boolean).join(' ');
-      return `${r.id} ${r.kind}${extra ? ' ' + extra : ''}: ${r.statement}${r.quote ? ` (operator: ${quoted(r.quote)})` : ''}${r.grant ? ` GRANT: ${r.grant}` : ''}`;
+      return `${r.id} ${r.kind}${r.test === true ? ' [test]' : ''}${extra ? ' ' + extra : ''}: ${r.statement}${r.quote ? ` (${r.test === true ? 'test input' : 'operator'}: ${quoted(r.quote)})` : ''}${r.grant ? ` GRANT: ${r.grant}` : ''}`;
     }) : ['nothing found'];
     out(ctx, { results: [...res], problems: res.problems, warnings }, [...lines, ...warnings.map((w) => `warning: ${w}`)]);
     return manifestUnavailable(res.problems) ? 1 : 0;
@@ -632,13 +632,21 @@ const handlers = {
       lines.push(`Delegations awaiting a glance (${p.delegations_awaiting_glance.length}):`);
       for (const d of p.delegations_awaiting_glance) lines.push(`  ${d.id}  GRANT: ${d.grant}  (operator: ${quoted(d.quote)})`);
     }
+    if (p.tests && p.tests.length) {
+      lines.push(`Test inputs (Reality Checker, never the operator's word) (${p.tests.length}):`);
+      for (const i of p.tests) lines.push(`  ${i.id}  ${i.ts}  [test] ${quoted(i.text.length > 100 ? i.text.slice(0, 100) + '...' : i.text)}`);
+    }
+    if (p.test_records && p.test_records.length) {
+      lines.push(`Test records (made from test inputs, never the operator's word) (${p.test_records.length}):`);
+      for (const r of p.test_records) lines.push(`  ${r.id}  [test] ${r.kind}: ${r.kind === 'answer' ? r.answer : r.grant}`);
+    }
     if (p.inputs.length) {
       lines.push(`Operator inputs with no record or ack (${p.inputs.length}):`);
       for (const i of p.inputs) lines.push(`  ${i.id}  ${i.ts}  ${quoted(i.text.length > 100 ? i.text.slice(0, 100) + '...' : i.text)}`);
     }
     if (p.acked) {
       lines.push(`Acknowledged inputs (${p.acked.length}):`);
-      for (const a of p.acked) lines.push(`  ${a.input}  ${a.reason}  (${a.id})`);
+      for (const a of p.acked) lines.push(`  ${a.input}${a.test === true ? '  [test]' : ''}  ${a.reason}  (${a.id})`);
     }
     if (!lines.length) lines.push('nothing pending');
     out(ctx, { ...p, unpublished: unpub.count, warnings }, [...lines, ...warnings.map((w) => `warning: ${w}`)]);
@@ -748,7 +756,7 @@ const handlers = {
     if (id.startsWith('in-')) {
       obj = log.getInput(ctx.projectRoot, id) || (ctx.refreshOnce() && log.getInput(ctx.projectRoot, id)) || null;
       if (!obj) throw new R.OperatorError('not_found', `input ${id} was not found (operator.js refresh pulls other hosts; operator.js pending lists inputs)`);
-      out(ctx, obj, [`${obj.id}  input (${obj.source})`, `host: ${obj.host}`, `session: ${obj.session_id}`, `instance: ${obj.instance} (${obj.role})`,
+      out(ctx, obj, [`${obj.id}  input (${obj.source})${obj.source === 'test' ? ' [test]' : ''}`, `host: ${obj.host}`, `session: ${obj.session_id}`, `instance: ${obj.instance} (${obj.role})`,
         `at: ${obj.ts} (captured ${obj.captured_at})`, `transcript: ${obj.transcript_ref && obj.transcript_ref.file}:${obj.transcript_ref && obj.transcript_ref.line}`,
         `text: ${quoted(obj.text)}`]);
       return 0;
@@ -758,7 +766,7 @@ const handlers = {
     // the record is displayed as stored; its words count as the operator's only if it validates
     const v = R.verifyRecord(ctx.projectRoot, id, { refresh: ctx.refreshOnce, noLedger: true });
     const validity = v.ok ? { ok: true } : { ok: false, code: v.code, error: v.error };
-    const lines = [`${obj.id}  ${obj.kind}`, v.ok ? 'validity: valid' : `validity: invalid (${v.code}): ${v.error}`,
+    const lines = [`${obj.id}  ${obj.kind}${obj.test === true ? ' [test]' : ''}`, v.ok ? 'validity: valid' : `validity: invalid (${v.code}): ${v.error}`,
       `by: ${obj.by && obj.by.instance} (${obj.by && obj.by.role}) at ${obj.ts}`];
     for (const k of ['statement', 'question', 'text', 'answer', 'confidence', 'rationale', 'reason']) if (obj[k]) lines.push(`${k}: ${obj[k]}`);
     if (obj.quote && !v.ok) lines.push("quote: withheld, the record does not validate (the raw record is in --json)");

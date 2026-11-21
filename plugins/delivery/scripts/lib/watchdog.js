@@ -42,6 +42,22 @@ const WAKE_OPENING = 'Watchdog (a host job, not the owner)';
 const wakePrompt = (prompts, verb) => `${WAKE_OPENING}: ${prompts.join(' ')} ${require('./first-turn.js').FIRST_TURN} Reply in one line with what you ${verb}.`;
 
 const REL = path.join('.delivery', 'watchdog');
+// A held message, or a send-back note, reaches its role inside one `claude -p` argument. Each was cut at
+// 600 characters, unmarked, mid-instruction ("... Do NOT", "reference.md now describes thi", 5q3); it
+// is now whole up to this many characters (five messages stay far below Linux's 128 KiB limit on one
+// argument), and one longer ends by saying it was shortened and where its full text is.
+const MESSAGE_CHARS = 4000;
+// A cut never splits a character JavaScript keeps in two code units (a surrogate pair): it steps back one.
+const cutAt = (s, n) => { const c = String(s).slice(0, n); return /[\uD800-\uDBFF]$/.test(c) ? c.slice(0, -1) : c; };
+// raw is the stored text and all its real length (rv-224: the counts are on what is stored, not on the text
+// with its whitespace folded); only the prompt folds the whitespace
+const shorten = (raw, all, where) => {
+  const s = String(raw || '');
+  const total = Math.max(Number(all) || 0, s.length);
+  if (total <= MESSAGE_CHARS) return s.replace(/\s+/g, ' ');
+  const c = cutAt(s, MESSAGE_CHARS);
+  return `${c.replace(/\s+/g, ' ').trimEnd()} [shortened: ${c.length} of ${total} characters; ${where}]`;
+};
 const P0_HOURS = 1;
 const WAKE_EVERY_MS = 3600e3;
 const DAILY_CAP = 6;
@@ -511,7 +527,7 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
         line: `Blocked: ${b.id} has a blocker noted and nothing has moved for ${span(waited)}.`,
         plain: `A started item has been blocked for ${span(waited)}; the Delivery Manager clears it.`,
         detail: `in progress with ${h ? h.instance : b.assignee || 'nobody named'}; last note names a blocker`,
-        prompt: `${b.id} has a blocker noted by its holder and has not moved for ${span(waited)}: ${blocker.replace(/\s+/g, ' ').slice(0, 400)} Clear it now (unblock, reassign or release it), or note on the bead what it waits for.` });
+        prompt: `${b.id} has a blocker noted by its holder and has not moved for ${span(waited)}: ${shorten(blocker, blocker.length, `the full note is on ${b.id}`)} Clear it now (unblock, reassign or release it), or note on the bead what it waits for.` });
       continue;
     }
     const last = Math.max(ms(b.updated_at), ms(b.created_at), activeFor(b, h));
@@ -580,12 +596,25 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
     const sender = team && require('./manifest.js').expandInstances(team).find((i) => i.instance === (m.entries[0] || {}).from);
     const r = team ? require('./inbox.js').resolveTarget(team, m.to, sender && sender.role ? sender.role.host : null) : { to: m.to };
     if (r.unknown) continue;
-    const shown = m.entries.slice(-5).map((e) => `[from ${e.from || 'unknown'}${e.summary ? `: ${e.summary}` : ''}] ${String(e.message || '').replace(/\s+/g, ' ').slice(0, 600)}`);
+    // the file keeps one message per line, so the pending entry at index i is line first + i
+    const first = m.upTo - m.entries.length + 1;
+    const where = m.file || path.join(REL, 'inbox', `${m.to}.ndjson`);
+    const last = m.entries.slice(-5);
+    const shown = last.map((e, i) => {
+      const raw = String(e.message || '');
+      const line = first + m.entries.length - last.length + i;
+      // a message past the inbox's own bound carries its real length (lib/inbox.js), and the file only its start
+      const all = Number(e.length) > raw.length ? Number(e.length) : raw.length;
+      const kept = all > raw.length ? `line ${line} of ${where} holds its first ${raw.length}` : `the full text is line ${line} of ${where}`;
+      return `[from ${e.from || 'unknown'}${e.summary ? `: ${e.summary}` : ''}] ${shorten(raw, all, kept)}`;
+    });
+    const earlier = m.entries.length - last.length;
+    const lead = earlier > 0 ? `${m.entries.length} messages arrived; the earlier ${earlier} ${earlier > 1 ? `are lines ${first}-${first + earlier - 1}` : `is line ${first}`} of ${where}; the last ${last.length}:` : `Message${m.entries.length > 1 ? 's' : ''} sent to you while your session was not running:`;
     out.push({ kind: 'message', key: `message:${m.to}:${m.upTo}`, target: r.to, inbox: m.to, due: true, upTo: m.upTo,
       line: `Waiting: ${m.entries.length} message${m.entries.length > 1 ? 's' : ''} for ${m.to}, sent while its session was not running.`,
       plain: `A message is waiting for ${m.to}; it is woken to read it.`,
       detail: `${m.entries.length} undelivered message(s) for ${m.to}`,
-      prompt: `${m.entries.length > 5 ? `${m.entries.length} messages arrived; the last 5:` : `Message${m.entries.length > 1 ? 's' : ''} sent to you while your session was not running:`} ${shown.join(' ')} Act on them now, as your brief says.` });
+      prompt: `${lead} ${shown.join(' ')} Act on them now, as your brief says.` });
   }
   // 6z5: a pull request sent back to its author is handed to it at once, like a handoff: never held by a
   // daily cap, once per send-back (a wake that carried its key already handed it over), and only while
@@ -601,7 +630,7 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
         line: `Sent back: PR ${r.pr} (${named}) went back to ${owner} at ${clock(ms(r.sentBack.at))}${r.sentBack.reason ? ` (${r.sentBack.reason})` : ''}.`,
         plain: 'A pull request went back to its builder to fix; it is woken to fix it.',
         detail: `PR ${r.pr} sent back to ${owner} (${r.sentBack.id})`,
-        prompt: `PR ${r.pr} was sent back to you (${r.sentBack.id}${r.sentBack.reason ? `, ${r.sentBack.reason}` : ''})${r.sentBack.note ? `: ${String(r.sentBack.note).replace(/\s+/g, ' ').slice(0, 600)}` : ''}. Read the send-back note on ${named}, fix it on your branch, push, and tell the Delivery Manager.` });
+        prompt: `PR ${r.pr} was sent back to you (${r.sentBack.id}${r.sentBack.reason ? `, ${r.sentBack.reason}` : ''})${r.sentBack.note ? `: ${(() => { const n = String(r.sentBack.note); return shorten(n, n.length, `the full note is on ${named}`); })()}` : ''}. Read the send-back note on ${named}, fix it on your branch, push, and tell the Delivery Manager.` });
     }
   }
   // the next step a merge or a deploy handed to a role (lib/handoff.js): a handoff, woken like a message,
@@ -805,14 +834,146 @@ function log(root, row) {
   return row;
 }
 
-// alive, and still a wake supervisor: a pid the system gave to another program since is not ours
-function pidAlive(pid) {
+// What the system says about a pid: whether it exists, its command line, and when it started (ms), each
+// null when it cannot be read. /proc first (Linux); ps for the command elsewhere. hjx.1.6.20: on one host
+// `ps -p` printed nothing for a pid that /proc showed, so ps alone is not trusted to say "unknown".
+const START_SLACK_MS = 60e3;
+// wake-run.js stops its group at the timeout, then waits the kill grace before SIGKILL, and lives until
+// the group is gone: an unreadable supervisor may be alive that long after its row
+const KILL_GRACE_MS = Number(process.env.DELIVERY_WAKE_KILL_GRACE_MS) || 30e3;
+const procReads = {
+  exists(pid) { try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; } },
+  cmdline(pid) {
+    try { const c = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').join(' ').trim(); if (c) return c; } catch (err) { /* no /proc */ }
+    try { const c = require('child_process').execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 }).trim(); return c || null; } catch (err) { return null; }
+  },
+  startedMs(pid) {
+    try {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+      const ticks = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19]);
+      const btime = Number((/^btime (\d+)$/m.exec(fs.readFileSync('/proc/stat', 'utf8')) || [])[1]);
+      // clock ticks are 100 a second on every Linux this runs on (USER_HZ)
+      return Number.isFinite(ticks) && btime ? btime * 1000 + ticks * 10 : null;
+    } catch (err) { return null; }
+  },
+};
+
+// hjx.1.6.20.1: a wake still running past its timeout plus the kill grace outlived its supervisor's own
+// stop, and held every install (and every wake, since none starts during a hold) with no end. Such a
+// wake is ended by the host job: each wake pid, by its newest row, that is still that wake (pidAlive)
+// and older than the bound. [{ pid, at, instance }]
+function overdueWakes(rows, { now = Date.now(), alive = (pid, since) => pidAlive(pid, { since, now }) } = {}) {
+  const t = typeof now === 'number' ? now : ms(now);
+  const newest = new Map();
+  for (const r of rows || []) if (r && r.type === 'wake' && Number.isInteger(r.pid) && r.pid > 0) newest.set(r.pid, r);
+  const bound = WAKE_TIMEOUT_H * 3600e3 + KILL_GRACE_MS;
+  return [...newest.values()].filter((r) => t - ms(r.at) > bound && alive(r.pid, r.at)).map((r) => ({ pid: r.pid, at: r.at, instance: r.instance || null }));
+}
+// Ends one wake: its session's process group (the supervisor started it detached, in a group of its
+// own) and the supervisor, SIGTERM now; a group that outlives it gets SIGKILL from the supervisor
+// itself (wake-run.js stops its group on SIGTERM), or from the next pass, which still finds it overdue.
+// children(pid): the supervisor's child pids (/proc). Returns the pids signalled.
+function stopWake(pid, { kill = process.kill.bind(process), children = childPids, signal = 'SIGTERM' } = {}) {
+  const sent = [];
+  for (const c of children(pid)) { try { kill(-c, signal); sent.push(-c); } catch (err) { /* gone */ } }
+  try { kill(pid, signal); sent.push(pid); } catch (err) { /* gone */ }
+  return sent;
+}
+// The roles waiting through an install hold: each one quiet with in-progress work it holds, as an assigned
+// stall on a bead in progress, or a quiet stall (in progress past stall_hours) aimed at its holder; the
+// hold bound is longer than stall_hours, so a long hold's waiting roles are mostly quiet ones. [{ instance, beads }]
+function waitingRoles(res) {
+  const by = new Map();
+  for (const s of (res && res.stalls) || []) {
+    const detail = String(s.detail || '');
+    const assigned = s.kind === 'assigned' && /^in_progress\b/.test(detail);
+    const quiet = s.kind === 'quiet' && /^in progress with /.test(detail) && detail.slice('in progress with '.length).split(';')[0].split('/').pop() === s.target;
+    if (!assigned && !quiet) continue;
+    if (!by.has(s.target)) by.set(s.target, []);
+    by.get(s.target).push(s.bead);
+  }
+  return [...by].map(([instance, beads]) => ({ instance, beads }));
+}
+// kept once per change, so the run after the hold knows whom to wake first
+function noteWaiting(root, waiting, now) {
+  const last = logRows(root).filter((r) => r.type === 'held-waiting').pop();
+  const names = waiting.map((x) => x.instance).sort();
+  if (last && JSON.stringify((last.roles || []).slice().sort()) === JSON.stringify(names)) return false;
+  log(root, { type: 'held-waiting', at: now || new Date().toISOString(), roles: names });
+  return true;
+}
+// the roles named by the newest held-waiting row, once the hold it was written in has ended (an install or
+// a stopped wake since), within a day
+function waitedRoles(rows, now) {
+  const t = ms(now || new Date().toISOString());
+  const all = rows || [];
+  const i = all.map((r) => r && r.type).lastIndexOf('held-waiting');
+  if (i < 0 || t - ms(all[i].at) > 24 * 3600e3) return new Set();
+  const ended = all.slice(i + 1).some((r) => r && ((r.type === 'self-update' && r.result === 'installed') || r.type === 'wake-stopped'));
+  // a wake since then means the first run after the hold has gone: nobody is put first twice
+  const woken = all.slice(i + 1).some((r) => r && r.type === 'wake');
+  return ended && !woken ? new Set(all[i].roles || []) : new Set();
+}
+// the team's Chief of Staff instance, for the owner's alert
+function chiefOf(team) {
+  try { const i = require('./manifest.js').expandInstances(team).find((x) => x.role.id === 'chief-of-staff' && !x.role.retired); return i ? i.instance : 'chief-of-staff'; } catch (err) { return 'chief-of-staff'; }
+}
+// The stops not yet finished: each wake-stopped row past the kill grace, and no older than the grace plus
+// FINISH_WINDOW_MS, gets SIGKILL for each signalled target that is still that wake's (once: a wake-killed
+// row, keyed by the wake's own time so a later wake on the same pid is its own). A pid is reused once its
+// process is gone, and after a host restart every number in an old row may belong to another program
+// (the class hjx.1.6.20 fixed), so nothing is killed on a pid's say alone: the supervisor only while
+// pidAlive reads it as that wake by its wake row's time, a group only while its leader started no later
+// than the stop row (a leader no longer readable, its group still answering, only inside the window).
+// A wake stopped because its row could not be written (watchdog.js) has no wake-stopped row, so it gets
+// SIGTERM only. [{ pid, wake_at, instance, killed: [targets] }]
+const FINISH_WINDOW_MS = 3600e3;
+function finishStops(rows, { now = Date.now(), kill = process.kill.bind(process), proc = procReads } = {}) {
+  const t = typeof now === 'number' ? now : ms(now);
+  const all = rows || [];
+  const keyOf = (r) => `${r.pid}@${r.wake_at || ''}`;
+  const done = new Set(all.filter((r) => r && r.type === 'wake-killed').map(keyOf));
+  const answers = (target) => { try { kill(target, 0); return true; } catch (err) { return err.code === 'EPERM'; } };
+  const ours = (target, r) => {
+    if (target > 0) return pidAlive(target, { since: r.wake_at || null, now: t, proc });
+    if (!answers(target)) return false;
+    const started = proc.startedMs(-target);
+    return Number.isFinite(started) ? started <= ms(r.at) : true;
+  };
+  const out = [];
+  for (const r of all.filter((x) => x && x.type === 'wake-stopped' && !done.has(keyOf(x)) && t - ms(x.at) >= KILL_GRACE_MS && t - ms(x.at) <= KILL_GRACE_MS + FINISH_WINDOW_MS)) {
+    const killed = [];
+    for (const target of r.signalled || [r.pid]) {
+      if (!ours(target, r)) continue;
+      try { kill(target, 'SIGKILL'); killed.push(target); } catch (err) { /* gone */ }
+    }
+    out.push({ pid: r.pid, wake_at: r.wake_at || null, instance: r.instance || null, killed });
+  }
+  return out;
+}
+function childPids(pid) {
+  try { return fs.readFileSync(`/proc/${pid}/task/${pid}/children`, 'utf8').trim().split(/\s+/).map(Number).filter((n) => Number.isInteger(n) && n > 0); } catch (err) { return []; }
+}
+
+// A wake pid is a running wake only while it is that wake: alive, a wake supervisor (lib/wake-run.js),
+// and, given the wake row's time (since), started no later than the row (a supervisor is spawned, then
+// its row written). A pid the system gave to another program after the wake ended is not ours, nor is
+// a later wake on the same pid. When neither the command nor the start can be read, the pid is kept
+// only within the wake timeout plus the kill grace of its row (wake-run.js may live that long), so an
+// unreadable pid never holds installs and wakes with no end (hjx.1.6.20: a reused pid held every install
+// for 91 hours). With no row time, as before.
+function pidAlive(pid, { since = null, now = Date.now(), proc = procReads } = {}) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
-  try { process.kill(pid, 0); } catch (err) { if (err.code !== 'EPERM') return false; }
-  try {
-    const cmd = require('child_process').execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 });
-    return !cmd.trim() || /wake-run\.js/.test(cmd);
-  } catch (err) { return true; }
+  if (!proc.exists(pid)) return false;
+  const at = since ? ms(since) : NaN;
+  const cmd = proc.cmdline(pid);
+  if (cmd) {
+    if (!/wake-run\.js/.test(cmd)) return false;
+    const started = proc.startedMs(pid);
+    return !(Number.isFinite(at) && Number.isFinite(started) && started > at + START_SLACK_MS);
+  }
+  if (!Number.isFinite(at)) return true;
+  return (typeof now === 'number' ? now : ms(now)) - at <= WAKE_TIMEOUT_H * 3600e3 + KILL_GRACE_MS;
 }
 
 // a message and a handoff (lib/handoff.js) are the team's handovers, not stalls: woken by the message rules
@@ -830,7 +991,7 @@ const handoffsOf = (stalls) => stalls.filter((s) => s.kind === 'handoff').map((s
 
 // The wakes due now, one per target session, carrying the stall lines it may still be woken for.
 // { wakes: [{ target, keys, lines, prompt }], waiting: [stall], held: [{ target, lines, reason }] }
-function plan(res, { root, now, alive = pidAlive } = {}) {
+function plan(res, { root, now, alive = (pid, since) => pidAlive(pid, { since, now }) } = {}) {
   const t = ms(now || new Date().toISOString());
   const rows = logRows(root).filter((r) => r.type === 'wake');
   // a session on its own usage limit is woken for nothing before its reset (Copilot 416)
@@ -865,7 +1026,7 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
     // row (a merge's deploy, a deploy's check) is never held by a daily cap: merges and deploys bound it.
     const day = (f) => mine.filter((r) => f(r) && t - ms(r.at) < 24 * 3600e3);
     const handover = (items) => {
-      if (last && alive(last.pid)) return { go: [], holds: [{ items, why: 'its last wake is still running; it is woken again when that wake ends' }] };
+      if (last && alive(last.pid, last.at)) return { go: [], holds: [{ items, why: 'its last wake is still running; it is woken again when that wake ends' }] };
       if (items.every(standing) && last && t - ms(last.at) < MESSAGE_EVERY_MS) return { go: [], holds: [{ items, why: `woken at ${clock(ms(last.at))}; assigned work waits ${MESSAGE_EVERY_MS / 60000} min between wakes` }] };
       const holds = [];
       // the message day counts every wake but those for assigned work alone (6z5)
@@ -900,7 +1061,7 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
     // so they spend none of the stall budget either (rv-190)
     const stallRows = mine.filter((r) => (r.keys || []).some((k) => !/^(message|handoff|assigned|review|started|unclaimed):/.test(String(k))));
     const lastStall = stallRows[stallRows.length - 1];
-    if (last && alive(last.pid)) reason = 'its last wake is still running';
+    if (last && alive(last.pid, last.at)) reason = 'its last wake is still running';
     else if (lastStall && t - ms(lastStall.at) < WAKE_EVERY_MS) reason = `woken at ${clock(ms(lastStall.at))}; one wake an hour`;
     else if (stallRows.filter((r) => t - ms(r.at) < 24 * 3600e3).length >= cap.daily) reason = `woken ${cap.daily} times in a day; alarm only until the count falls`;
     // each stall waits 1, 2, 4 ... hours after each wake that carried it. A handover (message, handoff,
@@ -951,10 +1112,20 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
 // (delivery-plugin-planning-8wz). A wake still running is never stopped; the next one starts fresh.
 const FRESH_ABOVE = 120000;
 // prefix: the team's bead prefix; the fresh session is named <instance>@<team> (lib/session-name.js)
-function wakeCommand(s, prompt, live, mode = 'auto', { freshAbove = FRESH_ABOVE, installed = null, prefix = null } = {}) {
+// unit: the user unit that serves the role directory (lib/team-revive.js remoteControlUnitFor), or none.
+// Such a role is started only by its unit: a wake that would start a session (resume, continue, fresh) is
+// a second start path beside it, so it is skipped; a live session still gets the wake as a message.
+function wakeCommand(s, prompt, live, mode = 'auto', { freshAbove = FRESH_ABOVE, installed = null, prefix = null, unit = null } = {}) {
   const m = mode && mode !== 'default' ? ['--permission-mode', mode] : [];
-  const r = wakeArgs(s, prompt, live, { prefix });
   const older = Boolean(installed) && require('./plugin-version.js').compare(s && s.pluginVersion, installed) === -1;
+  // the host manager's session is its unit's (delivery-host-manager.service): on an older plugin it is
+  // moved onto the installed one only by a restart of that unit when idle (team-revive's stale-session
+  // restart), never woken in place, as a message, a resume or a fresh session beside the unit
+  if (older && s && require('./manifest.js').canonicalRoleId(s.role || s.instance) === 'host-manager') {
+    return { skip: `it runs the delivery plugin ${s.pluginVersion} and ${installed} is installed: the host manager is moved onto it only by a restart of its unit ${require('./host-manager.js').UNIT} (when idle), never woken in place` };
+  }
+  const r = wakeArgs(s, prompt, live, { prefix });
+  if (unit && r.args) return { skip: `it is served by the user unit ${unit}, which starts it; no wake session is started beside it, and the wake goes to its session as a message once it is live` };
   if (r.mode === 'resume' && (older || (freshAbove > 0 && Number.isFinite(s.context) && s.context > freshAbove))) {
     // named like every role session (start.js --name), so peers reach it by name (team rule 13)
     const name = require('./session-name.js').sessionName(s.instance, prefix);
@@ -1002,4 +1173,4 @@ function wakeArgs(s, prompt, live, { prefix = null } = {}) {
   return { mode: 'resume', args: ['--resume', s.session, '-p', prompt] };
 }
 
-module.exports = { reviveStarts, START_SETTLE_MIN, START_FRESH_H, MANAGER_STEP, managerPrs, refusedInstalls, MANAGER_DAILY_CAP, MANAGER_MESSAGE_DAILY_CAP, ASSIGNED_DAILY_CAP, MANAGER_ASSIGNED_DAILY_CAP, reviewFacts, capsOf, ASSIGNED_IDLE_MIN, WAKE_OPENING, wakePrompt, withA3s, FRESH_ABOVE, contextOf, MESSAGE_EVERY_MS, MESSAGE_DAILY_CAP, WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };
+module.exports = { MESSAGE_CHARS, shorten, FINISH_WINDOW_MS, overdueWakes, stopWake, finishStops, waitingRoles, noteWaiting, waitedRoles, chiefOf, KILL_GRACE_MS, START_SLACK_MS, procReads, reviveStarts, START_SETTLE_MIN, START_FRESH_H, MANAGER_STEP, managerPrs, refusedInstalls, MANAGER_DAILY_CAP, MANAGER_MESSAGE_DAILY_CAP, ASSIGNED_DAILY_CAP, MANAGER_ASSIGNED_DAILY_CAP, reviewFacts, capsOf, ASSIGNED_IDLE_MIN, WAKE_OPENING, wakePrompt, withA3s, FRESH_ABOVE, contextOf, MESSAGE_EVERY_MS, MESSAGE_DAILY_CAP, WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };

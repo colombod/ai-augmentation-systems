@@ -15,7 +15,8 @@ const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
-const ROLE_VARS = /^(DELIVERY_|BEADS_|BD_ACTOR$)/;
+// by prefix, never a list: a role session sets more of them over time (hjx.1.1.3)
+const ROLE_VARS = /^(DELIVERY_|BEADS_|BD_)/;
 function cleanEnv(from) {
   const env = {};
   for (const [k, v] of Object.entries(from)) if (!ROLE_VARS.test(k)) env[k] = v;

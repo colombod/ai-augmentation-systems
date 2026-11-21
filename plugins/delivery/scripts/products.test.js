@@ -1,4 +1,5 @@
 // scripts/products.test.js — the per-product view of work in flight (products.js, lib/product-view.js)
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
@@ -79,12 +80,30 @@ function fakes(products, { market = {} } = {}) {
   };
 }
 
+// hjx.1.6.8.3: the output's first line prints the fixture's folder, products-<name>-<6 random characters>,
+// so a substring check for "alpha-5" failed whenever the random part began with 5 (about 1 run in 62, CI's
+// red on main 2026-11-07). A bead is named as a whole word, never as the start of a folder name.
+const namesBead = (out, id) => new RegExp(`(^|[^\\w-])${id.replace(/[-.]/g, '\\$&')}(?![\\w-])`, 'm').test(String(out));
+
 function product(name) {
   const repo = `owner/${name}-repo`;
   const root = project(name, repo);
   R.append(root, 21, { type: 'merged', repo, merge_commit: SHA_MERGE, at: '2026-11-01T00:00:00Z' }, 'delivery-lead');
   return { name, repo, root, rec: records(name) };
 }
+
+test('hjx.1.6.8.3: a fixture folder whose random name starts with the id of a verified story does not read as that story', () => {
+  const a = product('alpha');
+  const moved = path.join(path.dirname(a.root), `products-alpha-5${path.basename(a.root).slice(-6)}`);
+  fs.renameSync(a.root, moved);
+  a.root = moved;
+  const r = main(['--project', a.root], fakes([a]));
+  assert.equal(r.code, 0, r.out);
+  assert.ok(r.out.includes(`root ${moved}`), 'the folder name is printed, carrying the story id as its start');
+  assert.ok(!namesBead(r.out, 'alpha-5'), r.out);
+  // and the check still sees a real mention of the bead
+  assert.ok(namesBead(`${r.out}\n[alpha] open work: alpha-5 open`, 'alpha-5'));
+});
 
 test('9cp.1 c1: the command prints all five sections for a product, each line citing its record', () => {
   const a = product('alpha');
@@ -108,7 +127,7 @@ test('9cp.1 c1: the command prints all five sections for a product, each line ci
   // the install line names its record
   has(/^\[alpha\] install: alpha@alpha-market 1\.2\.3 at aaaaaaaaaaaa \(installed_plugins\.json\)$/);
   // a verified story and a merge the install contains are not reported as waiting
-  assert.ok(!r.out.includes('alpha-5'), r.out);
+  assert.ok(!namesBead(r.out, 'alpha-5'), r.out);
   // every product line cites a record: a bead id, a PR number, a sha, an evidence or owner record, or the source read
   const cite = /alpha-\d|PR #\d+|[0-9a-f]{12}|\bev-|\bo-alpha|\bq-alpha|\(bd list\)|\(gh pr list|installed_plugins\.json|state-merged beads|pass row per criterion|root \//;
   for (const l of lines.filter((x) => x.startsWith('[alpha]'))) {

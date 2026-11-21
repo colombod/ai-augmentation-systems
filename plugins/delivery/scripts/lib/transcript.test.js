@@ -1,4 +1,5 @@
 // scripts/lib/transcript.test.js — classify harness records by origin stamp, read incrementally.
+require('../testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
@@ -486,4 +487,45 @@ test('formatStatus is ok for 3+ non-interactive prompts with no peer message; no
 test('formatStatus without a recognised count (an old cursor) falls back to with_origin', () => {
   assert.strictEqual(t.formatStatus({ total_user_records: 5, with_origin: 0 }), 'format_unrecognised');
   assert.strictEqual(t.formatStatus({ total_user_records: 5, with_origin: 0, recognised: 2 }), 'ok');
+});
+
+// chief-of-staff-11: a test input the Reality Checker types into a role session opens with the fixed
+// marker. It is kept apart from the operator's words whatever stamp the harness gives it; system
+// records stay system, and a quoted marker changes nothing.
+test('an input opening with the test marker is a test input, in every shape but system', () => {
+  assert.strictEqual(t.TEST_MARKER, '[reality-check test input]');
+  const marked = '[reality-check test input] test decision: record that the test label is t1';
+  for (const text of [marked, `   ${marked}`, `\n\n${marked}`]) {
+    assert.strictEqual(t.classifyRecord(R.humanString(text, 1)).source, 'test', `typed: ${JSON.stringify(text)}`);
+    assert.strictEqual(t.classifyRecord(R.humanBlocks(text, 2)).source, 'test', 'typed in a text block');
+    assert.strictEqual(t.classifyRecord(R.queued(text, 3)).source, 'test', 'queued mid-turn');
+    assert.strictEqual(t.classifyRecord(RS.owner(text, 5)).source, 'test', 'a role session owner prompt');
+    assert.strictEqual(t.classifyRecord(RS.typed(text, 6)).source, 'test', 'a non-interactive run prompt (tool)');
+  }
+  // a peer send (another session's), on both peer branches: a user record and a queued_command attachment
+  const peerUser = RS.peer(7); peerUser.message.content = marked;
+  assert.strictEqual(t.classifyRecord(peerUser).source, 'test', 'peer user record');
+  const peerAtt = { type: 'attachment', uuid: 'a2', attachment: { type: 'queued_command', commandMode: 'prompt', origin: { kind: 'peer', pid: 1, verifiedLocal: true }, prompt: marked } };
+  assert.strictEqual(t.classifyRecord(peerAtt).source, 'test', 'peer attachment (Remote Control target)');
+  // an input with no origin at all is a test input too
+  const bare = R.humanString(marked, 8); delete bare.origin;
+  assert.strictEqual(t.classifyRecord(bare).source, 'test', 'unknown');
+  // system stays system: the marker never makes a harness record an input
+  const meta = R.humanString(marked, 9); meta.isMeta = true;
+  assert.strictEqual(t.classifyRecord(meta).source, 'system');
+  // quoted, or on a later line, the operator's words stay the operator's
+  assert.strictEqual(t.classifyRecord(R.humanString('he wrote [reality-check test input] there', 10)).source, 'human');
+  assert.strictEqual(t.classifyRecord(R.humanString('see:\n[reality-check test input] hi', 11)).source, 'human');
+  // and an ordinary input is unchanged
+  assert.strictEqual(t.classifyRecord(R.humanString('use postgres', 12)).source, 'human');
+});
+
+test('a question-box answer opening with the test marker is a test input; a plain answer is the operator\'s', () => {
+  const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ask-mark-')), 't.jsonl');
+  const qs = [{ question: 'One?', multiSelect: false, options: [{ label: 'A' }] }, { question: 'Two?', multiSelect: false, options: [{ label: 'B' }] }];
+  fs.writeFileSync(f, `${[
+    { type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tu1', name: 'AskUserQuestion', input: { questions: qs } }] } },
+    { type: 'user', uuid: 'u1', sourceToolAssistantUUID: 'a1', toolUseResult: { questions: qs, answers: { 'One?': '[reality-check test input] use mysql', 'Two?': 'B' } }, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu1', content: 'x' }] } },
+  ].map((r) => JSON.stringify(r)).join('\n')}\n`);
+  assert.deepStrictEqual(t.readHumanInputs(f).inputs.map((i) => [i.text, i.source]), [['[reality-check test input] use mysql', 'test'], ['B', 'human']]);
 });

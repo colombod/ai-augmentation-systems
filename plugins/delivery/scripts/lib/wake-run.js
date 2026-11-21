@@ -17,7 +17,16 @@ delete process.env.DELIVERY_WAKE_KICK;
 // The kick names this pid: it is dropped while this process still lives, so the run it starts reads
 // the pid as gone rather than hold the handover for a wake that has ended (watchdog.js endedPids)
 if (kickDir) process.on('exit', () => require('./kick.js').kickIn(kickDir, `a wake ended (pid ${process.pid})`));
-const child = spawn(bin, args, { stdio: 'inherit', detached: true });
+// the host job ends a wake that outlived its bound with SIGTERM (lib/watchdog.js stopWake): the group
+// goes the same way as at the limit, never left as orphans of a supervisor that died first. Registered
+// before the spawn, so a SIGTERM that lands while it starts is not the default exit.
+let child = null;
+process.on('SIGTERM', () => {
+  process.stderr.write('watchdog: the wake was ended by the host job; stopped\n');
+  if (!child) process.exit(143);
+  stopGroup(143);
+});
+child = spawn(bin, args, { stdio: 'inherit', detached: true });
 const groupAlive = () => { try { process.kill(-child.pid, 0); return true; } catch (err) { return err.code === 'EPERM'; } };
 let stopping = false;
 function stopGroup(code) {

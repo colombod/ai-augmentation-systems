@@ -1,5 +1,6 @@
 // hooks/scripts/claim-stop.test.js — run with: node --test hooks/scripts/claim-stop.test.js
 // The Stop hook composes: capture, then the chief of staff's operator checks, then the claim note.
+require('../../scripts/testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

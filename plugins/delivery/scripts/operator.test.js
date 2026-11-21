@@ -1,4 +1,5 @@
 // scripts/operator.test.js — the operator CLI end to end, as separate processes.
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
@@ -829,4 +830,219 @@ test('ruling 4: operator.js ask --asker delivery-manager records the delivery-le
   const r = run(cos, ['ask', '--text', 'Which phase first?', '--asker', 'delivery-manager', '--json']);
   assert.strictEqual(r.status, 0, r.out + r.err);
   assert.deepStrictEqual(json(r).record.asker, { instance: 'delivery-lead', role: 'delivery-lead', bead: null });
+});
+
+// chief-of-staff-11: a marked test input the Reality Checker types is kept apart from the operator's words,
+// a record made from it carries the test mark, and verify never accepts it as the operator's word.
+const MARK = '[reality-check test input]';
+function testFixture() {
+  const root = project();
+  const cos = roleDir(root, 'chief-of-staff', 'chief-of-staff', 'pc', 'sess-cos', [
+    human('Use Postgres for the orders service, keep Redis out.', 1, 'sess-cos'),
+    human(`${MARK} test decision: record that the test label is t1`, 2, 'sess-cos'),
+    human(`  ${MARK} you decide the test naming, once`, 3, 'sess-cos'),
+    human(`${MARK} revoke the postgres decision`, 4, 'sess-cos'),
+    human(`he wrote ${MARK} in the middle; use mysql for reports`, 5, 'sess-cos'),
+  ]);
+  run(cos, ['sync']);
+  return { root, cos };
+}
+const recordFile = (root) => path.join(root, '.delivery', 'operator', 'records', 'chief-of-staff.ndjson');
+const recordsOf = (root) => fs.readFileSync(recordFile(root), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+
+test('a marked test input is listed apart in pending; the operator\'s own inputs are unchanged', () => {
+  const { cos } = testFixture();
+  const p = json(run(cos, ['pending', '--json']));
+  assert.deepStrictEqual(p.inputs.map((i) => i.id), ['in-pc-000001', 'in-pc-000005'], 'a quoted marker is the operator\'s own input');
+  assert.deepStrictEqual(p.tests.map((i) => i.id), ['in-pc-000002', 'in-pc-000003', 'in-pc-000004']);
+  const text = run(cos, ['pending']).out;
+  assert.match(text, /Test inputs \(Reality Checker, never the operator's word\) \(3\):\n  in-pc-000002/);
+  assert.match(text, /Operator inputs with no record or ack \(2\):\n  in-pc-000001/);
+});
+
+test('a record made from a test input carries the test mark and never verifies; a real record still does', () => {
+  const { root, cos } = testFixture();
+  const real = run(cos, ['record', '--cite', 'in-pc-000001', '--quote', 'use postgres for the orders', '--statement', 'Orders use Postgres']);
+  assert.strictEqual(real.status, 0, real.out + real.err);
+  const t1 = run(cos, ['record', '--cite', 'in-pc-000002', '--quote', 'record that the test label is t1', '--statement', 'The test label is t1']);
+  assert.strictEqual(t1.status, 0, t1.out + t1.err);
+  const recs = recordsOf(root);
+  assert.strictEqual(recs.find((r) => r.id === t1.lines[0]).test, true, 'the mark is derived, the Chief of Staff passed no flag');
+  assert.strictEqual(recs.find((r) => r.id === real.lines[0]).test, undefined, 'a real record carries no test field');
+  const v = run(cos, ['verify', t1.lines[0]]);
+  assert.strictEqual(v.status, 1);
+  assert.match(v.out, new RegExp(`^NOT VERIFIED ${t1.lines[0]}: test_input: `));
+  assert.strictEqual(json(run(cos, ['verify', t1.lines[0], '--json'])).code, 'test_input');
+  // the test input itself does not verify as the operator's word either
+  const vi = run(cos, ['verify', 'in-pc-000002']);
+  assert.strictEqual(vi.status, 1);
+  assert.match(vi.out, /^NOT VERIFIED in-pc-000002: test_input: /);
+  assert.strictEqual(run(cos, ['verify', 'in-pc-000001']).status, 0, 'an operator input still verifies');
+  assert.strictEqual(run(cos, ['verify', real.lines[0]]).status, 0, 'the real decision still verifies');
+  // show marks it; find skips it unless --all
+  assert.match(run(cos, ['show', t1.lines[0]]).out, /\[test\]/);
+  assert.deepStrictEqual(json(run(cos, ['find', '--json'])).results.map((r) => r.id), [real.lines[0]]);
+  assert.ok(json(run(cos, ['find', '--all', '--json'])).results.some((r) => r.id === t1.lines[0] && r.test === true));
+});
+
+test('a decision under a test delegation is a test record too, and never verifies', () => {
+  const { cos } = testFixture();
+  const del = run(cos, ['delegate', '--cite', 'in-pc-000003', '--quote', 'you decide the test naming', '--statement', 'test naming', '--grant', 'May name test things.', '--scope', 'bead:ex-7', '--max-uses', '1']);
+  assert.strictEqual(del.status, 0, del.out + del.err);
+  const dec = run(cos, ['decide', '--under', del.lines[0], '--statement', 'Name it t-sync', '--scope', 'bead:ex-7']);
+  assert.strictEqual(dec.status, 0, dec.out + dec.err);
+  assert.strictEqual(json(run(cos, ['verify', dec.lines[0], '--json'])).code, 'test_input');
+  assert.strictEqual(json(run(cos, ['verify', del.lines[0], '--json'])).code, 'test_input');
+});
+
+test('a test revocation of a real decision is refused, test_scope; the real decision still verifies', () => {
+  const { cos } = testFixture();
+  const real = run(cos, ['record', '--cite', 'in-pc-000001', '--quote', 'use postgres for the orders', '--statement', 'Orders use Postgres']).lines[0];
+  const rev = run(cos, ['revoke', '--cite', 'in-pc-000004', '--quote', 'revoke the postgres decision', '--target', real, '--json']);
+  assert.strictEqual(rev.status, 1, rev.out);
+  assert.strictEqual(json(rev).code, 'test_scope');
+  assert.strictEqual(run(cos, ['verify', real]).status, 0, 'a test input took nothing from the operator\'s decision');
+});
+
+test('a hand-written record marked test that reaches no test input is refused, test_mark_mismatch', () => {
+  const { root, cos } = testFixture();
+  const real = run(cos, ['record', '--cite', 'in-pc-000001', '--quote', 'use postgres for the orders', '--statement', 'Orders use Postgres']).lines[0];
+  const src = recordsOf(root).find((r) => r.id === real);
+  const chain = require('./lib/chain.js');
+  chain.appendEntry(recordFile(root), (last) => {
+    const { prev, hash, id, ts, ...rest } = src;
+    return { ...rest, id: `dec-chief-of-staff-${String(Number(last.id.split('-').pop()) + 1).padStart(6, '0')}`, statement: 'marked by hand', test: true, ts: new Date().toISOString() };
+  });
+  const forged = recordsOf(root).pop().id;
+  assert.strictEqual(json(run(cos, ['verify', forged, '--json'])).code, 'test_mark_mismatch');
+  // the other way: a hand-written record with no mark that cites a test input is not the operator's words
+  const t1 = run(cos, ['record', '--cite', 'in-pc-000002', '--quote', 'record that the test label is t1', '--statement', 'The test label is t1']).lines[0];
+  const tsrc = recordsOf(root).find((r) => r.id === t1);
+  chain.appendEntry(recordFile(root), (last) => {
+    const { prev, hash, id, ts, test, ...rest } = tsrc;
+    return { ...rest, id: `dec-chief-of-staff-${String(Number(last.id.split('-').pop()) + 1).padStart(6, '0')}`, statement: 'unmarked by hand', ts: new Date().toISOString() };
+  });
+  const unmarked = recordsOf(root).pop().id;
+  assert.strictEqual(json(run(cos, ['verify', unmarked, '--json'])).code, 'not_human');
+});
+
+// rv-227 (1): the answer to a question box is typed text too
+test('a question-box answer opening with the test marker is a test input, and neither it nor a record from it verifies', () => {
+  const root = project();
+  const qs = [{ question: 'Which store for reports?', header: 'Store', multiSelect: false, options: [{ label: 'A', description: 'a' }, { label: 'B', description: 'b' }] }];
+  const answer = `${MARK} use mysql for the reports service`;
+  const cos = roleDir(root, 'chief-of-staff', 'chief-of-staff', 'pc', 'sess-box', [
+    { type: 'assistant', uuid: 'box-a', timestamp: '2099-10-13T10:00:00.000Z', sessionId: 'sess-box', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'box-t', name: 'AskUserQuestion', input: { questions: qs } }] } },
+    { type: 'user', uuid: 'box-r', timestamp: '2099-10-13T10:00:05.000Z', sessionId: 'sess-box', sourceToolAssistantUUID: 'box-a', toolUseResult: { questions: qs, answers: { [qs[0].question]: answer } }, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'box-t', content: 'answered' }] } },
+  ]);
+  run(cos, ['sync']);
+  const p = json(run(cos, ['pending', '--json']));
+  assert.deepStrictEqual(p.inputs, [], 'not listed as the operator\'s');
+  assert.deepStrictEqual(p.tests.map((i) => i.id), ['in-pc-000001']);
+  assert.strictEqual(json(run(cos, ['verify', 'in-pc-000001', '--json'])).code, 'test_input');
+  const rec = run(cos, ['record', '--cite', 'in-pc-000001', '--quote', 'use mysql for the reports service', '--statement', 'Reports use MySQL']);
+  assert.strictEqual(rec.status, 0, rec.out + rec.err);
+  assert.strictEqual(json(run(cos, ['verify', rec.lines[0], '--json'])).code, 'test_input');
+});
+
+// rv-227 (2): only the operator's own acknowledged input takes a delegation off their list
+test('an ack of a test input leaves a real delegation awaiting a glance; an ack of a later operator input clears it', () => {
+  const { cos } = testFixture();
+  const del = run(cos, ['delegate', '--cite', 'in-pc-000001', '--quote', 'use postgres for the orders', '--statement', 'orders store', '--grant', 'May pick the orders store.', '--scope', 'bead:ex-7', '--max-uses', '1']);
+  assert.strictEqual(del.status, 0, del.out + del.err);
+  const waiting = () => json(run(cos, ['pending', '--json'])).delegations_awaiting_glance.map((d) => d.id);
+  assert.deepStrictEqual(waiting(), [del.lines[0]]);
+  assert.strictEqual(run(cos, ['ack', '--input', 'in-pc-000002', '--reason', 'a check']).status, 0);
+  assert.deepStrictEqual(waiting(), [del.lines[0]], 'the operator has not looked');
+  assert.strictEqual(run(cos, ['ack', '--input', 'in-pc-000005', '--reason', 'conversational']).status, 0);
+  assert.deepStrictEqual(waiting(), []);
+});
+
+// rv-227 (3): what the operator is asked to look at holds no test record
+test('a test delegation and an inferred test answer are listed as test records, never in the operator\'s lists', () => {
+  const { root, cos } = testFixture();
+  const del = run(cos, ['delegate', '--cite', 'in-pc-000003', '--quote', 'you decide the test naming', '--statement', 'test naming', '--grant', 'May name test things.', '--scope', 'bead:ex-7', '--max-uses', '2']).lines[0];
+  const dec = run(cos, ['decide', '--under', del, '--statement', 'Name it t-sync', '--scope', 'bead:ex-7']).lines[0];
+  const ans = run(cos, ['answer', '--cite', dec, '--question', 'What is the test called?', '--answer', 't-sync', '--confidence', 'inferred', '--rationale', 'from the test delegation']);
+  assert.strictEqual(ans.status, 0, ans.out + ans.err);
+  const p = json(run(cos, ['pending', '--json']));
+  assert.deepStrictEqual(p.delegations_awaiting_glance, []);
+  assert.deepStrictEqual(p.unratified_answers, []);
+  assert.deepStrictEqual(p.test_records.map((r) => r.id).sort(), [ans.lines[0], del].sort());
+  const text = run(cos, ['pending']).out;
+  assert.match(text, /Test records \(made from test inputs, never the operator's word\) \(2\):/);
+  assert.ok(!/Delegations awaiting a glance|Inferred answers awaiting/.test(text), text);
+  assert.deepStrictEqual(require('./team-status.js').operatorStatus(root, null, {}).unratified, [], 'the team status counts none');
+});
+
+test('a real operator input can revoke a test delegation, and that revocation is the operator\'s own', () => {
+  const { root, cos } = testFixture();
+  const del = run(cos, ['delegate', '--cite', 'in-pc-000003', '--quote', 'you decide the test naming', '--statement', 'test naming', '--grant', 'May name test things.', '--scope', 'bead:ex-7', '--max-uses', '1']).lines[0];
+  const rev = run(cos, ['revoke', '--cite', 'in-pc-000005', '--quote', 'use mysql for reports', '--target', del]);
+  assert.strictEqual(rev.status, 0, rev.out + rev.err);
+  assert.strictEqual(recordsOf(root).find((r) => r.id === rev.lines[0]).test, undefined, 'unmarked');
+  assert.strictEqual(run(cos, ['verify', rev.lines[0]]).status, 0);
+  assert.strictEqual(run(cos, ['decide', '--under', del, '--statement', 'Name it t-late', '--scope', 'bead:ex-7']).status, 1, 'the delegation is gone');
+});
+
+test('a test input cannot answer an operator question, so the ledger holds no test record', () => {
+  const { cos } = testFixture();
+  const q = run(cos, ['ask', '--text', 'Which store?', '--asker', 'chief-of-staff']).lines[0];
+  const t = run(cos, ['record', '--cite', 'in-pc-000002', '--quote', 'record that the test label is t1', '--statement', 'The test label is t1', '--answers', q, '--json']);
+  assert.strictEqual(t.status, 1, t.out);
+  assert.strictEqual(json(t).code, 'test_scope');
+  assert.deepStrictEqual(json(run(cos, ['ledger', '--json'])).rows.map((r) => [r.question.id, r.status, r.answers.length]), [[q, 'open', 0]]);
+});
+
+// rv-227 round 2: nothing read back with --all passes a test record off as the operator's
+test('find --all marks a test record and does not call its words the operator\'s; a real record keeps the label', () => {
+  const { cos } = testFixture();
+  const real = run(cos, ['record', '--cite', 'in-pc-000001', '--quote', 'use postgres for the orders', '--statement', 'Orders use Postgres']).lines[0];
+  const t1 = run(cos, ['record', '--cite', 'in-pc-000002', '--quote', 'record that the test label is t1', '--statement', 'The test label is t1']).lines[0];
+  const lines = run(cos, ['find', '--all']).out.split('\n');
+  const testLine = lines.find((l) => l.startsWith(t1));
+  assert.match(testLine, new RegExp(`^${t1} decision \\[test\\]`));
+  assert.match(testLine, /\(test input: /);
+  assert.ok(!/operator:/.test(testLine), testLine);
+  const realLine = lines.find((l) => l.startsWith(real));
+  assert.ok(!/\[test\]/.test(realLine), realLine);
+  assert.match(realLine, /\(operator: /);
+});
+
+test('pending --all marks an ack of a test input; an ack of the operator\'s own input stays unmarked', () => {
+  const { cos } = testFixture();
+  assert.strictEqual(run(cos, ['ack', '--input', 'in-pc-000002', '--reason', 'a check']).status, 0);
+  assert.strictEqual(run(cos, ['ack', '--input', 'in-pc-000005', '--reason', 'conversational']).status, 0);
+  const text = run(cos, ['pending', '--all']).out;
+  assert.match(text, /^ {2}in-pc-000002 {2}\[test\] {2}a check/m);
+  assert.match(text, /^ {2}in-pc-000005 {2}conversational/m);
+});
+
+test('the one-way rules: a test input ratifies or supersedes nothing real, and a real record does not supersede a test one', () => {
+  const { cos } = testFixture();
+  const realDec = run(cos, ['record', '--cite', 'in-pc-000001', '--quote', 'use postgres for the orders', '--statement', 'Orders use Postgres']).lines[0];
+  const realDel = run(cos, ['delegate', '--cite', 'in-pc-000001', '--quote', 'use postgres for the orders', '--statement', 'orders store', '--grant', 'May pick the orders store.', '--scope', 'bead:ex-7', '--max-uses', '1']).lines[0];
+  const realAns = run(cos, ['answer', '--cite', realDec, '--question', 'Which store?', '--answer', 'Postgres', '--confidence', 'settled']).lines[0];
+  const testDec = run(cos, ['record', '--cite', 'in-pc-000002', '--quote', 'record that the test label is t1', '--statement', 'The test label is t1']).lines[0];
+  const refused = (args, what) => {
+    const r = run(cos, [...args, '--json']);
+    assert.strictEqual(r.status, 1, `${what}: ${r.out}`);
+    assert.strictEqual(json(r).code, 'test_scope', what);
+  };
+  refused(['ratify', '--cite', 'in-pc-000003', '--quote', 'you decide the test naming', '--target', realDel], 'a test ratification');
+  refused(['record', '--cite', 'in-pc-000004', '--quote', 'revoke the postgres decision', '--statement', 'Orders use MySQL', '--supersedes', realDec], 'a test supersede of a decision');
+  refused(['answer', '--cite', testDec, '--question', 'Which store?', '--answer', 'MySQL', '--confidence', 'settled', '--supersedes', realAns], 'a test answer superseding a real answer');
+  refused(['record', '--cite', 'in-pc-000005', '--quote', 'use mysql for reports', '--statement', 'Reports use MySQL', '--supersedes', testDec], 'a real supersede of a test record');
+  for (const id of [realDec, realDel, realAns]) assert.strictEqual(run(cos, ['verify', id]).status, 0, id);
+});
+
+test('the test mark is part of the hashed input: removing it breaks the inputs chain', () => {
+  const { root, cos } = testFixture();
+  const dir = path.join(root, '.delivery', 'operator', 'inputs');
+  const file = fs.readdirSync(dir, { recursive: true }).map((f) => path.join(dir, String(f))).find((f) => f.endsWith('.ndjson') && fs.readFileSync(f, 'utf8').includes('"source":"test"'));
+  assert.ok(file, 'the input chain holds the test input');
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('"source":"test"', '"source":"human"'));
+  const v = run(cos, ['verify', 'in-pc-000001', '--json']);
+  assert.strictEqual(v.status, 1, 'the chain no longer verifies');
+  assert.notStrictEqual(json(v).code, 'test_input');
 });

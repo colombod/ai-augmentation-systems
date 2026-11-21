@@ -22,7 +22,9 @@
 //                                                   Each run then starts the team's missing role sessions while work is in flight (team-revive.js)
 //                                                   Each run also installs the plugin main carries when it is newer and every
 //                                                   change to it passed the team's gate, never under a running wake (lib/self-update.js)
-//                                                   Each run starts the host manager's unit when it is installed and down
+//                                                   Each run installs the host manager's units when they are missing and this
+//                                                   team has a prepared host-manager instance on this host (host-manager.js
+//                                                   install, one row in revive.ndjson), and starts its unit when it is down
 //   watchdog.js install [--every 15m] [--apply] [--project <root>]
 //                                                   the host job (launchd on macOS, a systemd user timer
 //                                                   or cron on Linux) that runs `run`; prints what it would
@@ -103,10 +105,12 @@ function checkLines(res) {
 
 // The Delivery Manager's pass: read-only unless --record, which keeps the pass row and notes each
 // action on the bead it names. Unreadable data is a line that says so, never a healthy team.
-function rolePass(root, o, { bd, now, team, rows, env = {} }) {
+function rolePass(root, o, { bd, now, team, rows, env = {}, live }) {
   const RW = require('./lib/role-watch.js');
   const store = bd || require('./lib/bd.js').makeBd({ cwd: root, timeoutMs: 10000 });
-  const facts = RW.read(root, { bd: store, now, team, rows });
+  // the sessions open on this host decide which builders are live (lib/one-session.js liveOf)
+  const open = live !== undefined ? live : liveSessions(env.DELIVERY_CLAUDE_BIN || 'claude', env);
+  const facts = RW.read(root, { bd: store, now, team, rows, live: open });
   // the record notes, assigns and messages as the manager: a role session of another instance only reads
   // the pass (the lane refuses it too; this holds for a lane that runs any command)
   if (o.record && env.DELIVERY_ROLE && !facts.unreadable && env.DELIVERY_ROLE !== facts.dm) return { code: 1, out: `watchdog.js: pass --record is ${facts.dm}'s; ${env.DELIVERY_ROLE} runs watchdog.js pass to read it and messages ${facts.dm}` };
@@ -135,14 +139,16 @@ function wakeLimitMs(env) {
   return Number.isFinite(asked) && asked > 0 ? Math.min(asked, WD.WAKE_TIMEOUT_H * 3600e3) : WD.WAKE_TIMEOUT_H * 3600e3;
 }
 const defaultDeliver = (socket, text) => require('./lib/session-message.js').deliver(socket, text);
-function spawnWake(bin, args, { cwd, env, logPath }) {
-  fs.mkdirSync(path.dirname(logPath), { recursive: true });
-  const fd = fs.openSync(logPath, 'a');
-  const child = require('child_process').spawn(process.execPath, [path.join(__dirname, 'lib', 'wake-run.js'), String(wakeLimitMs(env)), bin, ...args], { cwd, env, detached: true, stdio: ['ignore', fd, fd] });
-  child.on('error', (err) => { try { fs.appendFileSync(logPath, `watchdog: could not start ${bin}: ${err.message}\n`); } catch (e) { /* the log is best effort */ } });
-  child.unref();
-  fs.closeSync(fd);
-  return child.pid || null;
+// The wake's supervisor and its session run in a scope of their own (lib/role-scope.js), never in the
+// host job's service: a woken session there shared the service's TasksMax (hjx.1.6.10.1.2). systemd-run
+// --scope execs its command, so the pid is still the supervisor's.
+// Returns the supervisor's pid, or null when nothing started (systemd-run refused the scope and the role
+// had a live session by then, or the sessions could not be listed again): no wake to log.
+function spawnWake(bin, args, { cwd, env, logPath, systemdRun, spawn, settle, stillMissing, sdFetch }) {
+  const r = require('./lib/role-scope.js').startRole(process.execPath, [path.join(__dirname, 'lib', 'wake-run.js'), String(wakeLimitMs(env)), bin, ...args], { instance: env.DELIVERY_ROLE, env, cwd, logPath, systemdRun, spawn, settle, stillMissing, sdFetch });
+  if (!r.pid && r.refused) { try { fs.appendFileSync(logPath, `watchdog: systemd-run refused scope ${r.refused}, and no plain start followed: ${r.why}\n`); } catch (e) { /* the log is best effort */ } }
+  if (r.directoryHeld) { try { fs.appendFileSync(logPath, `watchdog: scope ${r.unit} is not registered with the service directory: ${r.directoryHeld}\n`); } catch (e) { /* the log is best effort */ } }
+  return r.pid;
 }
 
 // the newest KEEP_WAKE_LOGS wake logs stay; the rest go
@@ -203,10 +209,24 @@ const HEADLESS_WAIT = { CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0' };
 // hold what it was kicked to hand over until the timer pass. A pid named in a kick has ended.
 const endedPids = (kicks) => new Set(kicks.map((k) => Number((/a wake ended \(pid (\d+)\)/.exec(k) || [])[1])).filter((n) => n > 0));
 
-function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWake, ended = new Set(), deliver = defaultDeliver }) {
+// A wake pid still running, as the host job asks it: not one whose wake ended in this run (its kick
+// said so), and that wake by its row's time (lib/watchdog.js pidAlive). One check for the wake plan and
+// the plugin's self-update, so both read a reused or unreadable pid the same way (hjx.1.6.20).
+function wakeAlive(ended, now) {
+  return (pid, since) => !ended.has(pid) && WD.pidAlive(pid, { since, now });
+}
+
+function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWake, ended = new Set(), deliver = defaultDeliver, stopWake = WD.stopWake, home = os.homedir(), sdFetch }) {
   const at = now || new Date().toISOString();
   if (res.unreadable || res.paused) return [];
-  const p = WD.plan(res, { root, now: at, alive: (pid) => !ended.has(pid) && WD.pidAlive(pid) });
+  // a wake row is stamped at its spawn, not at the pass start: the check reads the supervisor's start
+  // against the row (lib/watchdog.js pidAlive), and the reads and spawns before it take real time. A run
+  // given its clock (a test, a replay) keeps that clock exactly, so its gates read as it set them.
+  const spawnStamp = () => (now ? at : new Date().toISOString());
+  const p = WD.plan(res, { root, now: at, alive: wakeAlive(ended, at) });
+  // the roles that waited with work in progress through an install hold are woken first (hjx.1.6.20.1)
+  const firstUp = WD.waitedRoles(WD.logRows(root), at);
+  if (firstUp.size) p.wakes.sort((a, b) => Number(firstUp.has(b.target)) - Number(firstUp.has(a.target)));
   const lines = [];
   const bin = env.DELIVERY_CLAUDE_BIN || 'claude';
   const open = p.wakes.length ? (live !== undefined ? live : liveSessions(bin, env)) : null;
@@ -219,7 +239,7 @@ function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWa
   for (const w of p.wakes) {
     const s = res.sessions.find((x) => x.instance === w.target) || null;
     const wm = wakeMode(manifest, s);
-    const c = wm.skip ? { skip: wm.skip } : WD.wakeCommand(s, w.prompt, open, wm.mode, { freshAbove: freshAboveOf(manifest), installed, prefix: manifest && manifest.team ? manifest.team.prefix : null });
+    const c = wm.skip ? { skip: wm.skip } : WD.wakeCommand(s, w.prompt, open, wm.mode, { freshAbove: freshAboveOf(manifest), installed, prefix: manifest && manifest.team ? manifest.team.prefix : null, unit: s && s.roleDir ? require('./lib/team-revive.js').remoteControlUnitFor(s.roleDir, { home }) : null });
     if (c.skip) {
       lines.push(`Not woken: ${w.target}: ${c.skip}. ${w.lines[0]}`);
       // one skip row an hour per session keeps the log short while a session is busy
@@ -257,8 +277,24 @@ function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWa
     // each wake has its own id: the session it starts records itself under it (lib/roster.js sessionLocator)
     const wakeId = crypto.randomBytes(6).toString('hex');
     // DELIVERY_WAKE_KICK: the supervisor kicks the next run when this wake ends (lib/kick.js)
-    const pid = spawn(bin, c.args, { cwd: s.roleDir, env: require('./lib/fresh-session-env.js').freshSessionEnv(env, { DELIVERY_ROLE: w.target, DELIVERY_WAKE: c.mode, DELIVERY_WAKE_ID: wakeId, DELIVERY_WAKE_KICK: KICK.dirOf(root), ...HEADLESS_WAIT }), logPath });
-    WD.log(root, { type: 'wake', at, keys: w.keys, instance: w.target, session: s.session, mode: c.mode, ...(c.why ? { fresh: c.why } : {}), wake_id: wakeId, prompt: w.prompt, pid, log: path.relative(root, logPath) });
+    // a plain retry after a refused scope is taken only while the role still has no live session
+    const stillMissing = () => { const l = require('./lib/one-session.js').liveOf(w.target, { roleDir: s.roleDir, live: liveSessions(bin, env), prefix: manifest && manifest.team ? manifest.team.prefix : null }); return l === null ? null : l.length === 0; };
+    const pid = spawn(bin, c.args, { cwd: s.roleDir, env: require('./lib/fresh-session-env.js').freshSessionEnv(env, { DELIVERY_ROLE: w.target, DELIVERY_WAKE: c.mode, DELIVERY_WAKE_ID: wakeId, DELIVERY_WAKE_KICK: KICK.dirOf(root), ...HEADLESS_WAIT }), logPath, stillMissing, ...(sdFetch ? { sdFetch } : {}) });
+    if (pid === null) {
+      // nothing runs: no wake row, and its messages and handoffs stay waiting for the next pass
+      lines.push(`Not woken: ${w.target}: its start ran nothing (systemd-run refused the scope; log ${path.relative(root, logPath)}); its messages stay waiting. ${w.lines[0]}`);
+      continue;
+    }
+    // a wake with no row is a run nothing tracks: no hold waits for it, no cap counts it, and a hang has
+    // no end. A row that cannot be written stops the wake it would have recorded (hjx.1.6.20.1). That stop
+    // is SIGTERM only: with no row, no later pass finishes it with SIGKILL (lib/watchdog.js finishStops).
+    try {
+      WD.log(root, { type: 'wake', at: spawnStamp(), keys: w.keys, instance: w.target, session: s.session, mode: c.mode, ...(c.why ? { fresh: c.why } : {}), wake_id: wakeId, prompt: w.prompt, pid, log: path.relative(root, logPath) });
+    } catch (err) {
+      try { stopWake(pid); } catch (e) { /* gone */ }
+      lines.push(`Not woken: ${w.target}: its wake (pid ${pid}) started, but its row could not be written (${String(err.message).split('\n')[0]}), so it was stopped; the next run tries again. ${w.lines[0]}`);
+      continue;
+    }
     // the messages and handoffs it carries are handed over: the next run does not wake for them again
     for (const d of w.delivers || []) require('./lib/inbox.js').markDelivered(root, d.to, d.upTo);
     // a handoffs file another writer holds: the wake stands, the row is handed over at the next pass
@@ -468,7 +504,7 @@ const whichOf = (has) => has || ((cmd) => { try { require('child_process').execF
 // cannot run the job: said plainly, with the way out, instead of a crontab error (dlv-4oj)
 const NO_SCHEDULER = 'this host has no scheduler (no systemctl, no crontab), so the watchdog cannot run on its own here: a stopped role is woken only while someone keeps a loop alive. Run the team on an always-on host (one with systemd, launchd or cron), or run `watchdog.js run --project <root>` yourself when work is due.';
 
-function install(root, o, { platform = process.platform, home = os.homedir(), env = process.env, exec, has } = {}) {
+function install(root, o, { platform = process.platform, home = os.homedir(), env = process.env, exec, has, live, sdFetch } = {}) {
   const which = whichOf(has);
   const cron = platform !== 'darwin' && !which('systemctl');
   if (cron && !which('crontab')) return { code: 1, out: `watchdog.js: ${NO_SCHEDULER}` };
@@ -506,10 +542,12 @@ function install(root, o, { platform = process.platform, home = os.homedir(), en
       try { run(cmd, args); lines.push(`Ran: ${cmd} ${args.join(' ')}`); } catch (err) { if (!mayFail) throw err; }
     }
     fs.writeFileSync(WD.installedFile(root), `${JSON.stringify({ kind: j.kind, file: j.file, every_s: e.sec, at: new Date().toISOString() })}\n`);
+    // the job's units are the plugin's: registered with the owner's service directory (lib/service-directory.js)
+    if (j.kind === 'systemd') lines.push(...require('./host-manager.js').registerUnits(j.files.map((f) => path.basename(f.file)), sdFetch, { env, home }));
   } catch (err) { return { code: 1, out: `${lines.join('\n')}\nwatchdog.js: the job was not installed (${String(err.message).split('\n')[0]})\n${removal}`.trim() }; }
   lines.push(`Installed. ${head}`);
   if (j.kind === 'systemd') lines.push('A user timer runs only while you are logged in, unless lingering is on: loginctl enable-linger $USER.');
-  lines.push(...hostManagerSetup(root, { platform, home, env, exec, has: which }));
+  lines.push(...hostManagerSetup(root, { platform, home, env, exec, has: which, live }));
   lines.push(removal);
   return { code: 0, out: lines.join('\n') };
 }
@@ -518,13 +556,13 @@ function install(root, o, { platform = process.platform, home = os.homedir(), en
 // it with nothing more to do: this project joins the machine's team list, and the host manager's units
 // are installed when they are missing (host-manager.js install). A failure is said and never fails the
 // watchdog's own install.
-function hostManagerSetup(root, { platform, home, env, exec, has }) {
+function hostManagerSetup(root, { platform, home, env, exec, has, live }) {
   const HM = require('./lib/host-manager.js');
   const out = [];
   try { if (HM.addHostTeam(HM.hostFile(env, home), root)) out.push(`Added ${root} to ${HM.hostFile(env, home)}, the teams the host manager serves.`); } catch (err) { out.push(`Host manager: ${root} was not added to its team list (${String(err.message).split('\n')[0]}).`); }
   if (platform === 'darwin' || !has('systemctl')) { out.push('Host manager: not installed here: its units need systemd.'); return out; }
   if (fs.existsSync(path.join(HM.unitDir(home), HM.UNIT))) return out;
-  const r = require('./host-manager.js').install(root, {}, { env, home, exec, has, cwd: root });
+  const r = require('./host-manager.js').install(root, { onlyMissing: true }, { env, home, exec, has, cwd: root, ...(live !== undefined ? { live } : {}) });
   out.push(...r.out.split('\n').map((l) => `Host manager: ${l.replace(/^host-manager\.js: /, '')}`));
   return out;
 }
@@ -532,9 +570,54 @@ function hostManagerSetup(root, { platform, home, env, exec, has }) {
 // Each pass looks at the host manager's own unit and starts it when it is installed and down: the host
 // manager restarts the host jobs, and the host jobs restart the host manager. One row in revive.ndjson
 // per start. null when there is nothing to do.
-function ensureHostManager(root, { home, exec, now, env = process.env, live }) {
+// Before that, a unit that is missing is installed when this team's manifest has a host-manager instance
+// on this host whose role directory is prepared: Staffing prepares it from a role session, which may not
+// install units, and this run is the host job's, outside any role session. The install is host-manager.js
+// install itself (its files, its reload, enable and start, its refusal in a role session), with one row
+// in revive.ndjson. Only the unit files that are missing are written (onlyMissing): an installed unit,
+// the tick's service and timer included, is never rewritten. When the last install row carries an
+// error (an enable that failed after the files were written), the next run repeats the install, which
+// then writes nothing that exists and runs the reload and enables again, until a run records no error.
+function ensureHostManager(root, { home, exec, now, env = process.env, has, hostname, live, writeFile, sdFetch }) {
   const HM = require('./lib/host-manager.js');
-  if (!fs.existsSync(path.join(HM.unitDir(home), HM.UNIT))) return null;
+  const R = require('./lib/team-revive.js');
+  const lines = [];
+  const missing = !fs.existsSync(path.join(HM.unitDir(home), HM.UNIT));
+  const lastRow = () => R.ledger(root).filter((x) => x.type === 'host-manager-install').pop() || null;
+  const prior = missing ? null : lastRow();
+  if (missing || (prior && prior.error)) {
+    const HMS = require('./host-manager.js');
+    const target = HMS.installTarget(root, {}, { env, hostname });
+    const retry = !missing;
+    // a team.json that cannot be read is said; no host manager here, or one not prepared, is left alone.
+    // On a retry the unit file is already there, so a blocked install does not end the run: a stopped
+    // host manager is still started below (otherwise it would stay down until the target came back).
+    const reason = target.unreadable ? null : target.why ? target.why.replace(/^host-manager\.js: /, '') : !whichOf(has)('systemctl') ? 'this host has no systemctl' : null;
+    const blocked = target.unreadable ? `host manager: its units were not installed (${target.why.replace(/^host-manager\.js: /, '')})`
+      : reason !== null ? (retry ? `host manager: install not repeated (${reason})` : '') : null;
+    if (blocked !== null && !retry) return blocked || null;
+    if (blocked) lines.push(blocked);
+    if (blocked === null) {
+      const r = HMS.install(root, { onlyMissing: true }, { env, home, exec, has, hostname, cwd: root, ...(writeFile ? { writeFile } : {}), ...(live !== undefined ? { live } : {}), ...(sdFetch ? { sdFetch } : {}) });
+      const last = r.out.split('\n').pop().replace(/^host-manager\.js: /, '');
+      // refused before it began (a role session): said, no row; the next run tries again
+      if (!r.attempted) return `host manager: its units were not installed (${last})`;
+      // from the first write on an attempt is a row, a failed write included. A retry that fails the
+      // way the last row did adds none: an enable that keeps failing is tried each run (a watchdog pass,
+      // every 15 minutes) but is one row until its error changes or it succeeds.
+      const sameAsLast = retry && r.code && prior.error === last;
+      if (!sameAsLast) R.record(root, { type: 'host-manager-install', at: now || new Date().toISOString(), instance: target.hm.instance, wrote: r.wrote, ...(retry ? { retry: true } : {}), ...(r.code ? { error: last } : {}) });
+      if (r.code) lines.push(r.wrote.length ? `host manager: its units were written (${r.wrote.join(', ')}) but the install did not finish (${last})` : `host manager: its units were not installed (${last})`);
+      else lines.push(retry && !r.wrote.length ? 'host manager: enabled its units again (the last install did not finish)' : `host manager: installed its units (${r.wrote.join(', ')})`);
+      if (!fs.existsSync(path.join(HM.unitDir(home), HM.UNIT))) return lines.join('\n');
+    }
+  }
+  const started = startHostManager(root, { home, exec, now, env, live, sdFetch });
+  if (started) lines.push(started);
+  return lines.length ? lines.join('\n') : null;
+}
+function startHostManager(root, { home, exec, now, env = process.env, live, sdFetch }) {
+  const HM = require('./lib/host-manager.js');
   const run = runner(exec);
   let state = '';
   try { state = String(run('systemctl', ['--user', 'is-active', HM.UNIT])).trim(); } catch (err) {
@@ -550,6 +633,11 @@ function ensureHostManager(root, { home, exec, now, env = process.env, live }) {
   const lv = require('./host-manager.js').liveHostManager(root, { env, home, live });
   if (lv.unreadable) return `host manager: ${HM.UNIT} is ${state}; the open sessions could not be listed, so it is not started now (a second host manager could start beside a live one)`;
   if (lv.sessions.length) return `host manager: ${HM.UNIT} is ${state}, and the host manager already runs as ${require('./lib/one-session.js').described(lv.sessions)}; not started beside it`;
+  // the unit's entry in the service directory is read before the start (dec-chief-of-staff-000485): it is
+  // down, so with the directory unreachable it still starts, with a row and a warning
+  const SD = require('./lib/service-directory.js');
+  const g = SD.beforeChange(HM.UNIT, { action: 'start', running: false, fetch: sdFetch, onUnreachable: SD.unreachableRecorder(root, { now }) });
+  if (!g.ok) return `host manager: ${HM.UNIT} is ${state} and is not started: ${g.why}`;
   let error = null;
   // a unit that hit its start limit (host-manager.js install bounds its restarts) stays failed until its
   // failed state is reset: this pass, every 15 minutes, is how often it is tried again
@@ -600,15 +688,68 @@ function defaultUserGuard(env, home) {
 // work is in flight (team-revive.js, dec-chief-of-staff-000279): the job runs it each pass, so a team
 // dropped by a network loss comes back with no step from the owner. A run inside the sealed test
 // runner starts none: a test must never start a real session on the machine it runs on.
-function defaultRevive(root, { team, env, now, dryRun, bd, live }) {
+// deps (tests): sleep (the settle's wait, the real 60 s one by default), relist, and deps (team-revive's
+// own seams: home, spawn, stop, prs, configDir...), so a test settles a unit restart without waiting.
+function defaultRevive(root, { team, env, now, dryRun, bd, live, exec, sleep, relist: relistOf, deps = {} }) {
   if (env.DELIVERY_SEAL_ACTIVE || env.DELIVERY_SEALED_RUN) return [];
   // a stale session is stopped only after a read of the open sessions made just then finds it idle,
   // never on the pass's first read, which may be minutes old by then (lib/team-revive.js staleOf)
-  const relist = () => liveSessions(env.DELIVERY_CLAUDE_BIN || 'claude', env);
-  return require('./team-revive.js').revive(root, team, { start: true, cwd: root, dryRun, env, now, bd, relist, ...(live !== undefined ? { live } : {}) }).lines;
+  const relist = relistOf || (() => liveSessions(env.DELIVERY_CLAUDE_BIN || 'claude', env));
+  // a host manager on an older plugin is restarted through its own unit, after the same fresh read, and a
+  // missing role the plugin's own unit serves is started through it, each after its entry in the service
+  // directory is read (team-revive.js unitOps)
+  const TR = require('./team-revive.js');
+  const ops = TR.unitOps(root, { exec: runner(exec), now, sdFetch: deps.sdFetch });
+  // and settled as a spawned start is: a unit down after SETTLE_MS is a failed start, retried next pass
+  return TR.revive(root, team, { ...deps, start: true, cwd: root, dryRun, env, now, bd, relist, ...ops, unitSettle: TR.unitSettleOf(runner(exec), sleep), ...(live !== undefined ? { live } : {}) }).lines;
 }
 
-function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, live, spawn, deliver, platform = process.platform, home = os.homedir(), exec, has, sweep, lockWaitMs, update = {}, userGuard, revive, hostUnit } = {}) {
+// The plugin's units in the owner's service directory (dec-chief-of-staff-000485), each pass: a unit file
+// the plugin wrote here (the host manager's, a role's, the watchdog's job units), or a role scope now
+// active, that has no entry is registered (so one written while the directory was down is registered once
+// it is back); one that is active gets a heartbeat, which is what the directory's health reads for it; an
+// entry the plugin registered from here (on its local list) whose unit is gone (no file, no active scope)
+// is removed. A scope that ended needs nothing: its entry expires with its ttl. A name listed under another
+// owner is left as it is, and one the plugin registered whose entry someone removed is not registered
+// again (lib/service-directory.js): both are said. One line, or null when there is nothing to say.
+// deps: exec (systemctl), sdFetch (the directory's), env.
+function directoryPass(root, { home = os.homedir(), exec, sdFetch, env } = {}) {
+  const SD = require('./lib/service-directory.js');
+  const run = runner(exec);
+  const st = { fetch: sdFetch, home, ...(env ? { env } : {}) };
+  let files = [];
+  try { files = fs.readdirSync(require('./lib/host-manager.js').unitDir(home)).filter(SD.isPluginUnit); } catch (err) { files = []; }
+  let scopes = [];
+  try { scopes = String(run('systemctl', ['--user', 'list-units', '--type=scope', '--state=active', '--plain', '--no-legend', '--no-pager', 'delivery-role-*']) || '').split('\n').map((l) => l.trim().split(/\s+/)[0]).filter(SD.isPluginUnit); } catch (err) { scopes = []; }
+  const units = [...new Set([...files, ...scopes])];
+  const l = SD.local({ fetch: sdFetch });
+  if (l.unreadable) return units.length ? `service directory: ${units.length} plugin unit${units.length === 1 ? '' : 's'} not registered or refreshed (${l.unreadable}); the next pass that reaches it does` : null;
+  const ours = new Map(l.entries.filter((e) => e && e.owner === SD.OWNER).map((e) => [e.name, e]));
+  const active = (u) => { let s = ''; try { s = String(run('systemctl', ['--user', 'is-active', u]) || ''); } catch (err) { s = String((err && err.stdout) || ''); } return s.trim().split('\n')[0] === 'active'; };
+  const done = { registered: [], refreshed: [], removed: [], withdrawn: [], failed: [] };
+  for (const u of units) {
+    if (!ours.has(u)) {
+      if (l.entries.some((e) => e && e.name === u)) { done.failed.push(`${u} (listed under another owner, left as it is)`); continue; }
+      if (SD.removedByOther(u, { ...st, entries: l.entries })) { done.withdrawn.push(u); continue; }
+      const g = SD.register(u, { ...st, entries: l.entries });
+      (g.ok ? done.registered : done.failed).push(g.ok ? u : `${u} (${g.why})`);
+      continue;
+    }
+    if (!active(u)) continue;
+    const h = SD.heartbeat(u, st);
+    (h.ok ? done.refreshed : h.removed ? done.withdrawn : done.failed).push(h.ok || h.removed ? u : `${u} (${h.why})`);
+  }
+  const mine = SD.registeredNames(st);
+  for (const name of ours.keys()) {
+    if (units.includes(name) || !SD.isPluginUnit(name) || !(name in mine)) continue;
+    const r = SD.remove(name, st);
+    (r.ok ? done.removed : done.failed).push(r.ok ? name : `${name} (${r.why})`);
+  }
+  const parts = [['registered', done.registered], ['refreshed', done.refreshed], ['removed', done.removed], ['not registered again, its entry was removed since the plugin registered it (the owner may have taken it out of the plugin\'s hands)', done.withdrawn], ['not updated', done.failed]].filter(([, x]) => x.length).map(([k, x]) => `${k} ${x.join(', ')}`);
+  return parts.length ? `service directory: ${parts.join('; ')}` : null;
+}
+
+function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, live, spawn, deliver, platform = process.platform, home = os.homedir(), exec, has, sweep, lockWaitMs, update = {}, userGuard, revive, hostUnit, sleep, stopWake, kill: killFn } = {}) {
   let o;
   try { o = parse(argv); } catch (err) { return { code: 2, out: `watchdog.js: ${err.message}\n${USAGE}` }; }
   const [cmd] = o._;
@@ -619,11 +760,14 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
   }
   const who = whoAmI({ cwd, env, project: o.project });
   if (!who.root) return { code: 2, out: 'watchdog.js: no project found; pass --project <root>' };
-  if (cmd === 'pass') return rolePass(who.root, o, { bd, now, team: who.team, rows, env });
-  if (cmd === 'install') return install(who.root, o, { platform, home, env, exec, has });
+  if (cmd === 'pass') return rolePass(who.root, o, { bd, now, team: who.team, rows, env, live });
+  if (cmd === 'install') return install(who.root, o, { platform, home, env, exec, has, sdFetch: (hostUnit || {}).sdFetch, ...(live !== undefined ? { live } : {}) });
   if (cmd === 'uninstall') return uninstall(who.root, { platform, home, env, exec, has });
   const state = { installed: false };
   const go = ({ first = true } = {}) => {
+    // one directory for this pass (the wakes' scopes, the host manager's start, the directory pass): after
+    // a request that cannot reach it, the rest of the pass does not wait again
+    const passSd = require('./lib/service-directory.js').passFetch((hostUnit || {}).sdFetch);
     // the kicks that started this run (lib/kick.js) are taken before the record is read: one dropped
     // after this point starts the next pass, so nothing it announces is missed
     const kicked = cmd !== 'check' && !o.dryRun ? KICK.take(who.root) : [];
@@ -639,18 +783,54 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
     // starts in a new process under the new plugin, whose wakes start the old-version sessions fresh.
     // a pass taken for a kick looks again while an install is held: the kick is often the held-for wake
     // ending, and installing then beats waiting for the next cycle
-    const updated = cmd === 'run' && (first || state.held) ? require('./lib/self-update.js').selfUpdate(who.root, { pluginRoot: PLUGIN_ROOT, env, now, dryRun: !!o.dryRun, alive: (pid) => !endedPids(kicked).has(pid) && WD.pidAlive(pid), roleDirs: (res.sessions || []).map((s) => s.roleDir).filter(Boolean), ...update }) : { lines: [], installed: false };
+    // hjx.1.6.20.1: a wake still running past its time limit plus the kill grace outlived its supervisor's
+    // stop and would hold the install (and with it every wake) with no end: it is ended first, so this
+    // pass can install, and its role starts fresh at the next run under the installed plugin
+    const ended = new Set(endedPids(kicked));
+    const stoppedLines = [];
+    if (cmd === 'run' && first && !o.dryRun) {
+      const stopAt = now || new Date().toISOString();
+      // a stop from an earlier pass whose group outlived the kill grace is finished with SIGKILL
+      for (const k of WD.finishStops(WD.logRows(who.root), { now: Date.parse(stopAt), ...(killFn ? { kill: killFn } : {}) })) {
+        WD.log(who.root, { type: 'wake-killed', at: stopAt, pid: k.pid, wake_at: k.wake_at, instance: k.instance, killed: k.killed });
+        if (k.killed.length) stoppedLines.push(`Killed: ${k.instance || 'a role'}'s stopped wake (pid ${k.pid}) outlived the kill grace (${k.killed.join(', ')}).`);
+      }
+      for (const w of WD.overdueWakes(WD.logRows(who.root), { now: Date.parse(stopAt), alive: wakeAlive(ended, stopAt) })) {
+        const signalled = (stopWake || WD.stopWake)(w.pid) || [];
+        ended.add(w.pid);
+        WD.log(who.root, { type: 'wake-stopped', at: stopAt, pid: w.pid, instance: w.instance, wake_at: w.at, signalled, why: 'ran past its time limit plus the kill grace' });
+        stoppedLines.push(`Stopped: ${w.instance || 'a role'}'s wake (pid ${w.pid}, started ${w.at}) ran past its time limit plus the kill grace; the role starts fresh at the next run.`);
+      }
+    }
+    const updated = cmd === 'run' && (first || state.held) ? require('./lib/self-update.js').selfUpdate(who.root, { pluginRoot: PLUGIN_ROOT, env, now, dryRun: !!o.dryRun, alive: wakeAlive(ended, now), roleDirs: (res.sessions || []).map((s) => s.roleDir).filter(Boolean), ...update }) : { lines: [], installed: false };
     if (updated.installed) { KICK.kick(who.root, `plugin ${updated.version} installed`); state.installed = true; }
+    // a hold ended by stopping a hung wake goes to the next run at once, as an install does
+    else if (stoppedLines.length) KICK.kick(who.root, 'a hung wake was ended');
     state.held = !!updated.held;
+    // while an install is held no wake starts (0ba.6): the roles waiting with work in progress are named
+    // each pass and in the owner's alert, and the run that follows the hold wakes them first
+    const waitingLines = [];
+    if (updated.held) {
+      const waiting = WD.waitingRoles(res);
+      if (waiting.length) {
+        waitingLines.push(`Waiting for the install: ${waiting.map((x) => `${x.instance} (${x.beads.join(', ')})`).join('; ')}; woken first once it is in.`);
+        if (!o.dryRun) WD.noteWaiting(who.root, waiting, now);
+      }
+      if (updated.overdueNew && !o.dryRun) {
+        const chief = WD.chiefOf(who.team);
+        require('./lib/inbox.js').queue(who.root, { to: chief, from: 'watchdog', summary: `${updated.held} held past its bound`,
+          message: `The watchdog (a host job) here: ${updated.held} has waited to install since ${updated.heldSince}, past the bound, because a run has not stopped. No wake starts until it is in${waiting.length ? `; waiting with work in progress: ${waiting.map((x) => `${x.instance} (${x.beads.join(', ')})`).join('; ')}` : ''}. The host job ends a wake past its time limit and installs at the next pass; put this in the owner queue once if it is still held then.`, at: now });
+      }
+    }
     // a held install starts no wake: one started now is another run the install must wait for, and with
     // wakes back to back it never went (delivery-plugin-planning-0ba.6)
-    const woke = [...updated.lines, ...(updated.installed ? ['Wakes wait for the next run, which starts under the plugin just installed.'] : updated.held ? [`No new wake starts until ${updated.held} is installed: the running wakes end first.`] : wake(who.root, res, { now, dryRun: o.dryRun, env, live, spawn, ended: endedPids(kicked), ...(deliver ? { deliver } : {}) }))];
+    const woke = [...stoppedLines, ...updated.lines, ...waitingLines, ...(updated.installed ? ['Wakes wait for the next run, which starts under the plugin just installed.'] : updated.held ? [`No new wake starts until ${updated.held} is installed: the running wakes end first.`] : wake(who.root, res, { now, dryRun: o.dryRun, env, live, spawn, home, ended, sdFetch: passSd, ...(deliver ? { deliver } : {}), ...(stopWake ? { stopWake } : {}) }))];
     // every cycle, the test runs' leftovers in the host's temp directory go (dec-chief-of-staff-000211):
     // a server is never left for a restart or a person to clean; a failing sweep never stops the wakes
     // after the wakes, so a role a wake now runs is seen running; never under an install (the next run's)
     let revived = [];
     if (cmd === 'run' && first && !updated.installed && !updated.held) {
-      try { revived = (revive || defaultRevive)(who.root, { team: who.team, env, now, dryRun: !!o.dryRun, bd, live }).map((l) => `Team: ${l}`); } catch (err) { revived = [`Team: the missing role sessions were not checked (${String(err && err.message || err).split('\n')[0].slice(0, 200)})`]; }
+      try { revived = (revive || defaultRevive)(who.root, { team: who.team, env, now, dryRun: !!o.dryRun, bd, live, exec, sleep }).map((l) => `Team: ${l}`); } catch (err) { revived = [`Team: the missing role sessions were not checked (${String(err && err.message || err).split('\n')[0].slice(0, 200)})`]; }
     }
     let swept = kicked.length ? [`Kicked: ${kicked.length} (${[...new Set(kicked.map((k) => k.replace(/^\S+\s*/, '').replace(/ \(pid \d+\)$/, '') || 'a kick'))].join('; ').slice(0, 300)})`] : [];
     if (cmd === 'run' && first) {
@@ -668,8 +848,11 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
       if (ug) swept.push(ug);
       // a run inside the sealed test runner never touches the host's own units unless a test hands it fakes
       const sealed = env.DELIVERY_SEAL_ACTIVE || env.DELIVERY_SEALED_RUN;
-      const hm = o.dryRun || hostUnit === false || (!hostUnit && sealed) ? null : ensureHostManager(who.root, { home, exec, now, env, ...(live !== undefined ? { live } : {}), ...(hostUnit || {}) });
+      const hm = o.dryRun || hostUnit === false || (!hostUnit && sealed) ? null : ensureHostManager(who.root, { home, exec, now, env, has, ...(live !== undefined ? { live } : {}), ...(hostUnit || {}), sdFetch: passSd });
       if (hm) swept.push(hm);
+      // the plugin's units in the owner's service directory: registered, refreshed while active, removed when gone
+      const sd = o.dryRun || hostUnit === false || (!hostUnit && sealed) ? null : directoryPass(who.root, { home, exec, ...(hostUnit || {}), sdFetch: passSd });
+      if (sd) swept.push(sd);
       try {
         const S = require('./testing/sweep.js');
         // a dry run says what the sweep would remove and removes nothing
@@ -693,7 +876,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
   return r || { code: 0, out: 'Another watchdog run holds the lock; this one does nothing.' };
 }
 
-module.exports = { main, liveSessions, defaultUserGuard, checkLines, jobFiles, shimBody, everySeconds, roleContext, kickWatchUnit, tagOf, sdq, sdPct, jobPath, ensureHostManager, hostManagerSetup, teamSessionsHere };
+module.exports = { spawnWake, main, defaultRevive, liveSessions, wakeAlive, defaultUserGuard, checkLines, jobFiles, shimBody, everySeconds, roleContext, kickWatchUnit, tagOf, sdq, sdPct, jobPath, ensureHostManager, hostManagerSetup, teamSessionsHere, directoryPass };
 
 if (require.main === module) {
   let r;

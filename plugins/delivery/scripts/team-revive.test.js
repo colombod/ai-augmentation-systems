@@ -2,6 +2,7 @@
 // links while work is in flight (dec-chief-of-staff-000279): the rules with injected sessions, beads, pull
 // requests and spawn (never a real claude), the guards both ways, the roster's remote id, the lane, and
 // the watchdog run that calls it.
+require('./testing/role-env.js').clearRoleEnv();
 process.env.TZ = 'UTC';
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -12,6 +13,8 @@ const TR = require('./team-revive.js');
 const R = require('./lib/team-revive.js');
 const RO = require('./lib/roster.js');
 const watchdog = require('./watchdog.js');
+const SD = require('./lib/service-directory.js');
+const { fakeDirectory } = require('./testing/fake-service-directory.js');
 
 // revive() reads the process this runs in as well as what a caller passes: the tests run from a directory
 // that is no role directory, with no role in the environment, and put both back after.
@@ -547,11 +550,11 @@ function staleTeam({ version = '0.43.55', status = 'idle', rosterSession = 'sess
   return { p, live };
 }
 const RC_OF_CHIEF = (pid) => (pid === 5100 ? { pid: 5000, self: false } : null);
-function restartRun(p, argv, { live, server = RC_OF_CHIEF, stop = () => true, relist, pause, installed = '0.43.74', spawnThrows } = {}) {
+function restartRun(p, argv, { live, server = RC_OF_CHIEF, stop = () => true, relist, pause, installed = '0.43.74', spawnThrows, dir = fakeDirectory() } = {}) {
   const spawn = spawner();
   if (spawnThrows) spawn.fn = () => { throw new Error(spawnThrows); };
   const stops = [];
-  const r = TR.main(argv, { cwd: p.root, env: { DELIVERY_HOST: 'pc' }, now: T0, bd: store(BUSY), live, prs: [], alive: () => false, configDir: p.config, spawn: spawn.fn, installed, server, stop: (s, c) => { stops.push([s, c]); return stop(s, c); }, relist, pause, who: { root: p.root, team: p.team, roleId: null } });
+  const r = TR.main(argv, { cwd: p.root, env: { DELIVERY_HOST: 'pc' }, now: T0, bd: store(BUSY), live, prs: [], alive: () => false, configDir: p.config, spawn: spawn.fn, installed, server, stop: (s, c) => { stops.push([s, c]); return stop(s, c); }, relist, pause, sdFetch: dir.fetch, who: { root: p.root, team: p.team, roleId: null } });
   return { ...r, calls: spawn.calls, stops };
 }
 
@@ -949,4 +952,205 @@ test('hjx.1.6.17 (rv-198): a role running twice is told to Staffing once per occ
   const q = project({ roles: [{ id: 'chief-of-staff', host: 'pc' }, { id: 'builder', host: 'pc' }] });
   run(q, ['start'], { live: [twice[0], twice[2], twice[3]].map((x) => ({ ...x, cwd: x.cwd.replace(p.dir(''), q.dir('')) })) });
   assert.deepEqual(IB.pending(q.root).map((x) => x.to), ['chief-of-staff']);
+});
+
+// ---- a role a user unit serves (hjx.1.6.11.5) ----
+
+const unitHome = (units) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'revive-home-'));
+  const dir = R.unitDirOf(home);
+  fs.mkdirSync(dir, { recursive: true });
+  for (const [name, body] of Object.entries(units)) fs.writeFileSync(path.join(dir, name), body);
+  return home;
+};
+const unitBody = (wd, exec) => `[Unit]\nDescription=a role\n\n[Service]\nWorkingDirectory=${wd}\nExecStart=${exec}\n`;
+
+test('remoteControlUnitFor names the user service whose WorkingDirectory is the role directory and whose ExecStart runs claude remote-control, and no other', () => {
+  const p = project();
+  const b = p.dir('builder');
+  const home = unitHome({
+    'a-node.service': unitBody(b, '/usr/bin/node server.js remote-control'),
+    'b-other-dir.service': unitBody(p.dir('chief-of-staff') + '-x', '/usr/bin/claude remote-control'),
+    'c-builder.service': unitBody(b, '/usr/bin/env "/opt/tools/bin/claude" remote-control --name builder@ex'),
+    'd-builder.timer': unitBody(b, '/usr/bin/claude remote-control'),
+  });
+  assert.equal(R.remoteControlUnitFor(b, { home }), 'c-builder.service');
+  assert.equal(R.remoteControlUnitFor(p.dir('chief-of-staff'), { home }), null);
+  // systemd's %% is one %, and a - prefix on WorkingDirectory is allowed
+  const pct = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'revive-pct-')), 'a%b');
+  const h2 = unitHome({ 'x.service': unitBody(`-${pct.replace(/%/g, '%%')}`, '-/usr/bin/claude remote-control') });
+  assert.equal(R.remoteControlUnitFor(pct, { home: h2 }), 'x.service');
+  // a claude that runs something else is no Remote Control server
+  const h3 = unitHome({ 'y.service': unitBody(b, '/usr/bin/claude --print hello') });
+  assert.equal(R.remoteControlUnitFor(b, { home: h3 }), null);
+  assert.equal(R.remoteControlUnitFor(b, { home: path.join(home, 'none') }), null, 'no unit directory: none');
+});
+
+test('the unattended start pass never starts or restarts a unit-served role in a scope: a missing one names its unit, a stale one is not stopped', () => {
+  const { p, live } = staleTeam();
+  const home = unitHome({ 'cos.service': unitBody(COS_DIR(p), '/usr/bin/claude remote-control'), 'tw.service': unitBody(p.dir('builder'), '/usr/bin/claude remote-control') });
+  // the builder is down and holds work through the team's bead in progress; the chief is stale and idle
+  const r = TR.main(['start'], { cwd: p.root, env: { DELIVERY_HOST: 'pc' }, now: T0, bd: store(BUSY), live: live.filter((s) => s.cwd !== p.dir('builder')), prs: [], alive: () => false, configDir: p.config, spawn: spawner().fn, installed: '0.43.74', server: RC_OF_CHIEF, stop: () => { throw new Error('stopped'); }, home, who: { root: p.root, team: p.team, roleId: null } });
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /^Missing: builder \(no session in .*\); not started: it is served by the user unit tw\.service, which is its start path, so no scope is started beside it; the plugin does not start a unit it did not write: start that unit, or replace it with the plugin's own\.$/m, r.out);
+  assert.match(r.out, /^Stale: chief-of-staff runs the delivery plugin 0\.43\.55 and 0\.43\.74 is installed; not restarted: served by cos\.service, which the plugin did not write; not restarted: stop and disable cos\.service \(systemctl --user disable --now cos\.service; the plugin never changes it\), then install the plugin's own: node \S+delivery\.js host-manager\.js install-role --project \S+\.$/m, r.out);
+  assert.deepEqual(R.ledger(p.root).filter((x) => /start|restart/.test(x.type)), []);
+});
+
+test('force: a running role on the installed plugin is restarted through the stale-session path; without force it is not', () => {
+  const { p, live } = staleTeam({ version: '0.43.74' });
+  bridgeFile(p, { pid: 5200, sessionId: 'sess-builder', cwd: p.dir('builder'), bridgeSessionId: 'session_b' });
+  const server = (pid) => (pid === 5200 ? { pid: 5300, self: false } : RC_OF_CHIEF(pid));
+  const none = restartRun(p, ['start'], { live, server });
+  assert.deepEqual(none.stops, []);
+  const spawn = spawner();
+  const stops = [];
+  const r = TR.revive(p.root, p.team, { start: true, env: { DELIVERY_HOST: 'pc' }, now: T0, bd: store(BUSY), live, prs: [], alive: () => false, configDir: p.config, spawn: spawn.fn, installed: '0.43.74', server, stop: (s, c) => { stops.push([s, c]); return true; }, force: ['builder'], sdFetch: fakeDirectory().fetch });
+  assert.deepEqual(stops, [[5300, 5200]]);
+  assert.deepEqual(spawn.calls.map((c) => c.args), [['remote-control', '--name', 'builder@ex', '--session-id', 'session_b', '--permission-mode', 'auto']]);
+  assert.match(r.lines.join('\n'), /^Restarted: builder on 0\.43\.74 \(pid 4001\): stop its Remote Control server \(pid 5300\)/m);
+  const row = R.ledger(p.root).find((x) => x.type === 'restart');
+  assert.equal(row.forced, true);
+  assert.equal(row.session_id, 'session_b');
+});
+
+// A stale session outside a user unit is stopped only after the directory is read: unreadable, or its
+// scope (the unit of its last start or restart in the ledger) held by another owner or removed, nothing
+// is stopped, a restart-refused row says why, and no start cap counts it.
+test('the stale-session replace reads the directory before the stop: down, a scope another owner holds or a removed scope stop nothing; the plugin\'s own scope, or no known scope, restarts', () => {
+  const SCOPE = 'delivery-role-chief-of-staff-1763000000000';
+  const OTHER = 'delivery-host-manager-tick.timer';
+  const go = (dir, { scoped = true, later = null } = {}) => {
+    const { p, live } = staleTeam();
+    if (scoped) R.record(p.root, { type: 'start', at: new Date(Date.parse(T0) - 2 * 86400e3).toISOString(), instance: 'chief-of-staff', pid: 5100, unit: SCOPE });
+    if (later) R.record(p.root, { type: 'start', at: new Date(Date.parse(T0) - 86400e3).toISOString(), instance: 'chief-of-staff', ...later });
+    const r = restartRun(p, ['start'], { live, dir });
+    const refused = R.ledger(p.root).filter((x) => x.type === 'restart-refused');
+    const restarted = R.ledger(p.root).filter((x) => x.type === 'restart');
+    return { r, refused, restarted };
+  };
+  const notStopped = (x, re) => {
+    assert.deepEqual(x.r.stops, [], x.r.out);
+    assert.equal(x.r.calls.length, 0, x.r.out);
+    assert.equal(x.restarted.length, 0);
+    assert.equal(x.refused.length, 1);
+    assert.match(x.refused[0].why, re);
+    assert.match(x.r.out, /its session was not restarted: /, x.r.out);
+    assert.match(x.r.out, re, x.r.out);
+  };
+  notStopped(go(fakeDirectory({ down: true })), /could not be reached .*a restart of a running session is not made without reading the directory first/);
+  notStopped(go(fakeDirectory({ down: true }), { scoped: false }), /could not be reached/);
+  const held = fakeDirectory({ entries: [{ name: `${SCOPE}.scope`, url: 'http://x', owner: 'colombod' }] });
+  notStopped(go(held), /owned by "colombod", not by the delivery plugin, so the plugin does not restart it/);
+  assert.equal(held.entry(`${SCOPE}.scope`).owner, 'colombod');
+  const removed = fakeDirectory({ entries: [SD.entryFor(OTHER)], registered: [`${SCOPE}.scope`, OTHER] });
+  notStopped(go(removed), /was removed from the service directory/);
+  assert.equal(removed.entry(`${SCOPE}.scope`), null, 'not registered again');
+  // a later start that failed ran nothing: the scope is still the one before it
+  notStopped(go(fakeDirectory({ entries: [{ name: `${SCOPE}.scope`, url: 'http://x', owner: 'colombod' }] }), { later: { unit: 'delivery-role-chief-of-staff-1.service', via: 'unit', error: 'failed' } }), /owned by "colombod"/);
+  // the last start went through a user unit: that names no scope, so an entry on that unit's name is not this check's
+  const viaUnit = go(fakeDirectory({ entries: [{ name: 'delivery-role-chief-of-staff-1.service', url: 'http://x', owner: 'colombod' }] }), { scoped: false, later: { unit: 'delivery-role-chief-of-staff-1.service', via: 'unit' } });
+  assert.deepEqual(viaUnit.r.stops, [[5000, 5100]], viaUnit.r.out);
+  for (const [what, x] of [['its own entry', go(fakeDirectory({ entries: [SD.entryFor(`${SCOPE}.scope`)] }))], ['no known scope', go(fakeDirectory(), { scoped: false })]]) {
+    assert.deepEqual(x.r.stops, [[5000, 5100]], what);
+    assert.equal(x.r.calls.length, 1, what);
+    assert.equal(x.restarted.length, 1, what);
+    assert.equal(x.refused.length, 0, what);
+  }
+});
+
+// ---- the plugin's own role unit, and a unit someone else wrote (hjx.1.6.10.1.2.1) ----
+
+// the ExecStart the plugin writes for a role's unit: its launcher runs host-manager.js run-session
+const pluginExec = (root, instance) => `/usr/bin/env node ${path.join(root, '.delivery', 'bin', 'delivery.js')} host-manager.js run-session --project ${root} --instance ${instance}`;
+
+test('servingUnits reads systemd\'s %h, ~ and %% in WorkingDirectory and ExecStart, and quoted words: the shape of a real hand-written Chief of Staff unit', () => {
+  const home = unitHome({});
+  const cos = path.join(home, 'workspaces', 'acme-team', 'chief-of-staff');
+  const dir = R.unitDirOf(home);
+  fs.writeFileSync(path.join(dir, 'claude-rc-chief-of-staff.service'), '[Unit]\nDescription=cos\n\n[Service]\nWorkingDirectory=%h/workspaces/acme-team/chief-of-staff\nExecStart=%h/.local/bin/claude remote-control --name "Chief of Staff" --permission-mode auto\nRestart=always\n');
+  assert.deepEqual(R.servingUnits(cos, { home }), [{ unit: 'claude-rc-chief-of-staff.service', written: false }]);
+  const h2 = unitHome({ 'tilde.service': '[Service]\nWorkingDirectory=~/workspaces/acme-team/chief-of-staff\nExecStart=/usr/bin/env "%h/bin/claude" "remote-control"\n' });
+  assert.deepEqual(R.servingUnits(path.join(h2, 'workspaces', 'acme-team', 'chief-of-staff'), { home: h2 }), [{ unit: 'tilde.service', written: false }]);
+  // %% is one %, so %%h is a directory named %h, not the home
+  const h3 = unitHome({ 'pct.service': '[Service]\nWorkingDirectory=/srv/%%h/cos\nExecStart=/usr/bin/claude remote-control\n' });
+  assert.deepEqual(R.servingUnits('/srv/%h/cos', { home: h3 }), [{ unit: 'pct.service', written: false }]);
+  assert.deepEqual(R.servingUnits(path.join(h3, 'cos'), { home: h3 }), []);
+  // a quoted name holding the word remote-control is no Remote Control server
+  const h4 = unitHome({ 'q.service': `[Service]\nWorkingDirectory=${cos}\nExecStart=/usr/bin/claude --print "remote-control"\n` });
+  assert.deepEqual(R.servingUnits(cos, { home: h4 }), [], 'a print of the words is not a server');
+});
+
+test('a unit the plugin did not write that is neither enabled nor active no longer serves its directory; enabled, active or unknown, it does, and the reads are systemctl is-enabled and is-active only', () => {
+  const p = project();
+  const cos = COS_DIR(p);
+  const home = unitHome({ 'claude-rc-cos.service': unitBody(cos, '/usr/bin/claude remote-control'), 'delivery-role-chief-of-staff-1234abcd.service': unitBody(cos, pluginExec(p.root, 'chief-of-staff')) });
+  const sd = (enabled, active) => {
+    const calls = [];
+    const exec = (cmd, args) => {
+      calls.push([cmd, ...args].join(' '));
+      const out = args[1] === 'is-enabled' ? enabled : active;
+      if (out === 'enabled' || out === 'active') return `${out}\n`;
+      const e = new Error('Command failed'); e.stdout = out === null ? '' : `${out}\n`; throw e;
+    };
+    return { exec, calls };
+  };
+  const hand = (s) => R.servingUnits(cos, { home, exec: s.exec }).filter((u) => !u.written).map((u) => u.unit);
+  const after = sd('disabled', 'inactive');
+  assert.deepEqual(hand(after), [], 'stopped and disabled: no longer a start path');
+  assert.ok(after.calls.every((c) => /^systemctl --user is-(enabled|active) claude-rc-cos\.service$/.test(c)), after.calls.join(' | '));
+  assert.deepEqual(hand(sd('disabled', 'failed')), []);
+  assert.deepEqual(hand(sd('enabled', 'inactive')), ['claude-rc-cos.service'], 'enabled: it starts at the next boot');
+  assert.deepEqual(hand(sd('disabled', 'active')), ['claude-rc-cos.service'], 'running');
+  assert.deepEqual(hand(sd(null, null)), ['claude-rc-cos.service'], 'unknown state: still taken as serving');
+  // the plugin's own unit rests inactive between its runs by design: it stays the start path
+  assert.deepEqual(R.servingUnits(cos, { home, exec: sd('disabled', 'inactive').exec }).filter((u) => u.written).map((u) => u.unit), ['delivery-role-chief-of-staff-1234abcd.service']);
+});
+
+test('servingUnits names every user service that serves a role directory: one running claude remote-control is not the plugin\'s, one running run-session is', () => {
+  const p = project();
+  const cos = COS_DIR(p);
+  const home = unitHome({
+    'claude-rc-chief-of-staff.service': unitBody(cos, '/usr/bin/claude remote-control --name cos'),
+    'delivery-role-chief-of-staff-1234abcd.service': unitBody(cos, pluginExec(p.root, 'chief-of-staff')),
+    'other.service': unitBody(cos, '/usr/bin/node something.js run-session'),
+  });
+  assert.deepEqual(R.servingUnits(cos, { home }), [
+    { unit: 'claude-rc-chief-of-staff.service', written: false },
+    { unit: 'delivery-role-chief-of-staff-1234abcd.service', written: true },
+  ]);
+  // the plugin's unit alone serves it, and the shared helper names it as the role's start path
+  const h2 = unitHome({ 'delivery-role-chief-of-staff-1234abcd.service': unitBody(cos, pluginExec(p.root, 'chief-of-staff')) });
+  assert.equal(R.remoteControlUnitFor(cos, { home: h2 }), 'delivery-role-chief-of-staff-1234abcd.service');
+  assert.deepEqual(R.servingUnits(p.dir('builder'), { home }), []);
+});
+
+test('a missing role the plugin\'s own unit serves is started through that unit, never in a scope; a unit someone else wrote beside it starts nothing', () => {
+  const p = project();
+  register(p, 'chief-of-staff', { plugin_version: '0.43.74' });
+  const unit = 'delivery-role-chief-of-staff-1234abcd.service';
+  const home = unitHome({ [unit]: unitBody(COS_DIR(p), pluginExec(p.root, 'chief-of-staff')) });
+  const spawn = spawner();
+  const units = [];
+  const live = [{ cwd: p.dir('builder'), sessionId: 'sess-builder', pid: 5200, name: 'builder@ex', status: 'idle' }];
+  const deps = (extra) => ({ start: true, env: { DELIVERY_HOST: 'pc' }, now: T0, bd: store(BUSY), live, prs: [], alive: () => false, configDir: p.config, spawn: spawn.fn, installed: '0.43.74', home, startUnit: (u) => units.push(u), settle: null, ...extra });
+  const r = TR.revive(p.root, p.team, deps());
+  assert.deepEqual(spawn.calls, [], 'no scope, no plain start');
+  assert.deepEqual(units, [unit]);
+  assert.match(r.lines.join('\n'), /^Started: chief-of-staff through its user unit delivery-role-chief-of-staff-1234abcd\.service/m, r.lines.join('\n'));
+  const row = R.ledger(p.root).find((x) => x.type === 'start');
+  assert.equal(row.unit, unit);
+  assert.equal(row.via, 'unit');
+  // the start caps hold for a start through the unit as for any other: not again within the hour
+  const again = TR.revive(p.root, p.team, deps({ now: iso(Date.parse(T0) + 60e3) }));
+  assert.deepEqual(units, [unit]);
+  assert.match(again.lines.join('\n'), /^Missing: chief-of-staff .*held: started/m, again.lines.join('\n'));
+  // a hand-written unit serving the same directory: two start paths, so the plugin uses neither
+  const q = project();
+  const h2 = unitHome({ 'claude-rc-cos.service': unitBody(COS_DIR(q), '/usr/bin/claude remote-control'), [unit]: unitBody(COS_DIR(q), pluginExec(q.root, 'chief-of-staff')) });
+  const units2 = [];
+  const r2 = TR.revive(q.root, q.team, { ...deps({ home: h2, configDir: q.config, live: [], startUnit: (u) => units2.push(u) }) });
+  assert.deepEqual(units2, []);
+  assert.deepEqual(spawn.calls.filter((c) => c.cwd === COS_DIR(q)), []);
+  assert.match(r2.lines.join('\n'), /^Missing: chief-of-staff .*not started: it is served by the user unit claude-rc-cos\.service, which the delivery plugin did not write, and by the plugin's own delivery-role-chief-of-staff-1234abcd\.service: two start paths for one role directory; stop and disable claude-rc-cos\.service/m, r2.lines.join('\n'));
 });

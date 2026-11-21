@@ -1,4 +1,5 @@
 // hooks/scripts/leak.test.js — run with: node --test hooks/scripts/leak.test.js
+require('../../scripts/testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

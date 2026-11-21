@@ -2,6 +2,9 @@
 // not at the next timer pass. The check at a65637c: handoffs queued at 07:25:25, 07:25:34 and 07:25:57
 // were delivered at 07:39:39, by the next 15-minute pass. Each writer now drops a kick (lib/kick.js) that
 // the host job watches; a wake that ends drops one too; the run takes them before it reads the record.
+// as watchdog.test.js: a direct run from a role session, or from the installed plugin, sees what CI
+// sees, and no run reaches the host's own Claude install (hjx.1.1.4)
+require('./testing/role-env.js').clearRoleEnv();
 process.env.TZ = 'UTC';
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -126,10 +129,13 @@ test('a run kicked by a wake that ended reads that wake as gone, though its supe
   await new Promise((resolve) => setTimeout(resolve, 300));
   try {
     assert.equal(WD.pidAlive(sup.pid), true, 'the stand-in reads as a live wake');
-    const t0 = '2026-11-02T08:00:00Z';
+    // the wake row is written just after its supervisor started, as the host job writes it: the check
+    // reads the process's start against the row (hjx.1.6.20), so the run's clock follows the real one
+    const rowAt = Date.now();
+    const t0 = iso(rowAt + 20 * 60e3);
     const h = harness({});
     session(h, DM, iso(Date.parse(t0) - H));
-    WD.log(h.root, { type: 'wake', at: iso(Date.parse(t0) - 20 * 60e3), keys: ['message:x'], instance: DM, pid: sup.pid });
+    WD.log(h.root, { type: 'wake', at: iso(rowAt), keys: ['message:x'], instance: DM, pid: sup.pid });
     IB.queue(h.root, { to: DM, from: 'builder-1', message: 'PR ready', at: t0 });
     KICK.take(h.root);
     const spawn = spawner();

@@ -96,6 +96,32 @@ function serverOf(pid, { exec = psRow, self = process.pid } = {}) {
 // Stop a Remote Control server and wait for it and its session to be gone: true when both are, false
 // after waitMs (a server that did not stop is never doubled by a second one in its directory).
 const sleep = (msec) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, msec);
+// The start of a role's own unit, one the plugin wrote (lib/team-revive.js servingUnits, written): a unit
+// its start limit failed is reset first, which only the plugin's own unit ever is. A unit someone else
+// wrote is never started, reset or changed here.
+const unitCommand = (c, a) => require('child_process').execFileSync(c, a, { encoding: 'utf8', timeout: 20000, stdio: ['ignore', 'pipe', 'pipe'] });
+function startOwnUnit(unit, { exec = unitCommand } = {}) {
+  try { exec('systemctl', ['--user', 'reset-failed', unit]); } catch (err) { /* not failed: nothing to reset */ }
+  exec('systemctl', ['--user', 'start', unit]);
+}
+
+// The unit start and restart a start pass is handed (the watchdog's, the owner's restart), each made only
+// after the unit's entry in the service directory is read (lib/service-directory.js beforeChange,
+// dec-chief-of-staff-000485): a refusal throws with its reason, which the pass records and says. A
+// restart is of a running unit; a start is of a missing role's unit, which is down, so it goes ahead with a
+// row and a warning while the directory cannot be read. exec: the systemctl runner; sdFetch: the directory's.
+function unitOps(root, { exec, sdFetch, now } = {}) {
+  const SD = require('./lib/service-directory.js');
+  const gate = (unit, action, running) => {
+    const g = SD.beforeChange(unit, { action, running, fetch: sdFetch, onUnreachable: SD.unreachableRecorder(root, { now }) });
+    if (!g.ok) throw Object.assign(new Error(`not ${action === 'start' ? 'started' : 'restarted'}: ${g.why}`), { refused: true });
+  };
+  return {
+    restartUnit: (unit) => { gate(unit, 'restart', true); exec('systemctl', ['--user', 'restart', unit]); },
+    startUnit: (unit) => { gate(unit, 'start', false); startOwnUnit(unit, { exec }); },
+  };
+}
+
 function stopServer(serverPid, sessionPid, { kill = (p, sig) => process.kill(p, sig), waitMs = 15000, stepMs = 250 } = {}) {
   const gone = (p) => { if (!p) return true; try { kill(p, 0); return false; } catch (err) { return err.code !== 'EPERM'; } };
   try { kill(serverPid, 'SIGTERM'); } catch (err) { if (err.code !== 'ESRCH') return false; }
@@ -118,7 +144,7 @@ function openPrs(team, env) {
 }
 
 // The facts the rules read, each from its own source; deps replace any of them in a test.
-function gather(root, team, { env = process.env, now, bd, live, prs, alive, hostname, home, configDir, pause, installed, server } = {}) {
+function gather(root, team, { env = process.env, now, bd, live, prs, alive, hostname, home, configDir, pause, installed, server, unitOf } = {}) {
   const config = configDir || R.configDirOf(env, home);
   const bin = env.DELIVERY_CLAUDE_BIN || 'claude';
   const store = bd || require('./lib/bd.js').makeBd({ cwd: root, env, timeoutMs: 15000 });
@@ -129,6 +155,7 @@ function gather(root, team, { env = process.env, now, bd, live, prs, alive, host
   let roster = {};
   try { roster = require('./lib/roster.js').readRoster(root).instances || {}; } catch (err) { roster = {}; }
   return {
+    root,
     now: now || new Date().toISOString(),
     host: R.hostOf(env, hostname !== undefined ? hostname : os.hostname()),
     team,
@@ -148,6 +175,9 @@ function gather(root, team, { env = process.env, now, bd, live, prs, alive, host
     // the installed plugin: the host job runs it (watchdog.js self-update installs before a pass wakes anyone)
     installed: installed !== undefined ? installed : require('./lib/plugin-version.js').runningVersion(),
     serverOf: server || serverOf,
+    // the user unit that serves a role directory (lib/team-revive.js remoteControlUnitFor), under home
+    // and whether it is the plugin's own (lib/team-revive.js unitServing)
+    unitOf: unitOf || ((dir) => R.unitServing(dir, { home })),
   };
 }
 
@@ -174,26 +204,13 @@ function spawnRemote(bin, args, { cwd, env, logPath }) {
   return child.pid || null;
 }
 
-// systemd-run where it can reach this user's systemd manager (Linux with a user manager: the host job's
-// service runs under it, and so does a desktop login), else null, and a start is a plain detached child.
-// The manager is reached through XDG_RUNTIME_DIR, so without it systemd-run --user would fail every start.
-function systemdRunOf(env = process.env, { platform = process.platform, exists = fs.existsSync } = {}) {
-  if (platform !== 'linux' || !env.XDG_RUNTIME_DIR) return null;
-  const rt = env.XDG_RUNTIME_DIR;
-  if (!exists(path.join(rt, 'systemd', 'private')) && !exists(path.join(rt, 'bus'))) return null;
-  for (const d of String(env.PATH || '/usr/bin:/bin').split(path.delimiter)) {
-    const f = path.join(d || '.', 'systemd-run');
-    if (d && exists(f)) return f;
-  }
-  return null;
-}
+// systemd-run, where this user's systemd manager can be reached (lib/role-scope.js)
+const systemdRunOf = (...a) => require('./lib/role-scope.js').systemdRunOf(...a);
 
 // systemd-run's own refusal in a start's log, before claude ran: "Failed to start transient scope unit",
 // "Failed to connect to bus", "Failed to create bus connection", an unknown property
-const SYSTEMD_RUN_REFUSED = /^(Failed to (start transient|connect to (bus|user scope bus)|create bus connection|set unit properties)|Unknown assignment|Failed to parse)/m;
-function systemdRunRefused(logFile) {
-  try { return SYSTEMD_RUN_REFUSED.test(fs.readFileSync(logFile, 'utf8')); } catch (err) { return false; }
-}
+// systemd-run's own refusal in a start's log (lib/role-scope.js)
+const systemdRunRefused = (logFile) => require('./lib/role-scope.js').refusedIn(logFile);
 
 // Whether pid has exited: gone, or a zombie (a detached child of this pass that died is not reaped while
 // the pass runs synchronously). A process that cannot be read is taken as still running.
@@ -228,19 +245,72 @@ function revive(root, team, opts = {}) {
   // session that may not start sessions: a caller's cwd or env can only make it stricter
   const no = callerRefusal(process.cwd(), process.env) || callerRefusal(opts.cwd || process.cwd(), opts.env || process.env);
   if (no) throw new Error(no);
-  const lock = R.startLock(root);
+  const lock = R.startLock(root, opts.clock ? { clock: opts.clock } : {});
   if (lock.held) {
-    const { start, dryRun, env = process.env, spawn, ...deps } = opts;
+    const { start, dryRun, env = process.env, spawn, force, restartUnit, startUnit, unitSettle, clock, ...deps } = opts;
     const a = { ...R.assess(gather(root, team, { env, ...deps })), go: false, locked: lock.held };
     return { a, started: {}, lines: [`Not started now: another start pass holds the start lock (pid ${lock.held.pid || 'unknown'}, ${path.relative(root, R.lockFile(root))}); it starts what is missing.`] };
   }
-  try { return revivePass(root, team, opts); } finally { lock.release(); }
+  try { return revivePass(root, team, { ...opts, touchLock: () => lock.refresh() }); } finally { lock.release(); }
 }
 
 // A stale session is restarted only after a second read of the open sessions finds it still idle (the
 // first read may be seconds old), and only once its server stopped; each restart is a ledger row.
-function restartStale(root, f, a, { env, bin, spawn, stop, relist, systemdRun = null }) {
+// A role a user unit serves (st.unit) is restarted through restartUnit(unit) (systemctl --user restart, the
+// caller's), after the same second read: never stopped here, never started in a scope.
+// A unit start or restart is settled as a spawned start is (failStarts, hjx.1.6.10.1): unitSettle(unit)
+// waits SETTLE_MS and reads whether the unit is up, true, false or null when unknown. A unit that is not up
+// by then (its session exited within seconds, as run-session's exit 3 did beside a leftover) gets a
+// 'failed' row naming its start: the hourly cap does not hold the next try, and the start still counts
+// against the daily cap. unitSettleOf(exec, sleep): the real check, systemctl --user is-active after the
+// wait; a caller without unitSettle (a test that injects restartUnit) settles nothing.
+function unitSettleOf(exec, sleepFn = sleep) {
+  return (unit) => {
+    sleepFn(R.SETTLE_MS);
+    let state = '';
+    try { state = String(exec('systemctl', ['--user', 'is-active', unit]) || ''); } catch (err) { state = String((err && err.stdout) || ''); }
+    state = state.trim().split('\n')[0];
+    if (state === 'active') return true;
+    return /^(inactive|failed|activating|deactivating)$/.test(state) ? false : null;
+  };
+}
+// touchLock: the start lock is refreshed around the wait, so a pass of many settles keeps it
+function settleUnit(root, unitSettle, { instance, unit, at, what, touchLock = null }) {
+  if (!unitSettle) return null;
+  let up = null;
+  if (touchLock) touchLock();
+  try { up = unitSettle(unit); } catch (err) { up = null; }
+  if (touchLock) touchLock();
+  if (up !== false) return null;
+  const why = `its unit ${unit} was not active ${Math.round(R.SETTLE_MS / 1000)}s after the ${what}`;
+  R.record(root, { type: 'failed', at: new Date().toISOString(), instance, start_at: at, unit, via: 'unit', why });
+  return why;
+}
+
+// A role scope a start made is registered with the owner's service directory (lib/service-directory.js); a
+// directory that cannot be reached never holds the start back: the watchdog's next pass registers every
+// active role scope it finds. A name the directory lists under another owner is not posted: a ledger row
+// says so (directory-held).
+function registerScope(root, unit, sdFetch, now) {
+  try {
+    const SD = require('./lib/service-directory.js');
+    const name = SD.scopeName(unit);
+    const g = SD.register(name, { fetch: sdFetch });
+    if (!g.ok && 'held' in g) R.record(root, { type: 'directory-held', at: now || new Date().toISOString(), unit: name, owner: g.held, why: g.why });
+  } catch (err) { /* the next pass registers it */ }
+}
+
+// The scope a role's session runs in, as the ledger knows it: the unit of its last start or restart that
+// ran, when that was a scope (a row through a user unit, or a plain start, names none).
+function lastScope(root, instance) {
+  const row = R.ledger(root).filter((x) => x.instance === instance && (x.type === 'start' || x.type === 'restart') && !x.error).pop();
+  return row && row.unit && row.via !== 'unit' ? row.unit : null;
+}
+
+function restartStale(root, f, a, { env, bin, spawn, stop, relist, systemdRun = null, restartUnit = null, unitSettle = null, touchLock = null, sdFetch: givenFetch }) {
   const out = {};
+  const SD = require('./lib/service-directory.js');
+  const sdFetch = SD.passFetch(givenFetch);
   for (const i of a.stale.filter((x) => !x.stale.skip && !x.stale.held)) {
     const st = i.stale;
     const now = relist();
@@ -253,22 +323,52 @@ function restartStale(root, f, a, { env, bin, spawn, stop, relist, systemdRun = 
     const others = (OS.liveOf(i.instance, { roleDir: i.roleDir, live: now, prefix: f.team && f.team.prefix }) || []).filter((x) => x.sessionId !== st.session);
     if (others.length) { out[i.instance] = { why: `another session of it is live (${OS.described(others)}); a restart would leave two` }; continue; }
     const at = f.now;
+    const forced = st.forced ? { forced: true } : {};
+    if (st.unit) {
+      if (!restartUnit) { out[i.instance] = { why: `it is served by the user unit ${st.unit}, and this pass has no way to restart a unit` }; continue; }
+      try { restartUnit(st.unit); } catch (err) {
+        // refused on the service directory's read (unitOps): nothing was restarted, so no cap counts it
+        if (err && err.refused) {
+          R.record(root, { type: 'restart-refused', at, instance: i.instance, unit: st.unit, from: st.version, to: st.installed, why: err.message, ...forced });
+          out[i.instance] = { why: `${st.unit} was ${err.message}` };
+          continue;
+        }
+        const why = String(err.message || err).trim().split('\n')[0].slice(0, 200);
+        R.record(root, { type: 'restart-failed', at, instance: i.instance, unit: st.unit, from: st.version, to: st.installed, error: why, ...forced });
+        out[i.instance] = { why: `systemctl --user restart ${st.unit} failed: ${why}` };
+        continue;
+      }
+      R.record(root, { type: 'restart', at, instance: i.instance, unit: st.unit, via: 'unit', session_id: st.remoteId, from_session: st.session, from: st.version, to: st.installed, ...forced });
+      const down = settleUnit(root, unitSettle, { instance: i.instance, unit: st.unit, at, what: 'restart', touchLock });
+      out[i.instance] = down ? { why: `${down}; a failed start, retried at the next pass within the daily cap`, failed: true } : { unit: st.unit };
+      continue;
+    }
+    // a session outside a user unit is stopped only after the directory is read; refused, nothing was
+    // stopped, so no cap counts it
+    const scope = lastScope(root, i.instance);
+    const g = SD.beforeReplace(scope, { fetch: sdFetch, env });
+    if (!g.ok) {
+      R.record(root, { type: 'restart-refused', at, instance: i.instance, ...(scope ? { unit: SD.scopeName(scope) } : {}), server: st.server, from: st.version, to: st.installed, why: g.why, ...forced });
+      out[i.instance] = { why: `its session was not restarted: ${g.why}` };
+      continue;
+    }
     if (!stop(st.server, st.pid)) {
-      R.record(root, { type: 'restart-failed', at, instance: i.instance, server: st.server, from: st.version, to: st.installed });
+      R.record(root, { type: 'restart-failed', at, instance: i.instance, server: st.server, from: st.version, to: st.installed, ...forced });
       out[i.instance] = { why: `its Remote Control server (pid ${st.server}) did not stop` };
       continue;
     }
     const logPath = path.join(root, WD.REL, 'logs', `revive-${i.instance}-${at.replace(/[:.]/g, '-')}.log`);
     let pid;
     // a restarted session gets its own scope too, as a start does
-    const cmd = R.scopedCommand(bin, st.args, { instance: i.instance, at, systemdRun });
+    const cmd = require('./lib/role-scope.js').roleCommand(bin, st.args, { instance: i.instance, at, systemdRun });
     try { pid = spawn(cmd.bin, cmd.args, { cwd: i.roleDir, env: startEnv(env, i.instance), logPath }); } catch (err) {
       // its server is already stopped: the row says so, the caps count it, and the next pass starts the missing session
-      R.record(root, { type: 'restart-failed', at, instance: i.instance, server: st.server, stopped: st.server, from: st.version, to: st.installed, error: err.message });
+      R.record(root, { type: 'restart-failed', at, instance: i.instance, server: st.server, stopped: st.server, from: st.version, to: st.installed, error: err.message, ...forced });
       out[i.instance] = { why: `its Remote Control server stopped, and the new one did not start: ${err.message}` };
       continue;
     }
-    R.record(root, { type: 'restart', at, instance: i.instance, pid, args: st.args, ...(cmd.unit ? { unit: cmd.unit } : {}), session_id: st.remoteId, mode: st.mode, from: st.version, to: st.installed, stopped: st.server, log: path.relative(root, logPath) });
+    R.record(root, { type: 'restart', at, instance: i.instance, pid, args: st.args, ...(cmd.unit ? { unit: cmd.unit } : {}), session_id: st.remoteId, mode: st.mode, from: st.version, to: st.installed, stopped: st.server, log: path.relative(root, logPath), ...forced });
+    if (cmd.unit) registerScope(root, cmd.unit, sdFetch, at);
     out[i.instance] = { pid, log: path.relative(root, logPath) };
   }
   return out;
@@ -297,11 +397,15 @@ function tellTwice(root, team, a, { now, queue = (r, m) => require('./lib/inbox.
 
 // only: the instances a start may bring back (the host manager's restart starts the ones that hold
 // work and leaves an idle one down); unset, every missing instance
+// force: the running instances the owner's restart restarts onto the installed plugin even when they run
+// it already (lib/team-revive.js assess), through restartStale and its safeties; unset, only stale ones.
+// restartUnit(unit): how a role a user unit serves is restarted (the host manager's systemctl)
 // A start pass spawns every missing instance, then waits SETTLE_MS (settle) for any that exit at once: those
 // get a 'failed' row, are named Failed, and the next pass retries them (lib/team-revive.js assess). settle is
 // the real wait only with the real spawn; a test that injects spawn injects settle too, or gets none.
-function revivePass(root, team, { start = false, dryRun = false, env = process.env, spawn = spawnRemote, stop = stopServer, relist, settle, systemdRun, only = null, ...deps } = {}) {
+function revivePass(root, team, { start = false, dryRun = false, env = process.env, spawn = spawnRemote, stop = stopServer, relist, settle, systemdRun, only = null, force = null, restartUnit = null, startUnit = null, unitSettle = null, touchLock = null, clock, ...deps } = {}) {
   const f = gather(root, team, { env, ...deps });
+  if (force) f.force = force;
   const a = R.assess(f);
   const bin = env.DELIVERY_CLAUDE_BIN || 'claude';
   const started = {};
@@ -314,16 +418,43 @@ function revivePass(root, team, { start = false, dryRun = false, env = process.e
   if (start && !dryRun && a.go) {
     for (const i of a.missing.filter((x) => !x.skip && !x.held && (!only || only.includes(x.instance)))) {
       const at = f.now;
+      // a role the plugin's own unit serves is started through that unit, never in a scope beside it
+      if (i.viaUnit) {
+        // with no start the caller made (team-revive.js start, or any pass that gave none), the start still
+        // reads the unit's service-directory entry first (unitOps): no path starts a plugin unit unread
+        try { (startUnit || unitOps(root, { exec: deps.unitExec || unitCommand, sdFetch: deps.sdFetch, now: at }).startUnit)(i.viaUnit); } catch (err) {
+          // refused on the service directory's read (unitOps): no start was made, so no cap counts it
+          if (err && err.refused) {
+            R.record(root, { type: 'start-refused', at, instance: i.instance, unit: i.viaUnit, why: err.message });
+            started[i.instance] = { why: `${i.viaUnit} was ${err.message}`, unitStart: true };
+            continue;
+          }
+          const why = String((err && (err.stderr || err.message)) || err).trim().split('\n')[0].slice(0, 200);
+          // a start row all the same, with its error: the hourly and daily caps hold for a unit that keeps failing
+          R.record(root, { type: 'start', at, instance: i.instance, unit: i.viaUnit, via: 'unit', error: why });
+          started[i.instance] = { why: `the start of its user unit ${i.viaUnit} failed: ${why}`, unitStart: true };
+          continue;
+        }
+        R.record(root, { type: 'start', at, instance: i.instance, unit: i.viaUnit, via: 'unit' });
+        started[i.instance] = { unit: i.viaUnit, unitStart: true, at };
+        // a unit whose session exited within seconds is a failed start, retried at the next pass
+        const down = settleUnit(root, unitSettle, { instance: i.instance, unit: i.viaUnit, at, what: 'start', touchLock });
+        if (down) started[i.instance] = { ...started[i.instance], failed: true, why: down };
+        continue;
+      }
       const logPath = path.join(root, WD.REL, 'logs', `revive-${i.instance}-${at.replace(/[:.]/g, '-')}.log`);
-      const cmd = R.scopedCommand(bin, i.args, { instance: i.instance, at, systemdRun: sdRun });
+      const cmd = require('./lib/role-scope.js').roleCommand(bin, i.args, { instance: i.instance, at, systemdRun: sdRun });
       const pid = spawn(cmd.bin, cmd.args, { cwd: i.roleDir, env: startEnv(env, i.instance), logPath });
       R.record(root, { type: 'start', at, instance: i.instance, pid, args: i.args, session_id: i.remoteId, mode: i.mode, log: path.relative(root, logPath), ...(cmd.unit ? { unit: cmd.unit } : {}) });
+      if (cmd.unit) registerScope(root, cmd.unit, deps.sdFetch, at);
       started[i.instance] = { pid, log: path.relative(root, logPath), at, args: i.args, roleDir: i.roleDir, ...(cmd.unit ? { unit: cmd.unit } : {}) };
     }
     const wait = settle !== undefined ? settle : (spawn === spawnRemote ? settleStarts : null);
     const failStarts = (names) => {
       if (!wait || !names.length) return [];
+      if (touchLock) touchLock();
       const gone = wait(names.map((n) => started[n].pid));
+      if (touchLock) touchLock();
       const out = names.filter((n) => gone.has(started[n].pid));
       for (const n of out) {
         started[n].failed = true;
@@ -334,7 +465,7 @@ function revivePass(root, team, { start = false, dryRun = false, env = process.e
     // a scoped start whose log shows systemd-run's own refusal (no user manager, a refused property) never
     // reached claude: it is started again at once as a plain detached child, which the next start of the
     // pass waits for in turn, so a host where systemd-run fails still starts its team
-    for (const n of failStarts(Object.keys(started)).filter((x) => started[x].unit && systemdRunRefused(path.join(root, started[x].log)))) {
+    for (const n of failStarts(Object.keys(started).filter((x) => !started[x].unitStart)).filter((x) => started[x].unit && systemdRunRefused(path.join(root, started[x].log)))) {
       const was = started[n];
       // the plain start is a second start: the sessions are listed again first, and one that is live
       // now (it came up another way meanwhile) is left alone, as a start would leave it
@@ -352,7 +483,7 @@ function revivePass(root, team, { start = false, dryRun = false, env = process.e
   if (start && !dryRun) { try { tellTwice(root, team, a, { now: f.now }); } catch (err) { /* the next pass tells it */ } }
   let restarted = {};
   if (start && !dryRun && a.restart && a.stale.length) {
-    restarted = restartStale(root, f, a, { env, bin, spawn, stop, relist: again, systemdRun: sdRun });
+    restarted = restartStale(root, f, a, { env, bin, spawn, stop, relist: again, systemdRun: sdRun, restartUnit, unitSettle, touchLock, sdFetch: deps.sdFetch });
   }
   return { a, started, restarted, lines: R.lines(a, { bin, started, restarted, dryRun: start && dryRun }) };
 }
@@ -402,7 +533,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, ...deps } = {}) {
   return { code: 0, out: r.lines.join('\n') };
 }
 
-module.exports = { tellTwice, main, revive, gather, startEnv, refusal, callerRefusal, serverAlive, serverOf, stopServer, systemdRunOf, settleStarts, exited, systemdRunRefused };
+module.exports = { startOwnUnit, unitOps, unitSettleOf, tellTwice, main, revive, gather, startEnv, refusal, callerRefusal, serverAlive, serverOf, stopServer, systemdRunOf, settleStarts, exited, systemdRunRefused };
 
 if (require.main === module) {
   let r;
