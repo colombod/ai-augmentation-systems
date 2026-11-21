@@ -319,6 +319,7 @@ function launchTeam({ projectRoot, prepared, host, permissionMode, prefix, env, 
       { instance, env: require('./lib/fresh-session-env.js').freshSessionEnv(env, { DELIVERY_ROLE: instance, CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0' }), cwd: roleDir, logPath, stillMissing });
     if (!r.pid) { say(`    ${instance}: not started: ${r.refused ? `systemd-run refused its scope, and no plain start followed (${r.why})` : 'its start ran nothing'}; log ${path.relative(projectRoot, logPath)}`); continue; }
     say(`    ${instance}: started (pid ${r.pid}${r.fallbackFrom ? ', a plain start: systemd-run refused its scope' : ''}), joining the team; log ${path.relative(projectRoot, logPath)}`);
+    if (r.directoryHeld) say(`    ${instance}: its scope ${r.unit} is not registered with the service directory: ${r.directoryHeld}`);
   }
   if (elsewhere.length) say(`    not on this machine: ${elsewhere.join(', ')}; run start.js --launch on each of those hosts`);
   if (permissionMode === 'default') say('    warning: --permission-mode default: a headless session cannot ask you, so steps your default would ask about are refused');
