@@ -1962,8 +1962,8 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   (the watchdog pass, `host-manager.js install` and `install-role`, `watchdog.js install --apply`: no
   POST, and the reply or pass line names it), and the unit is not started, stopped or restarted, so an
   install's start of it is refused and the unit is enabled only (an entry that merely expired with its
-  ttl is registered again). A directory that lost every entry (its registry reset, or empty after a host
-  restart) does not lock the plugin's units out: the directory reports no start time or uptime, so a read
+  ttl is registered again). A directory that lost every entry does not lock the plugin's units out (its registry is a file on disk, so a plain host restart keeps it; it
+  reads empty only when that file is missing or corrupt): the directory reports no start time or uptime, so a read
   in which every name on the plugin's list that is still within its ttl is missing, and no entry of the
   plugin's is listed, is taken as that loss. Its time is kept on the list; a name last seen before it is
   lost, not removed, and is registered again, so the changes go ahead, while a name seen again after it
@@ -1978,7 +1978,9 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   Before a start, stop, restart or replace of a plugin unit (the owner's restart and the tick restarting
   or starting a role's own unit, the owner's restart of each host job's timer and path unit and its one
   run of the job's service, `restart --down-only` and the tick starting a host job unit that is down and
-  running a silent job's service once, the stale-session restart of the host manager, the watchdog's start of
+  running a silent job's service once, the stale-session restart of the host manager, the stale-session replace of a role outside a user unit
+  (the directory must be readable, and the scope of its last start or restart in the ledger, when it has
+  one, must not be another owner's or removed; refused, nothing is stopped, with a `restart-refused` row), the watchdog's start of
   `delivery-host-manager.service`, `team-revive.js start` starting a role's own unit, an install's
   `enable --now`, run-session's replace of a leftover or
   outside session), the unit's entry is read with `GET /api/services/local`. A missing entry the plugin
