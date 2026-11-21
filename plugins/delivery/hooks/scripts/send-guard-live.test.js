@@ -121,6 +121,20 @@ test('a live session of this team named <instance>@<team> is offered by its sock
   assert.match(d.permissionDecisionReason, /by the name to send to: uds:\/run\/x\/42\.sock \(staffing\)\./);
 });
 
+// A bare instance name does not reach a session listed as <instance>@<team>: the send would fail, be reported
+// as "not running" and wait for the watchdog while the role is live, so the sender gets its socket instead.
+test('a bare instance name whose session is live as <instance>@<team> is refused with its socket; with no live session, or no socket, it is still kept for the role', () => {
+  const a = teamWith('alpha', 'builder-1', 'staffing');
+  const atName = { ...live(a.dir('staffing'), 'staffing@alpha'), messagingSocketPath: '/run/x/42.sock' };
+  const d = hook(a.dir('builder-1'), 'builder-1', 'staffing', sessionsDir([atName]));
+  assert.equal(d.permissionDecision, 'deny', JSON.stringify(d));
+  assert.match(d.permissionDecisionReason, /staffing is running: send to uds:\/run\/x\/42\.sock\./);
+  for (const rows of [[], [live(a.dir('staffing'), 'staffing@alpha')]]) {
+    const kept = hook(a.dir('builder-1'), 'builder-1', 'staffing', sessionsDir(rows));
+    assert.ok(!kept || kept.permissionDecision !== 'deny', JSON.stringify(kept));
+  }
+});
+
 // rv-191-delivery-lead-2 finding 3: a send to a name another team's live session also holds is refused,
 // so a refusal never offers it
 test('a live name of ours that another team\'s live session also holds is not offered', () => {

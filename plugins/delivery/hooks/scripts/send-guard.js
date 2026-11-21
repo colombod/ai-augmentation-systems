@@ -227,6 +227,10 @@ function judge(team, to, host, own = null) {
   if (prefix === null && own) {
     const inst = require('../../scripts/lib/manifest.js').expandInstances(team).find((i) => i.instance.toLowerCase() === slug(instance));
     if (inst && noOtherLiveSession(instance, team, own)) {
+      // a bare name does not reach a session listed as <instance>@<team>: the send would fail and be kept as
+      // "not running" while the role is live, so the sender is given the socket that reaches it now
+      const sockets = liveTeamAddresses(team, own).filter((x) => x.instance.toLowerCase() === inst.instance.toLowerCase() && x.to.startsWith('uds:'));
+      if (sockets.length) return { reason: `${inst.instance} is running: send to ${sockets.map((x) => x.to).join(' or ')}.` };
       // no "@" advice: SendMessage refuses that form (hjx.1.6.13)
       return { warn: `delivery: "${SN.bareTarget(to)}" is this team's instance ${inst.instance}, and no live session outside this team holds that name: allowed. If it is not running, the send is kept for ${inst.instance} and the watchdog wakes it with it.` };
     }
