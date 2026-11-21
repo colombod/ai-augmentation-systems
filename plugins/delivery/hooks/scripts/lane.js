@@ -1020,6 +1020,18 @@ function registerHit({ projectRoot, roleDir }) {
   if (roleDir) bases.push(realish(path.join(String(roleDir), 'project')));
   return (p) => { const r = realish(p); return bases.some((b) => REGISTER_REL.test(path.relative(b, r))); };
 }
+// Story files and their index: the gates read each criterion and probe, so only scripts/stories.js
+// writes them, checking every value first (lib/stories.js; plan-sync moves a status through it). Every
+// role, `any` included, by the same paths as the register.
+const STORIES_REASON = 'story files and their index change only through `stories.js` (new --from a draft, set, criterion, section, index)';
+const STORIES_MENTION = /\.delivery\/+(?:\.\/+)*stories\/+[^/\s'"]+\.md\b/i;
+const STORIES_REL = /^\.delivery[\\/]stories[\\/][^\\/]+\.md$/i;
+function storiesHit({ projectRoot, roleDir }) {
+  const bases = [];
+  if (projectRoot && path.isAbsolute(String(projectRoot))) bases.push(realish(String(projectRoot)));
+  if (roleDir) bases.push(realish(path.join(String(roleDir), 'project')));
+  return (p) => { const r = realish(p); return bases.some((b) => STORIES_REL.test(path.relative(b, r))); };
+}
 
 // The watchdog's wake, run, install and uninstall are the host job's, installed by the owner (R-04,
 // R-42): refused to every role, `any` included, in any form (a chain, a wrapper, `node -e`, its shim),
@@ -2166,6 +2178,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
       if (isGoalFile(p, manifestFiles({ projectRoot, roleDir }))) return { allow: false, reason: `Role ${pol.roleId}: ${MANIFEST_REASON}.` };
       if (underOperator(p, usageDirs({ projectRoot, roleDir }))) return { allow: false, reason: `Role ${pol.roleId}: ${USAGE_REASON}.` };
       if (registerHit({ projectRoot, roleDir })(p)) return { allow: false, reason: `Role ${pol.roleId}: ${REGISTER_REASON}.` };
+      if (storiesHit({ projectRoot, roleDir })(p)) return { allow: false, reason: `Role ${pol.roleId}: ${STORIES_REASON}.` };
       if (underOperator(p, prReviewDirs({ projectRoot, roleDir }))) return { allow: false, reason: `Role ${pol.roleId}: ${PR_REVIEWS_REASON}.` };
       if (evidenceLedgerHit({ projectRoot, roleDir })(p)) return { allow: false, reason: `Role ${pol.roleId}: ${EVIDENCE_REASON}.` };
       if (underOperator(p, andonDirs({ projectRoot, roleDir }))) return { allow: false, reason: `Role ${pol.roleId}: ${ANDON_REASON}.` };
@@ -2202,6 +2215,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     if (goalShellWrite(command, { cwd, files: manifestFiles({ projectRoot, roleDir }), mention: MANIFEST_MENTION, gitWrites: [] })) return { allow: false, reason: `Role ${pol.roleId}: ${MANIFEST_REASON}.` };
     if (usageShellWrite(command, { cwd, dirs: usageDirs({ projectRoot, roleDir }) })) return { allow: false, reason: `Role ${pol.roleId}: ${USAGE_REASON}.` };
     if (usageShellWrite(command, { cwd, mention: REGISTER_MENTION, hit: registerHit({ projectRoot, roleDir }) })) return { allow: false, reason: `Role ${pol.roleId}: ${REGISTER_REASON}.` };
+    if (usageShellWrite(command, { cwd, mention: STORIES_MENTION, hit: storiesHit({ projectRoot, roleDir }) })) return { allow: false, reason: `Role ${pol.roleId}: ${STORIES_REASON}.` };
     if (usageShellWrite(command, { cwd, dirs: prReviewDirs({ projectRoot, roleDir }), mention: PR_REVIEWS_MENTION })) return { allow: false, reason: `Role ${pol.roleId}: ${PR_REVIEWS_REASON}.` };
     if (evidenceShellWrite(command, { cwd, hit: evidenceLedgerHit({ projectRoot, roleDir }) })) return { allow: false, reason: `Role ${pol.roleId}: ${EVIDENCE_REASON}.` };
     if (usageShellWrite(command, { cwd, dirs: andonDirs({ projectRoot, roleDir }), mention: ANDON_MENTION, deep: true })) return { allow: false, reason: `Role ${pol.roleId}: ${ANDON_REASON}.` };

@@ -194,8 +194,10 @@ function apply(root, { beads, team, roleDir, env = process.env, now = new Date()
   if (beads) {
     for (const d of storyDrift(root, beads)) {
       if (d.kind !== 'advance') { problems.push(`${d.file} says done, but its bead ${d.bead} is open again: decide with its owner, then set its status`); continue; }
-      fs.writeFileSync(d.abs, setStatus(fs.readFileSync(d.abs, 'utf8'), d.to));
-      written.push(path.join('.delivery', 'stories', d.file));
+      // through the story command's own writer, which checks the value and rewrites the story index
+      const w = require('./stories.js').setStatus(root, d.file, d.to);
+      if (w.field) { problems.push(`${d.file}: its ${w.field} was not moved to ${d.to}: ${w.why}`); continue; }
+      written.push(...w.written);
       lines.push(`${d.file}: ${d.from} -> ${d.to} (bead ${d.bead})`);
     }
   } else problems.push('bd could not be read: story statuses were not checked');
