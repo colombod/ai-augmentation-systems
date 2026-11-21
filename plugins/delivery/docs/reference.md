@@ -1676,11 +1676,15 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   it does not. It refuses a record that is not the owner's
   verified word, a cut outside 1 to 30 minutes, a run without `--restart`, and a second drill on the same
   record. The record must be consent to this drill, scoped one of two ways: its scope carries the label
-  `outage-drill:<host>` for the host the drill would cut, or, when the run is given `--bead <id>`, its
-  scope names that drill bead or its direct story (the bead one dotted level up, not a broader ancestor). The second way is
-  for the owner's consent recorded against the drill's bead rather than the label: the owner answers a
-  question scoped to the bead (`bead:<id>`), which `operator.js` will not re-scope to the label, so the
-  Reality Checker passes `--bead` the drill bead instead. Either way the owner's own words name the
+  `outage-drill:<host>` for the host the drill would cut, or, when the run is given `--bead <id>`, that
+  bead itself carries `outage-drill:<host>` and the record's scope names that bead or its direct story
+  (the bead one dotted level up, not a broader ancestor). The second way is for the owner's consent
+  recorded against the drill's bead rather than the label: the owner answers a question scoped to the bead
+  (`bead:<id>`), which `operator.js` will not re-scope to the label. The bead's label is read from `bd`,
+  never trusted from the caller's `--bead`: a bead that cannot be read, or that does not carry
+  `outage-drill:<this host>`, fails closed, so a `--bead` pointed at an unrelated bead, or the same consent
+  run on another host, is refused. That one label on the bead ties the consent to the drill and to the
+  host. Either way the owner's own words name the
   network cut and the restart
   with no negation. Those words are the verified quote, or, for an answer to a confirmation, the
   question the owner was shown and the answer they picked, captured with their input; a question that

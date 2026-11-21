@@ -170,7 +170,7 @@ test('only a record scoped to a drill on this host, whose owner words name the c
     assert.equal(fs.existsSync(L.ledgerFile(t.root)), false);
   };
   // an unrelated verified owner record: the owner's word, but about something else
-  refused(drillRecord({ labels: ['permission:builder=gh pr close'], quote: 'Yes, let builders close their own pull requests' }), /not scoped to this drill \(its scope needs the label outage-drill:pc\)/);
+  refused(drillRecord({ labels: ['permission:builder=gh pr close'], quote: 'Yes, let builders close their own pull requests' }), /is not consent to this drill on pc: its scope needs the label outage-drill:pc/);
   // scoped to a drill on another host
   refused(drillRecord({ labels: ['outage-drill:other'] }), /needs the label outage-drill:pc/);
   refused(drillRecord(), /needs the label outage-drill:elsewhere/, { DELIVERY_HOST: 'elsewhere' });
@@ -194,50 +194,54 @@ test('only a record scoped to a drill on this host, whose owner words name the c
   refused(drillRecord({ quote: 'Yes, once (Recommended)', text: 'Yes, once (Recommended)', asked: asked('No') }), /do not name the network cut/);
   // the record still verifies as before, and plan says why a record is refused
   const p = setup();
-  assert.match(p.run(['plan', '--record', REC], { verifyRecord: drillRecord({ labels: [] }), ps: () => '' }).out, new RegExp(`consent: ${REC} refused: ${REC} is not scoped to this drill`));
+  assert.match(p.run(['plan', '--record', REC], { verifyRecord: drillRecord({ labels: [] }), ps: () => '' }).out, new RegExp(`consent: ${REC} refused: ${REC} is not consent to this drill`));
 });
 
-// hjx.1.6.6.4: the owner's real consent dec-chief-of-staff-000299 is scoped bead:hjx.1.6 (the drill's
-// story), not the outage-drill:<host> label, and operator.js will not re-scope it. So the drill also
-// accepts a verified owner record whose scope names the drill bead given by --bead, or that bead's story
-// (a dotted-prefix ancestor), with the owner's words still naming the cut and the restart and no negation.
-// The label path and the refusal of any other record are unchanged.
-test('hjx.1.6.6.4: a record scoped to the drill bead or its story is consent when --bead names it; without --bead, or for another bead, only the label counts', () => {
+// hjx.1.6.6.4 / rv-229: the owner's real consent dec-chief-of-staff-000299 is scoped bead:hjx.1.6 (the
+// drill's story), not the outage-drill:<host> label, and operator.js will not re-scope it. So the drill
+// accepts it when --bead names a bead that ITSELF carries outage-drill:<this host> (read from bd, never
+// trusted from the caller) and the record's scope names that bead or its direct story, with the owner's
+// words still naming the cut and the restart and no negation. The label-on-record path is unchanged.
+test('hjx.1.6.6.4: consent is scoped by the drill bead\'s own outage-drill:<host> label, read from bd, not by the caller\'s --bead', () => {
   const BEAD = 'delivery-plugin-planning-hjx.1.6.6';
   const STORY = 'delivery-plugin-planning-hjx.1.6';
-  const beadRec = (beads) => drillRecord({ labels: [], beads });
-  // scoped to the drill bead itself, named by --bead: consent
-  const a = setup();
-  assert.equal(a.run([...RUN, '--bead', BEAD], { verifyRecord: beadRec([BEAD]) }).code, 0, 'the drill bead in scope with --bead is consent');
-  // scoped to the direct story (one level up): consent, since the bead hangs directly under it
-  const b = setup();
-  assert.equal(b.run([...RUN, '--bead', BEAD], { verifyRecord: beadRec([STORY]) }).code, 0, 'the direct story in scope with --bead is consent');
-  // a broader ancestor than the direct story (hjx.1, hjx) must NOT pass: it would widen what authorises a
-  // cut and a restart (rv-225 pre-empt). Only the bead and its direct story count.
+  const beadRec = (beads, quote) => drillRecord({ labels: [], beads, ...(quote ? { quote } : {}) });
+  // the bead carries the host label on this host (pc); unknown beads carry nothing
+  const labels = (want) => (b) => ({ labels: b === want ? ['outage-drill:pc'] : [] });
+  // --bead names the drill bead, which carries outage-drill:pc, and the record is scoped to it: consent
+  assert.equal(setup().run([...RUN, '--bead', BEAD], { verifyRecord: beadRec([BEAD]), beadLabels: labels(BEAD) }).code, 0, 'bead with the host label, record scoped to the bead');
+  // the record scoped to the direct story (one level up) is consent too
+  assert.equal(setup().run([...RUN, '--bead', BEAD], { verifyRecord: beadRec([STORY]), beadLabels: labels(BEAD) }).code, 0, 'record scoped to the direct story');
+  // rv-229 F1/F3: the caller's --bead is not trusted. These probes reached the real commands before the
+  // fix; each must be refused because the named bead does not carry outage-drill:pc.
+  const nolabel = () => ({ labels: [] });
+  // a1: unrelated bead zzz.9, owner words about a billing job
+  assert.equal(setup().run([...RUN, '--bead', 'delivery-plugin-planning-zzz.9'], { verifyRecord: beadRec(['delivery-plugin-planning-zzz.9'], 'Yes, the network was down so cut the network and restart the billing job'), beadLabels: nolabel }).code, 1, 'a1 unrelated bead');
+  // a2: an invented bead
+  assert.equal(setup().run([...RUN, '--bead', 'delivery-plugin-planning-zzz.9.invented'], { verifyRecord: beadRec(['delivery-plugin-planning-zzz.9.invented']), beadLabels: nolabel }).code, 1, 'a2 invented bead');
+  // b3: scope hjx with --bead hjx
+  assert.equal(setup().run([...RUN, '--bead', 'delivery-plugin-planning-hjx'], { verifyRecord: beadRec(['delivery-plugin-planning-hjx']), beadLabels: nolabel }).code, 1, 'b3 broad bead hjx');
+  // b4: scope hjx.1 with --bead hjx.1.x
+  assert.equal(setup().run([...RUN, '--bead', 'delivery-plugin-planning-hjx.1.x'], { verifyRecord: beadRec(['delivery-plugin-planning-hjx.1']), beadLabels: nolabel }).code, 1, 'b4 broad bead hjx.1.x');
+  // e2: the same consent on another host. The bead carries outage-drill:pc, not the running host e2, so
+  // the drill is refused (this catches removing the host check on the bead path).
+  const e2 = setup().run([...RUN, '--bead', BEAD], { verifyRecord: beadRec([BEAD]), beadLabels: labels(BEAD), env: { DELIVERY_HOST: 'e2' }, hostname: 'e2' });
+  assert.equal(e2.code, 1, 'e2 the bead label names pc, not the running host e2');
+  assert.match(e2.out, /needs the label outage-drill:e2/);
+  // the bead carries the label but the record names neither the bead nor its direct story: refused
+  assert.equal(setup().run([...RUN, '--bead', BEAD], { verifyRecord: beadRec(['delivery-plugin-planning-other.9']), beadLabels: labels(BEAD) }).code, 1, 'record scoped to an unrelated bead');
+  // a broader ancestor than the direct story is refused even when the bead carries the label
   for (const broad of ['delivery-plugin-planning-hjx.1', 'delivery-plugin-planning-hjx']) {
-    const w = setup();
-    assert.equal(w.run([...RUN, '--bead', BEAD], { verifyRecord: beadRec([broad]) }).code, 1, `a broad ancestor ${broad} is not consent`);
+    assert.equal(setup().run([...RUN, '--bead', BEAD], { verifyRecord: beadRec([broad]), beadLabels: labels(BEAD) }).code, 1, `broad ancestor ${broad}`);
   }
-  // the same record without --bead: only the label counts, so it is refused
-  const c = setup();
-  const cr = c.run(RUN, { verifyRecord: beadRec([STORY]) });
-  assert.equal(cr.code, 1);
-  assert.match(cr.out, /is not scoped to this drill \(its scope needs the label outage-drill:pc\)/);
-  // --bead names a different bead than the record's scope: refused, and the message names the bead
-  const d = setup();
-  const dr = d.run([...RUN, '--bead', 'delivery-plugin-planning-other.9'], { verifyRecord: beadRec([STORY]) });
-  assert.equal(dr.code, 1);
-  assert.match(dr.out, /needs the label outage-drill:pc, or a bead delivery-plugin-planning-other\.9 or its story/);
-  // a near-miss: the scope bead has the drill bead as a prefix but is a different bead (descendant), not an
-  // ancestor, so it does not name the drill
-  const e = setup();
-  assert.equal(e.run([...RUN, '--bead', STORY], { verifyRecord: beadRec([BEAD]) }).code, 1, 'a descendant bead in scope does not name the drill');
+  // the bead cannot be read: fail closed
+  const unread = setup().run([...RUN, '--bead', BEAD], { verifyRecord: beadRec([BEAD]), beadLabels: () => ({ error: 'bd timed out' }) });
+  assert.equal(unread.code, 1, 'an unreadable bead fails closed');
+  assert.match(unread.out, /could not be read \(bd timed out\)/);
   // the owner's words still decide: a bead-scoped record whose words do not name both is refused
-  const f = setup();
-  assert.match(f.run([...RUN, '--bead', BEAD], { verifyRecord: drillRecord({ labels: [], beads: [BEAD], quote: 'Yes, restart the machine once' }) }).out, /do not name the network cut/);
-  // the label path still works on its own, with no --bead
-  const g = setup();
-  assert.equal(g.run(RUN, { verifyRecord: drillRecord() }).code, 0, 'the label alone is still consent');
+  assert.match(setup().run([...RUN, '--bead', BEAD], { verifyRecord: beadRec([BEAD], 'Yes, restart the machine once'), beadLabels: labels(BEAD) }).out, /do not name the network cut/);
+  // the label-on-record path still works on its own, with no --bead
+  assert.equal(setup().run(RUN, { verifyRecord: drillRecord() }).code, 0, 'the record\'s own label is still consent');
 });
 
 test('run refuses a cut outside 1..30 minutes, a run without --restart, and any role but the Reality Checker', () => {
