@@ -1656,7 +1656,7 @@ function pending(projectRoot, o = {}) {
   const glance = glanceAll.filter((r) => !isTest(r));
   const testRecords = [...unratifiedAll, ...glanceAll].filter(isTest);
   const res = { inputs, tests, test_records: testRecords, open_questions: open, unratified_answers: unratified, delegations_awaiting_glance: glance, problems: st.problems().slice() };
-  if (o.all) res.acked = view.acks.map((a) => ({ input: a.input, reason: a.reason, by: a.by, ts: a.ts, id: a.id })).reverse();
+  if (o.all) res.acked = view.acks.map((a) => ({ input: a.input, reason: a.reason, by: a.by, ts: a.ts, id: a.id, test: a.test === true ? true : undefined })).reverse();
   return res;
 }
 

@@ -994,6 +994,48 @@ test('a test input cannot answer an operator question, so the ledger holds no te
   assert.deepStrictEqual(json(run(cos, ['ledger', '--json'])).rows.map((r) => [r.question.id, r.status, r.answers.length]), [[q, 'open', 0]]);
 });
 
+// rv-227 round 2: nothing read back with --all passes a test record off as the operator's
+test('find --all marks a test record and does not call its words the operator\'s; a real record keeps the label', () => {
+  const { cos } = testFixture();
+  const real = run(cos, ['record', '--cite', 'in-pc-000001', '--quote', 'use postgres for the orders', '--statement', 'Orders use Postgres']).lines[0];
+  const t1 = run(cos, ['record', '--cite', 'in-pc-000002', '--quote', 'record that the test label is t1', '--statement', 'The test label is t1']).lines[0];
+  const lines = run(cos, ['find', '--all']).out.split('\n');
+  const testLine = lines.find((l) => l.startsWith(t1));
+  assert.match(testLine, new RegExp(`^${t1} decision \\[test\\]`));
+  assert.match(testLine, /\(test input: /);
+  assert.ok(!/operator:/.test(testLine), testLine);
+  const realLine = lines.find((l) => l.startsWith(real));
+  assert.ok(!/\[test\]/.test(realLine), realLine);
+  assert.match(realLine, /\(operator: /);
+});
+
+test('pending --all marks an ack of a test input; an ack of the operator\'s own input stays unmarked', () => {
+  const { cos } = testFixture();
+  assert.strictEqual(run(cos, ['ack', '--input', 'in-pc-000002', '--reason', 'a check']).status, 0);
+  assert.strictEqual(run(cos, ['ack', '--input', 'in-pc-000005', '--reason', 'conversational']).status, 0);
+  const text = run(cos, ['pending', '--all']).out;
+  assert.match(text, /^ {2}in-pc-000002 {2}\[test\] {2}a check/m);
+  assert.match(text, /^ {2}in-pc-000005 {2}conversational/m);
+});
+
+test('the one-way rules: a test input ratifies or supersedes nothing real, and a real record does not supersede a test one', () => {
+  const { cos } = testFixture();
+  const realDec = run(cos, ['record', '--cite', 'in-pc-000001', '--quote', 'use postgres for the orders', '--statement', 'Orders use Postgres']).lines[0];
+  const realDel = run(cos, ['delegate', '--cite', 'in-pc-000001', '--quote', 'use postgres for the orders', '--statement', 'orders store', '--grant', 'May pick the orders store.', '--scope', 'bead:ex-7', '--max-uses', '1']).lines[0];
+  const realAns = run(cos, ['answer', '--cite', realDec, '--question', 'Which store?', '--answer', 'Postgres', '--confidence', 'settled']).lines[0];
+  const testDec = run(cos, ['record', '--cite', 'in-pc-000002', '--quote', 'record that the test label is t1', '--statement', 'The test label is t1']).lines[0];
+  const refused = (args, what) => {
+    const r = run(cos, [...args, '--json']);
+    assert.strictEqual(r.status, 1, `${what}: ${r.out}`);
+    assert.strictEqual(json(r).code, 'test_scope', what);
+  };
+  refused(['ratify', '--cite', 'in-pc-000003', '--quote', 'you decide the test naming', '--target', realDel], 'a test ratification');
+  refused(['record', '--cite', 'in-pc-000004', '--quote', 'revoke the postgres decision', '--statement', 'Orders use MySQL', '--supersedes', realDec], 'a test supersede of a decision');
+  refused(['answer', '--cite', testDec, '--question', 'Which store?', '--answer', 'MySQL', '--confidence', 'settled', '--supersedes', realAns], 'a test answer superseding a real answer');
+  refused(['record', '--cite', 'in-pc-000005', '--quote', 'use mysql for reports', '--statement', 'Reports use MySQL', '--supersedes', testDec], 'a real supersede of a test record');
+  for (const id of [realDec, realDel, realAns]) assert.strictEqual(run(cos, ['verify', id]).status, 0, id);
+});
+
 test('the test mark is part of the hashed input: removing it breaks the inputs chain', () => {
   const { root, cos } = testFixture();
   const dir = path.join(root, '.delivery', 'operator', 'inputs');

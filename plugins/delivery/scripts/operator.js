@@ -586,7 +586,7 @@ const handlers = {
     const lines = res.length ? res.map((r) => {
       const sc = Object.entries(r.scope || {}).flatMap(([k, v]) => v.map((x) => `${k.slice(0, -1)}:${x}`)).join(',');
       const extra = [r.confidence ? `[${r.confidence}${r.ratified === true ? ', ratified' : ''}]` : '', sc ? `scope ${sc}` : '', r.superseded_by ? `superseded by ${r.superseded_by}` : ''].filter(Boolean).join(' ');
-      return `${r.id} ${r.kind}${extra ? ' ' + extra : ''}: ${r.statement}${r.quote ? ` (operator: ${quoted(r.quote)})` : ''}${r.grant ? ` GRANT: ${r.grant}` : ''}`;
+      return `${r.id} ${r.kind}${r.test === true ? ' [test]' : ''}${extra ? ' ' + extra : ''}: ${r.statement}${r.quote ? ` (${r.test === true ? 'test input' : 'operator'}: ${quoted(r.quote)})` : ''}${r.grant ? ` GRANT: ${r.grant}` : ''}`;
     }) : ['nothing found'];
     out(ctx, { results: [...res], problems: res.problems, warnings }, [...lines, ...warnings.map((w) => `warning: ${w}`)]);
     return manifestUnavailable(res.problems) ? 1 : 0;
@@ -646,7 +646,7 @@ const handlers = {
     }
     if (p.acked) {
       lines.push(`Acknowledged inputs (${p.acked.length}):`);
-      for (const a of p.acked) lines.push(`  ${a.input}  ${a.reason}  (${a.id})`);
+      for (const a of p.acked) lines.push(`  ${a.input}${a.test === true ? '  [test]' : ''}  ${a.reason}  (${a.id})`);
     }
     if (!lines.length) lines.push('nothing pending');
     out(ctx, { ...p, unpublished: unpub.count, warnings }, [...lines, ...warnings.map((w) => `warning: ${w}`)]);

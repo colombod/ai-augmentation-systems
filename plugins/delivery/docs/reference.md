@@ -2092,7 +2092,8 @@ answers an operator decision (`test_scope`); the operator's own later input can 
 record. `operator.js pending` lists test inputs and test records (delegations, inferred answers) under
 their own headings, apart from the operator's, so the Stop hook never waits on them, the team status
 does not count them, and an ack of a test input never clears a delegation awaiting the operator's
-glance. `find` leaves test records out unless `--all`, and `show` marks them `[test]`. The question
+glance. `find` leaves test records out unless `--all`; `find --all`, `show` and the acknowledged list of
+`pending --all` mark them `[test]`. The question
 ledger holds no test record, because a test record cannot answer a question.
 
 **The loop**, one command per input, in the same turn (`/delivery:decision` has the steps):
