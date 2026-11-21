@@ -529,6 +529,22 @@ test('hjx.1.6.12.1: read then pass: a fix under a story resting on an unobserved
   assert.deepEqual(offered(passOn(other, [intake, child], [child])), ['ex-vault-0n9-3.1']);
 });
 
+// rv-221 round 4: a story known only by its story file answers to the register by that file's id
+test('hjx.1.6.12.1: read then pass: a story known only by its file, and a fix under it, are held by an assumption on that file\'s id; on another story\'s they are offered', () => {
+  const intake = open12('ex-vault-0n9-3', { area: 'collection' });
+  assert.equal(intake.metadata.story, undefined, 'the bead names no story id; only its story file does');
+  const child = { id: 'ex-vault-0n9-3.1', title: 'Fix the intake', status: 'open', assignee: '', priority: 1, parent: 'ex-vault-0n9-3', labels: ['bug'], metadata: { criterion: 1 } };
+  const project = (storyId) => {
+    const root = GF.makeProject();
+    fs.writeFileSync(A.fileOf(root, 'vault'), register(`| A-8 | ${HANDOFF} | external-host | ${storyId}#1 ${storyId}#2 | assumed |  | PM |\n`));
+    return root;
+  };
+  assert.deepEqual(offered(passOn(project('vault-0n9-3'), [intake], [intake])), [], 'the story itself');
+  assert.deepEqual(offered(passOn(project('vault-0n9-3'), [intake, child], [child])), [], 'the fix under it');
+  assert.deepEqual(offered(passOn(project('vault-other'), [intake], [intake])), ['ex-vault-0n9-3']);
+  assert.deepEqual(offered(passOn(project('vault-other'), [intake, child], [child])), ['ex-vault-0n9-3.1']);
+});
+
 // rv-221 round 2: the claim check's ready gate (D1, criteria changed since the story was made ready)
 test('hjx.1.6.12.1: read then pass: a story whose criteria changed since ready is not offered; one whose ready hash matches is', () => {
   const root = GF.makeProject();
