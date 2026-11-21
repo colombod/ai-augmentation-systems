@@ -465,15 +465,20 @@ creates a story from a whole draft written to a temporary file first, and writes
 field passes: a frontmatter value outside the template's (a size other than S, M or L, a status other
 than draft, ready, in-progress, done or superseded), a criterion holding text in angle brackets outside
 a code span, or a criterion whose probe is missing or names no `where:` or no `by: test|reality-check`.
-After that, `set <story> <field> <value>` changes one frontmatter field, `criterion <story> <n> --text '...' --probe '...'`
+It reads a story that opens with a leading HTML comment, as the gates do. After that, `set <story> <field> <value>`
+changes one frontmatter field (validating the exact value written, so a trailing `# ...` is part of the
+value and must pass), `criterion <story> <n> --text '...' --probe '...'`
 replaces criterion n or adds the next one and leaves every other criterion line as it was (so their
-hashes and evidence rows stand), and `section <story> --heading '<heading>' (--body '...' | --body-file <f>)`
-writes a prose section under a heading of `templates/story.md`, matched on the text before any `:` or
-`(`. `<story>` is a file name or a story id. The command rewrites the story index
-(`.delivery/stories/README.md`) on `new` and on a status, title, phase or id change, and `index`
-rewrites it on demand; `plan-sync.js apply` moves a status through the same writer after a merge.
-Only the Delivery Manager runs it in a role session. Every lane, `any` included, refuses a Write, Edit,
-redirect, `sed -i`, `cp` or `mv` onto a story file or the index, naming the command.
+hashes and evidence rows stand), and `section <story> --heading '<heading>' (--body '...' | --body-file <f>) [--new]`
+writes a prose section under a heading the story already has or a `templates/story.md` heading (matched on
+the text before any `:` or `(`); a genuinely new free-text heading needs `--new`. The section write is
+fence-aware (a `## x` inside a code fence is body text, found and replaced whole, not left behind) and a
+rewrite with a section's own current text is byte-identical. Each write is through a temp file and an
+atomic rename. `<story>` is a file name or a story id. A change takes effect in the plan when
+`plan-sync.js apply` publishes it (the merge gate runs it; run it by hand to publish sooner). There is no
+generated story index (ADR-004). Only the Delivery Manager runs it in a role session. Every lane, `any`
+included, refuses a write whose target is a story file — Write, Edit, a redirect, `sed -i`, or a `cp`/`mv`
+into it — naming the command; a read that copies a story out is not a write and is allowed.
 
 **The warnings ledger.** `.delivery/warnings/<instance>.ndjson` in the project repo, one file per
 instance (a session with no role writes `local-<host hash>.ndjson`), so sessions on different hosts

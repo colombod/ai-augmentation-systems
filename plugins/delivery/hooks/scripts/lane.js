@@ -1023,7 +1023,7 @@ function registerHit({ projectRoot, roleDir }) {
 // Story files and their index: the gates read each criterion and probe, so only scripts/stories.js
 // writes them, checking every value first (lib/stories.js; plan-sync moves a status through it). Every
 // role, `any` included, by the same paths as the register.
-const STORIES_REASON = 'story files and their index change only through `stories.js` (new --from a draft, set, criterion, section, index)';
+const STORIES_REASON = 'a story file changes only through `stories.js` (new --from a draft, set, criterion, section); plan-sync.js apply publishes it';
 const STORIES_MENTION = /\.delivery\/+(?:\.\/+)*stories\/+[^/\s'"]+\.md\b/i;
 const STORIES_REL = /^\.delivery[\\/]stories[\\/][^\\/]+\.md$/i;
 function storiesHit({ projectRoot, roleDir }) {
@@ -1546,7 +1546,10 @@ function deepHit(x, dirs, remover) {
   });
 }
 
-function usageShellWrite(command, { cwd, dirs = [], mention = USAGE_MENTION, hit = null, deep = false } = {}) {
+// targetOnly: refuse only when a write TARGET (a redirect destination, a cp/mv/sed-i/tee target) is the
+// guarded file, never on a mere mention. A read that copies a story out (`cat story > /tmp/x`,
+// `cp story /tmp/x`) writes /tmp/x, not the story, so it is allowed (rv-225, finding 5).
+function usageShellWrite(command, { cwd, dirs = [], mention = USAGE_MENTION, hit = null, deep = false, targetOnly = false } = {}) {
   const text = String(command == null ? '' : command);
   let base = cwd || process.cwd();
   return splitCommand(text).some((seg) => {
@@ -1555,11 +1558,19 @@ function usageShellWrite(command, { cwd, dirs = [], mention = USAGE_MENTION, hit
     if (t[0] === 'cd') { const c = cdTarget(t); if (!c.unknown) base = path.resolve(base, c.dir); return false; }
     const words = hasEnvPrefix(t) ? t.filter((x) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(x) && x !== 'env') : t;
     const first = path.basename(words[0] || '');
-    const targets = writeTargets(seg, t);
+    let targets = writeTargets(seg, t);
+    // cp/mv/install/ln/rsync write only their LAST operand; the earlier operands are read sources. Under
+    // targetOnly the guard must not fire on a source (rv-225 finding 5: `cp story out` writes out, not the
+    // story). writeTargets lists every operand for the operator/register guards, so narrow it here.
+    if (targetOnly && ['cp', 'mv', 'install', 'ln', 'rsync'].includes(first)) {
+      const ops = words.slice(1).filter((x) => !x.startsWith('-'));
+      targets = ops.length ? [ops[ops.length - 1]] : [];
+    }
     if ((first === 'sed' && writesFiles(['sed', ...words.slice(1)])) || (first === 'perl' && words.some((x) => /^-[a-zA-Z]*i/.test(x)))) targets.push(...words.slice(1).filter((x) => !x.startsWith('-')));
     if (dirs.length && targets.some((x) => underOperator(path.isAbsolute(x) ? x : `${base}${path.sep}${x}`, dirs))) return true;
     if (deep && dirs.length && targets.some((x) => deepHit(path.isAbsolute(x) ? x : `${base}${path.sep}${x}`, dirs, REMOVERS.includes(first)))) return true;
     if (hit && targets.some((x) => hit(path.isAbsolute(x) ? x : `${base}${path.sep}${x}`))) return true;
+    if (targetOnly) return false;
     if (!mention.test(seg)) return false;
     return hasRedirect(seg) || OPERATOR_WRITE_WORDS.includes(first) || (first === 'git' && GOAL_GIT_WRITES.includes(splitGlobals(['git', ...words.slice(1)]).rest[0]));
   });
@@ -2215,7 +2226,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     if (goalShellWrite(command, { cwd, files: manifestFiles({ projectRoot, roleDir }), mention: MANIFEST_MENTION, gitWrites: [] })) return { allow: false, reason: `Role ${pol.roleId}: ${MANIFEST_REASON}.` };
     if (usageShellWrite(command, { cwd, dirs: usageDirs({ projectRoot, roleDir }) })) return { allow: false, reason: `Role ${pol.roleId}: ${USAGE_REASON}.` };
     if (usageShellWrite(command, { cwd, mention: REGISTER_MENTION, hit: registerHit({ projectRoot, roleDir }) })) return { allow: false, reason: `Role ${pol.roleId}: ${REGISTER_REASON}.` };
-    if (usageShellWrite(command, { cwd, mention: STORIES_MENTION, hit: storiesHit({ projectRoot, roleDir }) })) return { allow: false, reason: `Role ${pol.roleId}: ${STORIES_REASON}.` };
+    if (usageShellWrite(command, { cwd, hit: storiesHit({ projectRoot, roleDir }), targetOnly: true })) return { allow: false, reason: `Role ${pol.roleId}: ${STORIES_REASON}.` };
     if (usageShellWrite(command, { cwd, dirs: prReviewDirs({ projectRoot, roleDir }), mention: PR_REVIEWS_MENTION })) return { allow: false, reason: `Role ${pol.roleId}: ${PR_REVIEWS_REASON}.` };
     if (evidenceShellWrite(command, { cwd, hit: evidenceLedgerHit({ projectRoot, roleDir }) })) return { allow: false, reason: `Role ${pol.roleId}: ${EVIDENCE_REASON}.` };
     if (usageShellWrite(command, { cwd, dirs: andonDirs({ projectRoot, roleDir }), mention: ANDON_MENTION, deep: true })) return { allow: false, reason: `Role ${pol.roleId}: ${ANDON_REASON}.` };

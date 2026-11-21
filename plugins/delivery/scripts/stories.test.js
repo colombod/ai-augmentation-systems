@@ -81,7 +81,7 @@ test('team-runtime-11 c2: an added criterion and probe count for the gate; a bra
     assert.equal(r.code, 1, field);
     assert.match(r.out, new RegExp(`^stories\\.js: ${field}: [^\\n]*\\nNo story file was written`), r.out);
     assert.equal(fs.existsSync(v.abs), false);
-    assert.equal(fs.existsSync(path.join(v.root, S.INDEX)), false);
+    assert.equal(fs.existsSync(path.join(v.root, '.delivery', 'stories', 'README.md')), false);
   }
 });
 
@@ -101,48 +101,61 @@ test('rewriting the middle one of three criteria keeps the lines of the first an
   assert.deepEqual([now.slice(0, at), now.slice(at + 2)], [lines.slice(0, at), lines.slice(at + 2)]);
 });
 
-test('team-runtime-11 c5: prose under Goal, Context or Out of scope is free text; a template heading with a colon or bracket suffix passes, a foreign one does not', () => {
+test('team-runtime-11 c5: prose sections are free text; a template or existing heading is edited, a foreign one needs --new, a code fence is respected, and a same-text rewrite is byte-identical', () => {
   const w = created();
   for (const [heading, body] of [['Goal', 'Whatever words, even <these> and FR-9.'], ['Context: where the importer stands', '| Fact | Where |\n| :-- | :-- |\n| x | y |'], ['Out of scope', '- exports'],
     ['Open questions (for the Product Manager)', '- which encodings?'], ['Split rationale', 'One sitting.'], ['Blast radius', 'No hub.']]) {
     const r = w.run('section', FILE, '--heading', heading, '--body', body);
     assert.equal(r.code, 0, `${heading}: ${r.out}`);
-    assert.ok(w.text().includes(`## ${heading}\n\n${body}\n`), heading);
+    assert.ok(w.text().includes(`## ${heading}`) && w.text().includes(body), heading);
   }
-  // writing Goal again swaps it where it stands, and the criteria hash holds
+  // writing Goal again swaps it where it stands, once, and the criteria hash holds
   const hash = G.storyHash(G.parseStory(w.text()));
   assert.equal(w.run('section', FILE, '--heading', 'Goal', '--body', 'A shorter goal.').code, 0);
   assert.equal(w.text().match(/^## Goal$/gm).length, 1);
-  assert.match(w.text(), /## Goal\n\nA shorter goal\.\n\n## /);
+  assert.ok(w.text().includes('A shorter goal.'));
   assert.equal(G.storyHash(G.parseStory(w.text())), hash);
+  // a foreign heading needs --new; without it, refused; Acceptance criteria is never a section
   const before = w.sha();
-  for (const heading of ['Banana', 'Design decisions', 'Acceptance criteria']) {
+  for (const heading of ['Banana', 'Zzz top']) {
     const r = w.run('section', FILE, '--heading', heading, '--body', 'x');
     assert.equal(r.code, 1, heading);
-    assert.match(r.out, /^stories\.js: heading: /);
+    assert.match(r.out, /^stories\.js: heading: .*--new/);
   }
-  assert.match(w.run('section', FILE, '--heading', 'Goal', '--body', 'x\n## Sneaky').out, /^stories\.js: body: /);
+  assert.match(w.run('section', FILE, '--heading', 'Acceptance criteria', '--body', 'x').out, /^stories\.js: heading: /);
   assert.equal(w.sha(), before);
+  // --new adds a deliberate free-text section, and then it edits without --new (it now exists)
+  assert.equal(w.run('section', FILE, '--heading', 'Design answers', '--body', 'A1.', '--new').code, 0);
+  assert.ok(w.text().includes('## Design answers') && w.text().includes('A1.'));
+  assert.equal(w.run('section', FILE, '--heading', 'Design answers', '--body', 'A2.').code, 0, 'an existing non-template heading edits without --new');
+  assert.ok(w.text().includes('A2.') && !w.text().includes('A1.'));
+  // a ## inside the body outside a fence is refused; inside a fence it is body text (finding 3)
+  assert.match(w.run('section', FILE, '--heading', 'Goal', '--body', 'x\n## Sneaky').out, /^stories\.js: body: /);
+  const fenced = w.run('section', FILE, '--heading', 'Goal', '--body', 'see\n```\n## not a heading\n```\n');
+  assert.equal(fenced.code, 0, fenced.out);
+  // a rewrite with the section's own current inter-heading text changes nothing (rv-225), checked on a
+  // fresh story so earlier edits here do not confound it
+  const w2 = created();
+  const t0 = w2.text();
+  const lines = t0.split('\n');
+  const gi = lines.findIndex((l) => /^## Goal$/.test(l));
+  const gnext = lines.findIndex((l, i) => i > gi && /^## /.test(l));
+  const ownBody = lines.slice(gi + 1, gnext < 0 ? lines.length : gnext).join('\n');
+  assert.equal(w2.run('section', FILE, '--heading', 'Goal', '--body', ownBody).code, 0);
+  assert.equal(w2.text(), t0, 'rewriting Goal with its own body is byte-identical');
 });
 
-test('the generated index shows each story and its status once it is created and when its status moves', () => {
+test('ADR-004: no story index is generated on a new story or a status change', () => {
   const w = created();
-  const index = () => fs.readFileSync(path.join(w.root, S.INDEX), 'utf8');
-  assert.match(index(), /^\| vault-0n9-3 \| Import a collection by dropping a CSV in the chat \| 1 \| draft \| \[vault-0n9-3\.md\]\(vault-0n9-3\.md\) \|$/m);
-  assert.deepEqual(S.setStatus(w.root, FILE, 'in-progress').written, [path.join('.delivery', 'stories', FILE), S.INDEX]);
-  assert.match(index(), /\| 1 \| in-progress \|/);
+  assert.equal(fs.existsSync(path.join(w.root, '.delivery', 'stories', 'README.md')), false, 'new writes no index');
+  assert.deepEqual(S.setStatus(w.root, FILE, 'in-progress').written, [path.join('.delivery', 'stories', FILE)], 'a status move writes only the story');
+  assert.equal(fs.existsSync(path.join(w.root, '.delivery', 'stories', 'README.md')), false, 'status move writes no index');
   const before = w.sha();
-  assert.equal(S.setStatus(w.root, FILE, 'shipped').field, 'status');
+  assert.equal(S.setStatus(w.root, FILE, 'shipped').field, 'status', 'a bad status is still refused, file unchanged');
   assert.equal(w.sha(), before);
-  // the command's own status change rewrites the index too; a size change leaves it as it was
-  const set = w.run('set', FILE, 'status', 'ready');
-  assert.equal(set.code, 0, set.out);
-  assert.match(set.out, /README\.md/);
-  assert.match(index(), /\| 1 \| ready \|/);
-  const kept = index();
-  assert.doesNotMatch(w.run('set', FILE, 'size', 'S').out, /README\.md/);
-  assert.equal(index(), kept);
-  // the command itself turns away a role session that is not the Delivery Manager's
+  // a status change through the command, and the role refusal, are unchanged
+  assert.equal(w.run('set', FILE, 'status', 'ready').code, 0);
+  assert.match(G.parseStory(w.text()).meta.status, /ready/);
   assert.match(stories.main(['set', FILE, 'size', 'S'], { cwd: w.root, who: { root: w.root, roleId: 'builder' } }).out, /^stories\.js: role: /);
 });
 
@@ -171,5 +184,34 @@ test('end to end: the command-made story passes ready.js clean and merge-gate.js
   const m = h.bash('delivery-lead', `${h.script('merge-gate.js')} merged 478`);
   assert.match(m.out, /vault-0n9-3\.md: ready -> in-progress/, m.out);
   assert.match(fs.readFileSync(path.join(S.dirOf(root), FILE), 'utf8'), /^status: in-progress$/m);
-  assert.match(fs.readFileSync(path.join(root, S.INDEX), 'utf8'), /\| in-progress \|/);
+  // ADR-004: no index is generated by the merge-driven status move
+  assert.equal(fs.existsSync(path.join(root, '.delivery', 'stories', 'README.md')), false);
+});
+
+// rv-225 finding 1: a story that opens with a leading HTML comment is read as the gates read it (they
+// strip it), so set/criterion/section/plan-sync work on it. Before the fix, 16 real stories were refused
+// and plan-sync recorded a problem on every apply, which would have blocked every later merge.
+test('rv-225: a story opening with a leading HTML comment is edited, not refused as missing frontmatter', () => {
+  const w = created();
+  const commented = `<!-- generated; edit the source -->\n${w.text()}`;
+  fs.writeFileSync(w.abs, commented);
+  assert.equal(w.run('set', FILE, 'status', 'ready').code, 0, 'set works past a leading comment');
+  assert.match(w.text(), /^status: ready$/m);
+  assert.ok(w.text().startsWith('<!-- generated; edit the source -->\n'), 'the comment is kept');
+  assert.equal(S.setStatus(w.root, FILE, 'in-progress').field, undefined, 'plan-sync setStatus works past a leading comment');
+  assert.equal(S.frontmatterProblem(commented), null, 'the whole-draft check reads it too');
+});
+
+// rv-225 finding 4: the value is validated exactly as it is written. A trailing "# ..." is part of the
+// value (there is no comment convention on a real value), and an old tail is never carried past a new value.
+test('rv-225: set validates and writes the exact value, keeping no stale trailing text', () => {
+  const w = created();
+  assert.match(w.run('set', FILE, 'status', 'done # later').out, /^stories\.js: status: /, 'a status with a trailing # is refused, not silently stripped');
+  assert.match(w.run('set', FILE, 'size', 'M # big').out, /^stories\.js: size: /);
+  // an old value with a tail is fully replaced, not kept
+  assert.equal(w.run('set', FILE, 'status', 'in-progress').code, 0);
+  assert.match(w.text(), /^status: in-progress$/m);
+  assert.equal(w.run('set', FILE, 'status', 'done').code, 0);
+  assert.match(w.text(), /^status: done$/m);
+  assert.doesNotMatch(w.text(), /^status:.*in-progress/m);
 });

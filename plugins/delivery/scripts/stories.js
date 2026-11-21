@@ -1,22 +1,23 @@
 #!/usr/bin/env node
-// scripts/stories.js — the only way a story file or the story index changes (lib/stories.js); every
-// lane refuses a hand write of them.
+// scripts/stories.js — the only way a story file changes (lib/stories.js); every lane refuses a hand
+// write of a story file. The generated index is retired (ADR-004), so there is no index command.
 //   stories.js new --from <draft> [--file <name>.md]   create a story from a whole draft (written to a
 //       temporary file first); nothing is written unless every field passes
 //   stories.js set <story> <field> <value>             one frontmatter field
 //   stories.js criterion <story> <n> --text '<criterion>' --probe '<what>; where: <surface>; by: test|reality-check'
 //       replace criterion n, or add the next one; the others stay byte for byte
-//   stories.js section <story> --heading '<template heading>' (--body '<text>' | --body-file <f>)
-//   stories.js index                                   rewrite the story index from every story
-// <story> is a file name in the stories folder, or a story id. A refusal names the field and leaves
-// the file unchanged. Exit codes: 0 done; 1 refused; 2 usage.
+//   stories.js section <story> --heading '<heading>' (--body '<text>' | --body-file <f>) [--new]
+//       rewrite a section by heading (an existing heading, or a template one); --new adds a free-text section
+// <story> is a file name in the stories folder, or a story id. A change takes effect in the plan when
+// plan-sync.js apply publishes it. A refusal names the field and leaves the file unchanged. Exit codes:
+// 0 done; 1 refused; 2 usage.
 const fs = require('fs');
 const path = require('path');
 const S = require('./lib/stories.js');
 const G = require('./lib/gates.js');
 const { whoAmI } = require('./lib/gate-context.js');
 
-const USAGE = "usage: stories.js new --from <draft> [--file <name>.md] | set <story> <field> <value> | criterion <story> <n> --text '<text>' --probe '<probe>' | section <story> --heading '<heading>' (--body '<text>' | --body-file <f>) | index";
+const USAGE = "usage: stories.js new --from <draft> [--file <name>.md] | set <story> <field> <value> | criterion <story> <n> --text '<text>' --probe '<probe>' | section <story> --heading '<heading>' (--body '<text>' | --body-file <f>) [--new]";
 const VALUE = ['--from', '--file', '--text', '--probe', '--heading', '--body', '--body-file', '--project'];
 // the Delivery Manager writes stories; a session with no role (the plugin used outside a team) may too
 const WRITERS = ['delivery-lead'];
@@ -25,7 +26,8 @@ function parse(argv) {
   const out = { _: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (VALUE.includes(a)) { if (argv[i + 1] === undefined) throw new Error(`${a} needs a value`); out[a.slice(2)] = argv[++i]; }
+    if (a === '--new') out.new = true;
+    else if (VALUE.includes(a)) { if (argv[i + 1] === undefined) throw new Error(`${a} needs a value`); out[a.slice(2)] = argv[++i]; }
     else if (a.startsWith('--')) throw new Error(`unknown option ${a}`);
     else out._.push(a);
   }
@@ -55,7 +57,6 @@ function main(argv, { cwd = process.cwd(), env = process.env, who: given } = {})
   if (!who.root) return { code: 2, out: 'stories.js: no project found; pass --project <root>' };
   if (who.roleId && !WRITERS.includes(who.roleId)) return refuse('role', `stories are the Delivery Manager's to change (this session is ${who.roleId}).`, 'Message the Delivery Manager with the change.');
   const root = who.root;
-  if (cmd === 'index') return { code: 0, out: `wrote ${S.writeIndex(root)}` };
   if (cmd === 'new') {
     if (!a.from || name) return { code: 2, out: USAGE };
     let text;
@@ -66,15 +67,15 @@ function main(argv, { cwd = process.cwd(), env = process.env, who: given } = {})
     const file = a.file || `${id}.md`;
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\.md$/.test(file) || file === 'README.md') return refuse('file', `"${file}" is not a story file name (letters, digits, dots and dashes, ending .md)`);
     if (storyFile(root, id)) return refuse('id', `a story with id ${id} already exists`, `Change it with \`stories.js set ${id} ...\` instead.`);
-    return done(S.change(root, file, () => ({ text }), { create: true, index: true }), `${file} created (${id})`);
+    return done(S.change(root, file, () => ({ text }), { create: true }), `${file} created (${id})`);
   }
   if (!['set', 'criterion', 'section'].includes(cmd) || !name) return { code: 2, out: USAGE };
   const file = storyFile(root, name);
-  if (!file) return refuse('story', `no story ${name}`, 'List them: `stories.js index`, then read the stories folder README.');
+  if (!file) return refuse('story', `no story ${name}`, 'List the stories by reading the stories folder.');
   if (cmd === 'set') {
     if (rest.length !== 2) return { code: 2, out: USAGE };
     const [key, value] = rest;
-    return done(S.change(root, file, (t) => S.setField(t, key, value), { index: ['status', 'title', 'phase', 'id'].includes(key) }), `${file}: ${key} is ${value}`);
+    return done(S.change(root, file, (t) => S.setField(t, key, value)), `${file}: ${key} is ${value}`);
   }
   if (cmd === 'criterion') {
     const n = Number(rest[0]);
@@ -84,7 +85,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, who: given } = {})
   if (a.heading === undefined || (a.body === undefined) === (a['body-file'] === undefined) || rest.length) return { code: 2, out: USAGE };
   let body = a.body;
   if (body === undefined) { try { body = fs.readFileSync(path.resolve(cwd, a['body-file']), 'utf8'); } catch (err) { return refuse('body-file', `no file at ${a['body-file']}`); } }
-  return done(S.change(root, file, (t) => S.setSection(t, a.heading, body)), `${file}: section ${a.heading} written`);
+  return done(S.change(root, file, (t) => S.setSection(t, a.heading, body, { allowNew: a.new === true })), `${file}: section ${a.heading} written`);
 }
 
 module.exports = { main, storyFile };

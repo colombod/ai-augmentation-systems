@@ -55,10 +55,10 @@ test('story statuses follow their beads, only forward; a reopened done story is 
   assert.equal(r.ok, true, r.problems.join('; '));
   assert.equal(s('a-01.md'), 'done');
   assert.equal(s('a-02.md'), 'in-progress');
-  // the move goes through the story command's writer: the index is rewritten and published with it
-  const index = path.join('.delivery', 'stories', 'README.md');
-  assert.match(fs.readFileSync(path.join(w.root, index), 'utf8'), /^\| a-01 \| a-01 \|  \| done \|[^\n]*\n\| a-02 \| a-02 \|  \| in-progress \|/m);
-  assert.match(onOrigin(w, index) || '', /\| a-02 \| a-02 \|  \| in-progress \|/);
+  // the move goes through the story command's writer (ADR-004: no index is generated); the story files
+  // are what is written and published
+  assert.equal(fs.existsSync(path.join(w.root, '.delivery', 'stories', 'README.md')), false);
+  assert.match(onOrigin(w, path.join('.delivery', 'stories', 'a-02.md')) || '', /status: in-progress/);
   // a merged-but-open story is in progress; a cut one and an untouched one say nothing
   fs.writeFileSync(path.join(w.root, '.delivery', 'stories', 'a-04.md'), story('a-04', 'ready'));
   assert.deepEqual(PS.storyDrift(w.root, [bead('x-a-04', 'a-04.md', { labels: ['story', 'state-merged'] })]).map((d) => d.to), ['in-progress']);

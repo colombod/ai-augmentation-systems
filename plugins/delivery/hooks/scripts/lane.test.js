@@ -2211,7 +2211,7 @@ test('team-runtime-11 c4: Write, Edit and shell writes of a story or its index a
       for (const [tool, input] of [['Write', { file_path: abs, content: 'x' }], ['Edit', { file_path: abs, old_string: 'a', new_string: 'b' }],
         ['Bash', { command: `printf x > ${rel}` }], ['Bash', { command: `sed -i 's/ready/done/' ${rel}` }], ['Bash', { command: `cp /tmp/x ${abs}` }], ['Bash', { command: `mv /tmp/x ${abs}` }]]) {
         const d = decide(role, tool, input);
-        assert.ok(d && !d.allow && /change only through `stories\.js`/.test(d.reason), `${role} ${tool} ${JSON.stringify(input)}: ${d && d.reason}`);
+        assert.ok(d && !d.allow && /only through `stories\.js`/.test(d.reason), `${role} ${tool} ${JSON.stringify(input)}: ${d && d.reason}`);
         assert.deepEqual(reasonProblems(d.reason), []);
       }
     }
@@ -2219,8 +2219,20 @@ test('team-runtime-11 c4: Write, Edit and shell writes of a story or its index a
   // the other direction: a draft in a temporary directory, other plan files, and the command itself
   assert.equal(decide(DL, 'Write', { file_path: path.join(os.tmpdir(), 'story-draft.md'), content: 'x' }).allow, true);
   assert.equal(decide(DL, 'Write', { file_path: path.join(proj, 'project', '.delivery', 'sprints', '1.md'), content: 'x' }).allow, true);
+  // rv-225 finding 5: a read that copies a story OUT writes elsewhere, so the stories guard does not fire;
+  // it is anchored to the write target, not a mention of a story path (another guard may still refuse a
+  // write target of its own, so assert only that the stories reason is never the one returned)
+  for (const name of ['a-01-cart.md', 'README.md']) {
+    const rel = ['.delivery', 'stories', name].join('/');
+    for (const read of [`cat ${rel} > out.txt`, `cp ${rel} out.txt`, `cat ${rel} | grep foo`, `diff ${rel} other.md`]) {
+      const d = decide(BUILDER, 'Bash', { command: read });
+      assert.ok(d.allow || !/only through `stories\.js`/.test(d.reason || ''), `stories guard must not fire on a read: ${read}: ${d.reason}`);
+    }
+    // writing TO the story, by contrast, is still refused by the stories guard
+    assert.match(decide(BUILDER, 'Bash', { command: `cp out.txt ${rel}` }).reason, /only through `stories\.js`/, rel);
+  }
   const cmd = (sub) => `node ${PLUGIN_ROOT}/scripts/stories.js ${sub}`;
-  for (const sub of ['new --from /tmp/story-draft.md', 'set a-01-cart size M', `criterion ${['.delivery', 'stories', 'a-01-cart.md'].join('/')} 1 --text t --probe p`, 'section a-01-cart --heading Goal --body x', 'index']) {
+  for (const sub of ['new --from /tmp/story-draft.md', 'set a-01-cart size M', `criterion ${['.delivery', 'stories', 'a-01-cart.md'].join('/')} 1 --text t --probe p`, 'section a-01-cart --heading Goal --body x']) {
     assert.equal(decide(DL, 'Bash', { command: cmd(sub) }).allow, true, sub);
   }
   assert.equal(decide(PM, 'Bash', { command: cmd('set a-01-cart size M') }).allow, false);

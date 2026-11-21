@@ -27,8 +27,10 @@ const dirOf = (root) => path.join(root, '.delivery', 'stories');
 const fail = (field, why) => ({ field, why });
 const outsideCode = (s) => String(s).replace(/`[^`\n]*`/g, '');
 
-// The value a frontmatter line carries: a trailing "# comment" (the template's) is not part of it.
-const bare = (v) => String(v == null ? '' : v).replace(/\s+#.*$/, '').trim();
+// The value a frontmatter line carries, validated and written as-is: there is no "# comment" convention on
+// a real value, so a trailing "# ..." is part of the value and must pass the field's own rule (rv-225: a
+// value was validated with the comment stripped but written whole, so `done # later` slipped through).
+const bare = (v) => String(v == null ? '' : v).trim();
 function valueProblem(key, raw) {
   const v = bare(raw);
   if (!KEYS.includes(key)) return `is not a story field (fields: ${KEYS.join(', ')})`;
@@ -43,12 +45,21 @@ function valueProblem(key, raw) {
   return null;
 }
 
-// { start, end, lines } of the frontmatter block (lines between the --- fences), or null
+// { start, end, lines } of the frontmatter block (lines between the --- fences), or null. A leading HTML
+// comment before the fence is skipped, as gates.js parseStory does (it strips /^<!--...-->\s*/), so the
+// 16 real stories that open with one are read, not refused (plan-sync writes their status through here).
 function frontmatter(text) {
   const lines = String(text).split('\n');
-  if (!/^---\r?$/.test(lines[0] || '')) return null;
-  const end = lines.findIndex((l, i) => i > 0 && /^---\r?$/.test(l));
-  return end > 0 ? { start: 1, end, lines } : null;
+  let open = 0;
+  if (/^\s*<!--/.test(lines[0] || '')) {
+    const close = lines.findIndex((l) => /-->/.test(l));
+    if (close < 0) return null;
+    open = lines.slice(close + 1).findIndex((l) => l.trim() !== '');
+    open = open < 0 ? lines.length : close + 1 + open;
+  }
+  if (!/^---\r?$/.test(lines[open] || '')) return null;
+  const end = lines.findIndex((l, i) => i > open && /^---\r?$/.test(l));
+  return end > 0 ? { start: open + 1, end, lines } : null;
 }
 
 // The first frontmatter line that breaks the contract, as { field, why }, or null
@@ -131,9 +142,11 @@ function setField(text, key, value) {
   const lines = fm.lines.slice();
   const i = lines.findIndex((l, n) => n >= fm.start && n < fm.end && l.startsWith(`${key}:`));
   const v = String(value).trim();
+  // write exactly the validated value; any old trailing text (a stale "# ..." or "PR #12") is replaced,
+  // never carried past the new value (rv-225)
   if (i >= 0) {
-    const m = /^([^:]+:)[ \t]*(.*?)([ \t]+#.*)?(\r?)$/.exec(lines[i]);
-    lines[i] = `${m[1]}${v ? ` ${v}` : ''}${m[3] || ''}${m[4]}`;
+    const cr = /\r$/.test(lines[i]) ? '\r' : '';
+    lines[i] = `${key}:${v ? ` ${v}` : ''}${cr}`;
   } else lines.splice(fm.end, 0, `${key}:${v ? ` ${v}` : ''}`);
   return { text: lines.join('\n') };
 }
@@ -160,52 +173,79 @@ function setCriterion(text, n, crit, probe) {
 const headingKey = (h) => String(h).replace(/^#+\s*/, '').split(/[:(]/)[0].trim().toLowerCase().replace(/[’]/g, "'");
 let templateKeys = null;
 function allowedHeadings() {
-  if (!templateKeys) templateKeys = fs.readFileSync(TEMPLATE, 'utf8').split('\n').filter((l) => /^##\s/.test(l)).map(headingKey);
+  if (!templateKeys) { const t = fs.readFileSync(TEMPLATE, 'utf8').split('\n'); templateKeys = headingLines(t).map((i) => headingKey(t[i])); }
   return templateKeys;
 }
 
-// Write a prose section by heading: replaced where the story has it, else placed in template order.
-function setSection(text, heading, body) {
+// The indexes of `## ` heading lines, skipping any inside a ``` or ~~~ code fence: a fenced "## x" is
+// body text, not a heading (rv-225). A fence opens on a line starting with three or more backticks or
+// tildes and closes on the next line starting with that same marker.
+function headingLines(lines) {
+  const out = [];
+  let fence = null;
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i].replace(/\r$/, '');
+    const marker = (/^\s*(`{3,}|~{3,})/.exec(l) || [])[1] || null;
+    if (fence) { if (marker && marker[0] === fence[0] && marker.length >= fence.length) fence = null; continue; }
+    if (marker) { fence = marker; continue; }
+    if (/^##\s/.test(l)) out.push(i);
+  }
+  return out;
+}
+// true when the body holds a level-1 or level-2 heading outside any code fence (a section body uses ###)
+function bodyHasTopHeading(body) {
+  let fence = null;
+  for (const raw of String(body).split('\n')) {
+    const l = raw.replace(/\r$/, '');
+    const marker = (/^\s*(`{3,}|~{3,})/.exec(l) || [])[1] || null;
+    if (fence) { if (marker && marker[0] === fence[0] && marker.length >= fence.length) fence = null; continue; }
+    if (marker) { fence = marker; continue; }
+    if (/^#{1,2}\s/.test(l)) return true;
+  }
+  return false;
+}
+
+// Write a prose section by heading. The heading may be a template one or one already in the story; a
+// genuinely new free-text heading needs { allowNew } (so a typo is caught, but a deliberate section like
+// "Design answers" can be added). Fence-aware: a "## x" inside a code fence is not a heading, so a fenced
+// section is found and replaced whole, not left with its old tail. A rewrite whose body is the section's
+// current inter-heading text reproduces the file byte for byte (the body is written verbatim, with no
+// reflow), so re-applying a section does not churn it.
+function setSection(text, heading, body, { allowNew = false } = {}) {
   const h = String(heading || '').replace(/^#+\s*/, '').trim();
   const key = headingKey(h);
   const order = allowedHeadings();
   if (!h || /[\r\n]/.test(h)) return fail('heading', 'is one line of text');
   if (key === 'acceptance criteria') return fail('heading', 'Acceptance criteria changes one criterion at a time: `stories.js criterion`');
-  if (!order.includes(key)) return fail('heading', `"${h}" is not a heading of the story template (${order.join(', ')})`);
-  const b = String(body == null ? '' : body).replace(/\s+$/, '');
-  if (/^#{1,2}\s/m.test(b)) return fail('body', 'holds a # or ## heading line; a section body uses ### for its own headings');
+  const b = String(body == null ? '' : body);
+  if (bodyHasTopHeading(b)) return fail('body', 'holds a # or ## heading line; a section body uses ### for its own headings (a fenced ## is fine)');
   const lines = String(text).split('\n');
-  const heads = lines.map((l, i) => (/^##\s/.test(l) ? i : -1)).filter((i) => i >= 0);
+  const heads = headingLines(lines);
   const next = (i) => heads.find((x) => x > i) ?? lines.length;
   const here = heads.find((i) => headingKey(lines[i]) === key);
-  const block = [`## ${h}`, '', ...(b ? [...b.split('\n'), ''] : [])];
-  if (here !== undefined) lines.splice(here, next(here) - here, ...block);
-  else {
-    const later = heads.find((i) => order.indexOf(headingKey(lines[i])) > order.indexOf(key));
-    if (later !== undefined) lines.splice(later, 0, ...block);
+  if (here === undefined && !order.includes(key) && !allowNew) {
+    return fail('heading', `"${h}" is not a heading of the story and not a template heading; add it with --new (or fix the spelling). Template headings: ${order.join(', ')}`);
+  }
+  if (here !== undefined) {
+    // replace the section whole, keeping the heading line; the body is written verbatim between it and the
+    // next heading, so the same body round-trips to the same bytes
+    lines.splice(here, next(here) - here, `## ${h}`, ...b.split('\n'));
+  } else {
+    const block = [`## ${h}`, '', ...(b ? [...b.split('\n'), ''] : [''])];
+    const later = heads.find((i) => order.indexOf(headingKey(lines[i])) > order.indexOf(key) && order.indexOf(headingKey(lines[i])) >= 0);
+    if (order.includes(key) && later !== undefined) lines.splice(later, 0, ...block);
     else lines.push(...(lines[lines.length - 1] === '' ? [] : ['']), ...block);
   }
   return { text: lines.join('\n') };
 }
 
-// The story index, rewritten from every story's frontmatter.
-const cell = (s) => String(s == null ? '' : s).replace(/\|/g, '\\|');
-function indexText(root) {
-  let files = [];
-  try { files = fs.readdirSync(dirOf(root)).filter((f) => f.endsWith('.md') && f !== 'README.md').sort(); } catch (err) { files = []; }
-  const rows = files.map((f) => {
-    const m = G.parseStory(fs.readFileSync(path.join(dirOf(root), f), 'utf8')).meta;
-    return `| ${cell(m.id || f.replace(/\.md$/, ''))} | ${cell(m.title)} | ${cell(bare(m.phase))} | ${cell(bare(m.status))} | [${f}](${f}) |`;
-  });
-  return ['# Stories', '', '> Generated by `stories.js` from each story\'s frontmatter on every new story and status change. Do not edit it by hand.', '',
-    '| Story | Title | Phase | Status | File |', '| :-- | :-- | :-- | :-- | :-- |', ...rows, ''].join('\n');
-}
-const INDEX = path.join('.delivery', 'stories', 'README.md');
-function writeIndex(root) { fs.writeFileSync(path.join(root, INDEX), indexText(root)); return INDEX; }
+// The generated story index is retired (ADR-004): stories.js no longer writes .delivery/stories/README.md
+// on a new story or a status change. The command writes only the one story file it changes.
 
 // One read, check and write under the stories lock: fn(text) returns { text } or { field, why }.
-// Nothing is written on a refusal. Returns { written: [rel paths] } or { field, why }.
-function change(root, file, fn, { create = false, index = false } = {}) {
+// Nothing is written on a refusal. The write is through a temp file in the same directory and an atomic
+// rename, so a crash mid-write never leaves a half-written story (rv-225). Returns { written: [rel] }.
+function change(root, file, fn, { create = false } = {}) {
   const name = path.basename(String(file));
   const abs = path.join(dirOf(root), name);
   fs.mkdirSync(dirOf(root), { recursive: true });
@@ -215,16 +255,15 @@ function change(root, file, fn, { create = false, index = false } = {}) {
     if (!create && !exists) return fail('story', `no story file ${name}`);
     const r = fn(create ? '' : fs.readFileSync(abs, 'utf8'));
     if (r.field) return r;
-    fs.writeFileSync(abs, r.text);
-    const written = [path.join('.delivery', 'stories', name)];
-    if (index) written.push(writeIndex(root));
-    return { written };
+    const tmp = path.join(dirOf(root), `.${name}.${process.pid}.tmp`);
+    try { fs.writeFileSync(tmp, r.text); fs.renameSync(tmp, abs); } finally { try { fs.unlinkSync(tmp); } catch (err) { /* already renamed */ } }
+    return { written: [path.join('.delivery', 'stories', name)] };
   }, { strict: true, waitMs: 1500 });
 }
 
-// The status a script moves (plan-sync after a merge): checked, written, and the index regenerated.
+// The status a script moves (plan-sync after a merge): checked and written, no index.
 function setStatus(root, file, status) {
-  return change(root, file, (text) => setField(text, 'status', status), { index: true });
+  return change(root, file, (text) => setField(text, 'status', status));
 }
 
-module.exports = { KEYS, STATUS, checkDraft, valueProblem, frontmatterProblem, criterionProblem, criteriaBlocks, setField, setCriterion, setSection, headingKey, allowedHeadings, indexText, writeIndex, change, setStatus, dirOf, INDEX };
+module.exports = { KEYS, STATUS, checkDraft, valueProblem, frontmatterProblem, criterionProblem, criteriaBlocks, setField, setCriterion, setSection, headingKey, allowedHeadings, change, setStatus, dirOf };
