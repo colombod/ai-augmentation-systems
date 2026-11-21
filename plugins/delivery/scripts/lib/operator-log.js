@@ -294,7 +294,7 @@ function recordInputs({ projectRoot, host: h, inputs, instance, role, now: at })
   fs.mkdirSync(hostDir(projectRoot, host), { recursive: true });
   chain.withLock(path.join(hostDir(projectRoot, host), '.host.lock'), () => {
     const idx = loadIndex(projectRoot, host);
-    added = appendLocked(projectRoot, host, ok.map((i) => ({ ...i, source: 'human', ext_id: i.ext_id || i.asked.event_id })), idx, { sessionId: null, instance, role, now, transcriptPath: null });
+    added = appendLocked(projectRoot, host, ok.map((i) => ({ ...i, source: transcript.marked('human', i.text), ext_id: i.ext_id || i.asked.event_id })), idx, { sessionId: null, instance, role, now, transcriptPath: null });
     if (added || idx.dirty) writeJsonAtomic(idx.file, { format: INDEX_FORMAT, last_id: idx.last_id, map: Object.fromEntries(idx.map) });
   });
   return { added };

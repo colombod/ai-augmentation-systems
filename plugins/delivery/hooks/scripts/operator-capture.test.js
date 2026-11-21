@@ -295,3 +295,13 @@ test('a role session in the sdk-cli format: no format problem, the typed prompt 
   assert.deepEqual(res.pending.map((p) => p.text), ['record the store choice']);
   assert.doesNotMatch(captureNote(res, PLUGIN_ROOT), /format was not recognised/);
 });
+
+test('the capture hook stores a marked prompt as a test input, apart from the operator\'s own', () => {
+  const { projectRoot, roleDir } = preparedRole('chief-of-staff');
+  const tr = transcript([human('use postgres for the store', 1), human('[reality-check test input] use mysql for reports', 2)]);
+  registerInstance(projectRoot, { instance: 'chief-of-staff', session_id: SID, host: 'pc', model: 'opus', role_dir: roleDir, now: '2026-10-13T09:59:00Z' });
+  const res = withEnv({ DELIVERY_ROLE: 'chief-of-staff', DELIVERY_ROLE_DIR: undefined }, () => captureFromHookInput({ cwd: roleDir, session_id: SID, transcript_path: tr, hook_event_name: 'UserPromptSubmit' }, PLUGIN_ROOT));
+  assert.equal(res.status, 'ok');
+  assert.deepEqual(log.listInputs(projectRoot, { source: 'human' }).map((e) => e.text), ['use postgres for the store']);
+  assert.deepEqual(log.listInputs(projectRoot, { source: 'test' }).map((e) => e.text), ['[reality-check test input] use mysql for reports']);
+});

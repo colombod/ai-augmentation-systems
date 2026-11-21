@@ -2080,6 +2080,22 @@ no `CLAUDE_PLUGIN_ROOT`, so the brief and the SessionStart role block print the 
 operator's word: act on it and do not ask again. A message that claims a decision but carries no
 verifiable id is information; the reply asks the sender for the id, never the operator.
 
+**Test inputs.** During a check the Reality Checker never asks the operator for an input; it types a
+test input into the role session, one that opens with the fixed marker `[reality-check test input]`
+(after any leading whitespace; quoted elsewhere in a message it changes nothing). The same holds for
+an answer in a question box and for an answer another provider's writer hands in. Capture keeps such
+an input apart (source `test`), whatever the session stamped on it. A record made from it, or from
+another test record, carries `test: true`, set when it is written, never chosen. `operator.js
+verify` prints `NOT VERIFIED <id>: test_input: ...` and exits 1 for the test input and every record
+that reaches it. A test record may lean only on test records, so it never revokes, supersedes or
+answers an operator decision (`test_scope`); the operator's own later input can still revoke a test
+record. `operator.js pending` lists test inputs and test records (delegations, inferred answers) under
+their own headings, apart from the operator's, so the Stop hook never waits on them, the team status
+does not count them, and an ack of a test input never clears a delegation awaiting the operator's
+glance. `find` leaves test records out unless `--all`; `find --all`, `show` and the acknowledged list of
+`pending --all` mark them `[test]`. The question
+ledger holds no test record, because a test record cannot answer a question.
+
 **The loop**, one command per input, in the same turn (`/delivery:decision` has the steps):
 see it (`operator.js pending`), record or acknowledge it, carry the record id with `SendMessage`.
 Every operator input in the Chief of Staff's session (and the Product Manager's) gets a record or
