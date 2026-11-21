@@ -1969,11 +1969,71 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   neither resets nor starts the unit, writes no row and says so; nor when the open sessions cannot be
   listed. One `host-manager-start` row in `revive.ndjson` per start: the host jobs restart the host
   manager and the host manager restarts the host jobs.
+- **The service directory.** On a host where the owner runs a service directory (`service-directory`
+  on 127.0.0.1:8085), every unit the plugin writes is an entry there: `delivery-host-manager.service`
+  and its tick service and timer (registered by `host-manager.js install`), a role's own unit
+  (`install-role`), each watchdog host job's `delivery-watchdog-<tag>.service`, `.timer` and `.path`
+  (registered by `watchdog.js install --apply`), and the `delivery-role-*.scope` of each role start in a
+  scope (registered when the start runs, under the name `systemctl --user` lists it by). Each entry is a
+  dynamic one with `owner` "delivery plugin", category `delivery`, tags `systemd-user` and `delivery`, a
+  `url` that names the unit (`systemd-user://<unit>`, never a network address) and a `ttl` of one hour.
+  The directory's registration replaces any entry of the same name, so every registration reads this
+  node's entries (`GET /api/services/local`) first: a name listed under another owner is never posted,
+  and the reply (an install's lines, the watchdog pass line, start.js's line for a scope, or a
+  `directory-held` row for a scope a start pass made) names it and its owner. Each name the plugin
+  registers is kept on a local list, `directory-names.json` beside the host manager's state
+  (`$XDG_STATE_HOME/delivery/host-manager/`, else `~/.local/state/delivery/host-manager/`), with the time
+  of its last registration or heartbeat; the plugin takes a name off the list when it removes the entry
+  itself, and an ended scope's name whose ttl ran out is dropped as the list is written. Each watchdog `run` registers a plugin unit file or active role scope that has no entry (so one
+  written while the directory was down is registered once it is back), sends a heartbeat for each one
+  that is active (the directory's health then reads the heartbeat, not a TCP probe), and removes an entry
+  it owns whose unit is gone, only for a name on its local list (an entry another host or user wrote is
+  left alone); a scope that ended simply expires. An entry the plugin registered that is missing while
+  its ttl has not yet run out since the last registration or heartbeat was removed by someone else: the
+  owner may have taken the unit out of the plugin's hands, so it is not registered again by anything
+  (the watchdog pass, `host-manager.js install` and `install-role`, `watchdog.js install --apply`: no
+  POST, and the reply or pass line names it), and the unit is not started, stopped or restarted, so an
+  install's start of it is refused and the unit is enabled only (an entry that merely expired with its
+  ttl is registered again). A directory that lost every entry does not lock the plugin's units out (its registry is a file on disk, so a plain host restart keeps it; it
+  reads empty only when that file is missing or corrupt): the directory reports no start time or uptime, so a read
+  in which every name on the plugin's list that is still within its ttl is missing, and no entry of the
+  plugin's is listed, is taken as that loss. Its time is kept on the list; a name last seen before it is
+  lost, not removed, and is registered again, so the changes go ahead, while a name seen again after it
+  and then missing is refused as before. The plugin cannot tell an owner who removed every one of its
+  entries at once from a lost directory, and registers them again. A unit that is not active (a oneshot service between runs, a timer's service)
+  gets no heartbeat, so its entry reads up while its ttl lasts after a registration and then expires;
+  the next pass registers it again: its health in the directory says the entry is fresh, not that the
+  unit runs. Writes go from 127.0.0.1, which the directory lets through without a token; the plugin
+  holds none. A directory that cannot be reached never fails an install or a start: the units go in,
+  the reply says they were not registered, and the next pass registers them; within one watchdog run,
+  after the first request that cannot reach the directory the rest of the run does not wait on it again.
+  Before a start, stop, restart or replace of a plugin unit (the owner's restart and the tick restarting
+  or starting a role's own unit, the owner's restart of each host job's timer and path unit and its one
+  run of the job's service, `restart --down-only` and the tick starting a host job unit that is down and
+  running a silent job's service once, the stale-session restart of the host manager, the stale-session replace of a role outside a user unit
+  (the directory must be readable, and the scope of its last start or restart in the ledger, when it has
+  one, must not be another owner's or removed; refused, nothing is stopped, with a `restart-refused` row), the watchdog's start of
+  `delivery-host-manager.service`, `team-revive.js start` starting a role's own unit, an install's
+  `enable --now`, run-session's replace of a leftover or
+  outside session), the unit's entry is read with `GET /api/services/local`. A missing entry the plugin
+  never registered is registered and read again; a missing entry the plugin registered and someone
+  removed, an entry owned by anyone but the plugin, or a unit the plugin did not write, is refused, with
+  the reason in the reply and a `restart-refused` or `start-refused` row that no start cap counts (a
+  refused host job unit is named in the reply with its reason, and the rest of the restart goes ahead). When
+  the directory cannot be read, a stop, restart or replace of a running unit is refused and the reply
+  says the directory could not be read; starting a plugin unit that is down goes ahead, since after a
+  host restart the directory may come up later than the host manager, with a `directory-unreachable`
+  row and a `service-directory-unreachable` warning, and the next pass that reaches the directory
+  registers it. `host-manager.js directory [--json]` reads this node's entries and their health
+  (`GET /api/services/local` and `GET /api/health`), the plugin's own first; it changes nothing and runs
+  in any role session.
 - **The host manager's lane.** Its brief writes nothing and runs `read`, `bd-read`, `bd-notes`,
-  `operator-read`, `judge` and the `host-manager` group: `host-manager.js status|restart|tick`,
-  `team-revive.js check|start`, `systemctl --user` (`status`, `is-active`, `show`, `start`, `restart`,
-  `stop`, which must name a unit, and `list-units`, `list-timers`, `daemon-reload`) where every unit
-  named matches `delivery-watchdog-*.service|.timer|.path` or one of the host manager's three units,
+  `operator-read`, `judge` and the `host-manager` group: `host-manager.js status|directory|restart|tick`,
+  `team-revive.js check|start`, `systemctl --user` reads only (`status`, `is-active`, `show`, which
+  must name a unit, and `list-units`, `list-timers`) where every unit named matches
+  `delivery-watchdog-*.service|.timer|.path` or one of the host manager's three units (a start, stop,
+  restart, enable or reload of those units goes through `host-manager.js`, which reads each unit's
+  entry in the service directory first, never by hand),
   `amplifier run`, `ps`, `df`, `free`, `uptime`, and `sort` and `uniq` with no option or operand that
   writes a file. A lane rule's `positional_match` lists those unit globs (with `positional_required`
   for the commands that act on a unit). Every lane may read the plugin's own user units:
