@@ -36,6 +36,15 @@ const RELAY_MARKER = '(operator tooling, not the owner';
 const RELAY_OPENING = /^[^\n(:]{1,120}\(operator tooling, not the owner[^)\n]*\):/;
 const isRelay = (text) => RELAY_OPENING.test(String(text).trim());
 
+// The test marker (chief-of-staff-11): an input the Reality Checker types into a role session during a
+// check opens with it. Such an input is never the operator's word, whatever stamp the harness gives it,
+// so its source becomes 'test', which every reader that filters 'human' already leaves out. Only an
+// opening counts, so the operator can still quote it; a system record stays system. Like the relay
+// marker it fails safe: it can only take an input away from the operator's word, never add one.
+const TEST_MARKER = '[reality-check test input]';
+const isTestInput = (text) => String(text).trim().startsWith(TEST_MARKER);
+const marked = (source, text) => (source !== 'system' && isTestInput(text) ? 'test' : source);
+
 function textOf(content) {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
@@ -67,6 +76,7 @@ function classifyRecord(record) {
     } else if (kind === 'peer') source = 'peer';
     else if (kind) source = 'system';
     else source = 'unknown';
+    source = marked(source, text);
     return {
       source, text,
       ext_id: a.delivery_id || record.uuid || null,
@@ -98,6 +108,7 @@ function classifyRecord(record) {
     // harness-injected UI notes that carry no origin at all are not operator input either
     source = head.startsWith('<command-name>') || head.startsWith('<local-command') ? 'system' : 'unknown';
   }
+  source = marked(source, text);
   return {
     source, text,
     ext_id: record.promptId || record.uuid || null,
@@ -163,7 +174,7 @@ function readHumanInputs(file, opts = {}) {
         // when the tool_use is in this read, the result must answer what it asked
         const used = put.find((x) => x && x.question === q.question);
         if (!used) return;
-        out.inputs.push({ line: lineNo, source: 'human', text: tur.answers[q.question], ext_id: `${rec.uuid || lineNo}#q${i}`, timestamp: rec.timestamp || null,
+        out.inputs.push({ line: lineNo, source: marked('human', tur.answers[q.question]), text: tur.answers[q.question], ext_id: `${rec.uuid || lineNo}#q${i}`, timestamp: rec.timestamp || null,
           session_id: rec.sessionId || null, uuid: rec.uuid ? `${rec.uuid}#q${i}` : null,
           // a delivery.confirmation/1 record: the question, choices and choice mode as the tool_use put
           // them, and the harness's own ids for the question and the answer, so any session can check it
@@ -255,4 +266,4 @@ function turnIn(file, size, maxBytes) {
   return out;
 }
 
-module.exports = { classifyRecord, readHumanInputs, formatStatus, currentTurn, WAKE_OPENING, RELAY_MARKER };
+module.exports = { classifyRecord, readHumanInputs, formatStatus, currentTurn, WAKE_OPENING, RELAY_MARKER, TEST_MARKER, marked };

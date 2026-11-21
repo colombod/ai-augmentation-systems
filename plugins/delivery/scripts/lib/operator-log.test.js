@@ -611,3 +611,13 @@ test('recordInputs stores another provider\'s delivery.confirmation/1 record who
   assert.strictEqual(log.recordInputs({ projectRoot: root, host: 'pc', inputs: [{ text: 'Yes', asked: { ...asked, contract: 'delivery.confirmation/2', event_id: 'codex:call_2' } }] }).added, 1);
   assert.strictEqual(log.listInputs(root, {}).length, 2);
 });
+
+test('recordInputs: another provider\'s answer opening with the test marker is stored as a test input', () => {
+  const root = project();
+  const asked = (id, answer) => ({ contract: 'delivery.confirmation/1', question: 'Which store?', choices: [], multi_select: false, answer,
+    question_id: null, scope: null, event_id: `codex:${id}`, asked_at: '2026-10-13T10:00:00.000Z', answered_at: '2026-10-13T10:01:00.000Z',
+    provenance: { provider: 'codex', mechanism: 'request_user_input', native_ref: { call_id: id }, transcript_ref: { file: 'rollout.jsonl', line: 7 } } });
+  const inp = (id, text) => ({ text, asked: asked(id, text), timestamp: '2026-10-13T10:01:00.000Z', session_id: 'codex-s1' });
+  assert.strictEqual(log.recordInputs({ projectRoot: root, host: 'pc', inputs: [inp('c1', '[reality-check test input] use mysql'), inp('c2', 'use postgres')], instance: 'chief-of-staff', role: 'chief-of-staff' }).added, 2);
+  assert.deepStrictEqual(log.listInputs(root, {}).map((e) => [e.text, e.source]), [['[reality-check test input] use mysql', 'test'], ['use postgres', 'human']]);
+});
