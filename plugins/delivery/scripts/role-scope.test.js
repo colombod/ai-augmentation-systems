@@ -70,6 +70,7 @@ const PROCESS_FILES = {
   'scripts/lib/publish-records.js': 'git, to publish records',
   'scripts/lib/role-scope.js': 'the role-session start itself: systemd-run, or the plain start',
   'scripts/lib/self-update.js': 'git, gh and `claude plugin`, which start no role session',
+  'scripts/lib/service-directory.js': 'its own file, through node, for one bounded request to the service directory on 127.0.0.1:8085 (the plugin\'s code is synchronous); it starts no session',
   'scripts/lib/session-message.js': 'the socket client that delivers a message to a running session',
   'scripts/lib/team-revive.js': 'systemctl --user is-enabled and is-active, the reads that tell whether a unit the plugin did not write still serves a role directory',
   'scripts/lib/user-guard.js': 'a hook script, through node',
@@ -110,7 +111,8 @@ const UNIT_STARTS = {
   'scripts/team-revive.js#startOwnUnit': 'a unit start through systemctl: reset-failed, then start of the plugin\'s own role unit; it starts no session itself, the unit does',
   'scripts/host-manager.js#installRole': 'a unit start through systemctl: daemon-reload, then enable (with --now only when no session of the role is live) of the plugin\'s own role unit',
   'scripts/host-manager.js#execve': 'the unit\'s own session: run-session replaces itself with claude (process.execve), so the session is the unit\'s main process in the unit\'s cgroup, under its TasksMax',
-  'scripts/watchdog.js#defaultRevive': 'a unit restart through systemctl: restart of the plugin\'s own unit (the host manager\'s, on an older plugin and idle on a fresh read), handed to the start pass as restartUnit; it starts no session itself, the unit does',
+  'scripts/watchdog.js#defaultRevive': 'the unit restart and start it hands the start pass are team-revive.js unitOps, on the host job\'s systemctl; it starts no session itself, the unit does',
+  'scripts/team-revive.js#unitOps': 'a unit restart or start through systemctl of the plugin\'s own unit, each only after its entry in the service directory is read (lib/service-directory.js beforeChange); it starts no session itself, the unit does',
   'scripts/lib/launcher.js#execve': 'the launcher replaces itself with the plugin script it was asked to run (node, never claude), so a unit that runs run-session through it holds that script and the claude it execs as its main process',
 };
 const ALLOWED = {
@@ -292,9 +294,15 @@ test('the starts through a user unit are listed with their reasons, and each is 
   const rs = body('scripts/host-manager.js', 'runSession');
   assert.equal([...rs.matchAll(/\bex\(/g)].length, 1);
   assert.match(rs, /process\.execve/);
-  // the watchdog's start pass restarts a unit only as systemctl --user restart of the unit it is given
+  // the watchdog's start pass gets its unit restart and start from unitOps alone, and unitOps restarts a
+  // unit only as systemctl --user restart, and starts one only through startOwnUnit, each after the read
   const dr = body('scripts/watchdog.js', 'defaultRevive');
-  assert.deepEqual([...dr.matchAll(/runner\(exec\)\(([^;]*)\);/g)].map((m) => m[1]), ["'systemctl', ['--user', 'restart', unit]"]);
+  assert.match(dr, /const ops = TR\.unitOps\(root, \{ exec: runner\(exec\), now, sdFetch: deps\.sdFetch \}\);/);
+  assert.doesNotMatch(dr, /'restart'|'start'/);
+  const uo = body('scripts/team-revive.js', 'unitOps');
+  assert.deepEqual([...uo.matchAll(/\bexec\(([^;]*)\);/g)].map((m) => m[1]), ["'systemctl', ['--user', 'restart', unit]"]);
+  assert.match(uo, /restartUnit: \(unit\) => \{ gate\(unit, 'restart', true\); exec\(/);
+  assert.match(uo, /startUnit: \(unit\) => \{ gate\(unit, 'start', false\); startOwnUnit\(unit, \{ exec \}\); \}/);
   // the launcher's exec runs node on a plugin script, never claude or a command it was handed
   const lb = require('./lib/launcher.js').launcherBody('/p', null, null);
   assert.deepEqual([...lb.matchAll(/process\.execve\(([^\n]*)\);\n/g)].map((m) => m[1]), ['process.execPath, [process.execPath, script, ...process.argv.slice(3)], process.env']);

@@ -6,6 +6,8 @@
 //                                       hold work; per host job unit: running, or stopped since when; a
 //                                       source that cannot be read is a SOURCE UNAVAILABLE line, never
 //                                       counted as running
+//   host-manager.js directory [--json]  read-only: this node's entries in the owner's service directory on
+//                                       127.0.0.1:8085 and their health, the delivery plugin's own first
 //   host-manager.js restart [--down-only] [--json]    the owner's restart: restarts every installed host job (its timer
 //                                       and path units, then one run of its service), running or not, then
 //                                       per team starts the missing role sessions that hold work and
@@ -48,7 +50,7 @@ const HM = require('./lib/host-manager.js');
 const R = require('./lib/team-revive.js');
 const M = require('./lib/manifest.js');
 
-const USAGE = 'usage: host-manager.js status [--json] | host-manager.js restart [--down-only] [--json] | host-manager.js tick | host-manager.js install [--dry-run] --project <root> [--instance <id>] | host-manager.js install-role [--dry-run] --project <root> [--instance <id>] | host-manager.js run-session --project <root> --instance <id>';
+const USAGE = 'usage: host-manager.js status [--json] | host-manager.js directory [--json] | host-manager.js restart [--down-only] [--json] | host-manager.js tick | host-manager.js install [--dry-run] --project <root> [--instance <id>] | host-manager.js install-role [--dry-run] --project <root> [--instance <id>] | host-manager.js run-session --project <root> --instance <id>';
 const PLUGIN_ROOT = path.resolve(__dirname, '..');
 const RESTART_SEC = 30;
 // A session that exits at once (an expired sign-in, a refused flag) must not restart every 30 seconds
@@ -243,15 +245,43 @@ function restart(deps = {}, before, o = {}) {
   // (and path unit) restarted
   const restartJobErrors = {};
   const ranService = {};
+  // each start or restart of a host job's unit (its timer, path unit and service are the plugin's) is made
+  // only after the unit's entry in the service directory is read (lib/service-directory.js beforeChange),
+  // as every other plugin unit's is: a refused one is named in the reply and the rest goes ahead. One
+  // directory for the whole restart: after a request that cannot reach it, the rest do not wait again.
+  const SD = require('./lib/service-directory.js');
+  const sdf = SD.passFetch(deps.sdFetch);
+  const gate = (unit, action, running, root) => SD.beforeChange(unit, { action, running, fetch: sdf, ...(root ? { onUnreachable: SD.unreachableRecorder(root, { now }) } : {}) });
+  const rootOf = (unit) => (before.units.find((x) => x.unit === unit) || {}).root || null;
   for (const j of plan.restartJobs.filter((x) => !x.unavailable)) {
     let failed = null;
-    for (const u of [j.timer, ...(j.path ? [j.path] : [])]) { try { run('systemctl', ['--user', 'restart', u]); } catch (err) { failed = `restarting ${u} failed (${firstLine(err)})`; break; } }
-    if (!failed) { try { run('systemctl', ['--user', 'start', '--no-block', j.service]); ranService[j.service] = true; } catch (err) { failed = `its timer restarted, but one run of ${j.service} did not start (${firstLine(err)})`; ranService[j.service] = firstLine(err); } }
+    for (const u of [j.timer, ...(j.path ? [j.path] : [])]) {
+      // a timer or path unit that is down is started by the restart: with the directory unreachable it goes ahead
+      const up = Boolean((before.units.find((x) => x.unit === u) || {}).running);
+      const g = gate(u, up ? 'restart' : 'start', up, j.root);
+      if (!g.ok) { failed = `${u} is not restarted: ${g.why}`; break; }
+      try { run('systemctl', ['--user', 'restart', u]); } catch (err) { failed = `restarting ${u} failed (${firstLine(err)})`; break; }
+    }
+    if (!failed) {
+      const g = gate(j.service, 'start', false, j.root);
+      if (!g.ok) { failed = `its timer restarted, but ${j.service} is not run: ${g.why}`; ranService[j.service] = `not run: ${g.why}`; }
+      else { try { run('systemctl', ['--user', 'start', '--no-block', j.service]); ranService[j.service] = true; } catch (err) { failed = `its timer restarted, but one run of ${j.service} did not start (${firstLine(err)})`; ranService[j.service] = firstLine(err); } }
+    }
     if (failed) restartJobErrors[j.timer] = failed;
   }
-  for (const unit of plan.jobs) { try { run('systemctl', ['--user', 'start', unit]); } catch (err) { jobErrors[unit] = firstLine(err); } }
+  const gatedJobs = [];
+  for (const unit of plan.jobs) {
+    const g = gate(unit, 'start', false, rootOf(unit));
+    if (!g.ok) { jobErrors[unit] = `not started: ${g.why}`; continue; }
+    gatedJobs.push(unit);
+    try { run('systemctl', ['--user', 'start', unit]); } catch (err) { jobErrors[unit] = firstLine(err); }
+  }
   // one pass of each restarted job at once, not at its next timer tick; --no-block: a run takes minutes
-  for (const u of before.units.filter((x) => x.service && plan.jobs.includes(x.unit))) { try { run('systemctl', ['--user', 'start', '--no-block', u.service]); } catch (err) { jobErrors[u.unit] = jobErrors[u.unit] || `its service did not start: ${firstLine(err)}`; } }
+  for (const u of before.units.filter((x) => x.service && gatedJobs.includes(x.unit))) {
+    const g = gate(u.service, 'start', false, u.root);
+    if (!g.ok) { jobErrors[u.unit] = jobErrors[u.unit] || `not started: its service ${u.service} is not run: ${g.why}`; continue; }
+    try { run('systemctl', ['--user', 'start', '--no-block', u.service]); } catch (err) { jobErrors[u.unit] = jobErrors[u.unit] || `its service did not start: ${firstLine(err)}`; }
+  }
   // a job whose timer runs but which has run no pass: one run of its service, once
   const kickErrors = {};
   for (const k of plan.kick) {
@@ -259,6 +289,8 @@ function restart(deps = {}, before, o = {}) {
     if (ranService[k.service] === true) continue;
     if (ranService[k.service]) { kickErrors[k.service] = ranService[k.service]; continue; }
     if (plan.restartJobs.some((j) => j.service === k.service)) { kickErrors[k.service] = restartJobErrors[k.timer] || 'its timer did not restart'; continue; }
+    const g = gate(k.service, 'start', false, k.root);
+    if (!g.ok) { kickErrors[k.service] = `not started: ${g.why}`; continue; }
     try { run('systemctl', ['--user', 'start', '--no-block', k.service]); } catch (err) { kickErrors[k.service] = firstLine(err); }
   }
   const refused = {};
@@ -267,10 +299,9 @@ function restart(deps = {}, before, o = {}) {
   const held = {};
   const unforced = {};
   const oldSessions = {};
-  // a role a user unit serves is restarted through that unit (lib/team-revive.js remoteControlUnitFor)
-  const restartUnit = (unit) => run('systemctl', ['--user', 'restart', unit]);
-  // a missing role the plugin's own unit serves is started through it (team-revive.js startOwnUnit)
-  const startUnit = (unit) => require('./team-revive.js').startOwnUnit(unit, { exec: run });
+  // a role the plugin's own unit serves is restarted, or started when missing, through that unit, each only
+  // after its entry in the service directory is read (team-revive.js unitOps)
+  const opsOf = (root) => TR.unitOps(root, { exec: run, sdFetch: sdf, now });
   // each unit start or restart is settled as a spawned start is: down after SETTLE_MS, it is a failed start
   const unitSettle = require('./team-revive.js').unitSettleOf(run, sleep);
   for (const t of before.teams) {
@@ -282,7 +313,7 @@ function restart(deps = {}, before, o = {}) {
     refused[root] = {};
     let r;
     try {
-      r = TR.revive(root, t.team, { start: true, cwd: deps.cwd, env: deps.env || process.env, home: deps.home, live: before.live, relist: () => sessionsNow(deps), only: want, ...(force.length ? { force } : {}), restartUnit, startUnit, unitSettle, ...(deps.spawn ? { spawn: deps.spawn } : {}), ...(deps.stop ? { stop: deps.stop } : {}), ...(deps.teamDeps ? deps.teamDeps(root) : {}) });
+      r = TR.revive(root, t.team, { start: true, cwd: deps.cwd, env: deps.env || process.env, home: deps.home, live: before.live, relist: () => sessionsNow(deps), only: want, ...(force.length ? { force } : {}), ...opsOf(root), unitSettle, sdFetch: sdf, ...(deps.spawn ? { spawn: deps.spawn } : {}), ...(deps.stop ? { stop: deps.stop } : {}), ...(deps.teamDeps ? deps.teamDeps(root) : {}) });
     } catch (err) { for (const i of want) refused[root][i] = `the start failed: ${firstLine(err)}`; for (const i of force) (unforced[root] = unforced[root] || {})[i] = `the restart pass failed: ${firstLine(err)}`; continue; }
     started[root] = {};
     // a start that exited within its settle is recorded failed by the start pass: named, not waited for
@@ -513,7 +544,67 @@ function installTarget(root, o = {}, { env = process.env, hostname } = {}) {
 // rewritten, so an owner's edit of the tick service or timer survives; the reload, enable and start
 // still run, which is how a run repeats an enable that failed without writing anything again.
 // deps.writeFile: the write of a unit file (a test's failing write).
-function install(root, o = {}, { env = process.env, home = os.homedir(), exec, has, hostname, cwd, who, writeFile = fs.writeFileSync, live } = {}) {
+// directory [--json]: read-only, this node's entries in the owner's service directory (GET
+// /api/services/local) with their health (GET /api/health), the plugin's own first. Exit 1 when the
+// directory cannot be read.
+function directory({ json = false, sdFetch } = {}) {
+  const SD = require('./lib/service-directory.js');
+  const l = SD.local({ fetch: sdFetch });
+  if (l.unreadable) return { code: 1, out: `host-manager.js: ${l.unreadable}.` };
+  const h = SD.health({ fetch: sdFetch });
+  const health = h.health || {};
+  const rows = l.entries.filter((e) => e && e.name).map((e) => ({ name: e.name, owner: e.owner || null, source: e.source || null, url: e.url || ((e.links || [])[0] || {}).url || null, health: health[e.name] || null, ours: e.owner === SD.OWNER }))
+    .sort((a, b) => Number(b.ours) - Number(a.ours) || a.name.localeCompare(b.name));
+  if (json) return { code: 0, out: JSON.stringify({ base: SD.BASE, entries: rows, ...(h.unreadable ? { health_unreadable: h.unreadable } : {}) }, null, 2) };
+  const lines = [`Service directory ${SD.BASE}: ${rows.length} entr${rows.length === 1 ? 'y' : 'ies'} on this node, ${rows.filter((r) => r.ours).length} the delivery plugin's.`];
+  for (const r of rows) lines.push(`${r.ours ? 'Plugin' : 'Other'}: ${r.name}, ${r.health || 'health not known'}${r.owner && !r.ours ? `, owner ${r.owner}` : ''}${r.source ? `, ${r.source}` : ''}${r.url ? `, ${r.url}` : ''}`);
+  if (h.unreadable) lines.push(`Health could not be read: ${h.unreadable}.`);
+  return { code: 0, out: lines.join('\n') };
+}
+
+// The units an install writes, registered with the owner's service directory (dec-chief-of-staff-000485)
+// as they are written: lines that say so. The directory's entries are read once first, and a name it lists
+// under another owner is never posted (POST upserts: it would become the plugin's), only named. A directory
+// that cannot be reached never fails the install; the watchdog's next pass registers what is missing
+// (watchdog.js directoryPass).
+function registerUnits(units, sdFetch, { env, home } = {}) {
+  const SD = require('./lib/service-directory.js');
+  const done = [];
+  const held = [];
+  const removed = [];
+  const failed = [];
+  const l = SD.local({ fetch: sdFetch });
+  for (const n of units) {
+    const g = l.unreadable ? { ok: false, why: l.unreadable } : SD.register(n, { fetch: sdFetch, entries: l.entries, env, home });
+    if (g.ok) done.push(n); else if ('held' in g) held.push(`${n} (${g.why})`); else if (g.removed) removed.push(n); else failed.push(g.why);
+  }
+  return [done.length ? `Registered with the service directory: ${done.join(', ')}` : null,
+    held.length ? `Not registered with the service directory, held by another owner: ${held.join('; ')}` : null,
+    removed.length ? `Not registered with the service directory again, its entry removed since the plugin registered it (the owner may have taken it out of the plugin's hands): ${removed.join(', ')}` : null,
+    failed.length ? `Not registered with the service directory: ${[...new Set(failed)].join('; ')}; the watchdog's next pass registers them` : null].filter(Boolean);
+}
+// Each `enable --now` of an install starts a unit: its directory entry is read first (lib/service-directory.js
+// beforeChange). A unit that is down starts even while the directory cannot be read (a row and a warning);
+// a refused start is enabled only, and the line says why. -> { commands, lines }
+function gateStarts(root, commands, { run, sdFetch, now }) {
+  const SD = require('./lib/service-directory.js');
+  const lines = [];
+  const out = commands.map(([c, a]) => {
+    if (c !== 'systemctl' || !a.includes('--now')) return [c, a];
+    const unit = a[a.length - 1];
+    let st = '';
+    try { st = String(run('systemctl', ['--user', 'is-active', unit]) || ''); } catch (err) { st = String((err && err.stdout) || ''); }
+    // a unit already active is not started by --now (a start of a running unit does nothing): no change to read for
+    if (st.trim().split('\n')[0] === 'active') return [c, a];
+    const g = SD.beforeChange(unit, { action: 'start', running: false, fetch: sdFetch, onUnreachable: SD.unreachableRecorder(root, { now }) });
+    if (g.ok) return [c, a];
+    lines.push(`Not started now: ${g.why}; ${unit} is enabled only.`);
+    return [c, a.filter((x) => x !== '--now')];
+  });
+  return { commands: out, lines };
+}
+
+function install(root, o = {}, { env = process.env, home = os.homedir(), exec, has, hostname, cwd, who, writeFile = fs.writeFileSync, live, sdFetch, now } = {}) {
   const no = guard('install', { cwd, env, who });
   if (no) return { code: 1, out: no, wrote: [] };
   if (!whichOf(has)('systemctl')) return { code: 1, out: 'host-manager.js: this host has no systemctl, so the host manager\'s units cannot be installed here; nothing was installed.', wrote: [] };
@@ -557,7 +648,10 @@ function install(root, o = {}, { env = process.env, home = os.homedir(), exec, h
     // before the units are enabled: systemd opens the tick's StandardOutput=append: file itself and
     // fails the service (status 209/STDOUT) when its directory is missing
     fs.mkdirSync(u.stateDir, { recursive: true });
-    for (const [cmd, args] of commands) { run(cmd, args); lines.push(`Ran: ${cmd} ${args.join(' ')}`); }
+    lines.push(...registerUnits(u.files.map((f) => path.basename(f.file)), sdFetch, { env, home }));
+    const gated = gateStarts(root, commands, { run, sdFetch, now });
+    for (const [cmd, args] of gated.commands) { run(cmd, args); lines.push(`Ran: ${cmd} ${args.join(' ')}`); }
+    lines.push(...gated.lines);
     if (notNow) lines.push(`Not started now: ${notNow}`);
   } catch (err) { return { code: 1, out: `${lines.join('\n')}\nhost-manager.js: not installed (${firstLine(err)})`.trim(), wrote, kept, attempted: true }; }
   lines.push(`Installed. ${head}`);
@@ -608,7 +702,7 @@ function roleTarget(root, o, { env, hostname }) {
 // that session is gone. A user unit someone else wrote that serves the same directory (a hand-written
 // Remote Control service) refuses the install: two start paths would serve one directory. That unit is
 // the owner's, so it is named with the fix and never edited, stopped or disabled here.
-function installRole(root, o = {}, { env = process.env, home = os.homedir(), exec, has, hostname, cwd, who, live, writeFile = fs.writeFileSync } = {}) {
+function installRole(root, o = {}, { env = process.env, home = os.homedir(), exec, has, hostname, cwd, who, live, writeFile = fs.writeFileSync, sdFetch, now } = {}) {
   const no = guard('install-role', { cwd, env, who });
   if (no) return { code: 1, out: no, wrote: [] };
   if (!whichOf(has)('systemctl')) return { code: 1, out: 'host-manager.js: this host has no systemctl, so the Chief of Staff\'s unit cannot be installed here; nothing was installed.', wrote: [] };
@@ -640,7 +734,10 @@ function installRole(root, o = {}, { env = process.env, home = os.homedir(), exe
     if (lp) throw new Error(lp);
     fs.mkdirSync(path.dirname(u.file), { recursive: true });
     writeFile(u.file, u.body); wrote.push(u.file); lines.push(`Wrote ${u.file}`);
-    for (const [c, a] of commands) { run(c, a); lines.push(`Ran: ${c} ${a.join(' ')}`); }
+    lines.push(...registerUnits([u.unit], sdFetch, { env, home }));
+    const gated = gateStarts(root, commands, { run, sdFetch, now });
+    for (const [c, a] of gated.commands) { run(c, a); lines.push(`Ran: ${c} ${a.join(' ')}`); }
+    lines.push(...gated.lines);
     if (notNow) lines.push(`Not started now: ${notNow}.`);
   } catch (err) { return { code: 1, out: `${lines.join('\n')}\nhost-manager.js: not installed (${firstLine(err)})`.trim(), wrote }; }
   lines.push(`Installed. ${head}`);
@@ -748,7 +845,7 @@ function outsideUnit(running, { server, cgroupOf, roleDir, home, unitOf, exec } 
   return { session: s, server: srv.pid, leftover };
 }
 // deps (tests): server (team-revive's serverOf), cgroupOf(pid), stop (team-revive's stopServer), exec (systemctl, for the unit's MainPID).
-function runSession(root, o, { env = process.env, home = os.homedir(), hostname, execve, resolveBin, now, live, server, cgroupOf, stop, exec } = {}) {
+function runSession(root, o, { env = process.env, home = os.homedir(), hostname, execve, resolveBin, now, live, server, cgroupOf, stop, exec, sdFetch } = {}) {
   let team;
   try { team = M.loadManifest(root).team; } catch (err) { return { code: 1, out: `host-manager.js: the team at ${root} could not be read (${firstLine(err)}); no session started.` }; }
   const host = R.hostOf(env, hostname !== undefined ? hostname : os.hostname());
@@ -786,6 +883,9 @@ function runSession(root, o, { env = process.env, home = os.homedir(), hostname,
     const fresh = again.find((s) => s && s.sessionId === out.session.sessionId);
     const others = again.filter((s) => match(s) && s.sessionId !== out.session.sessionId);
     if (!fresh || fresh.status !== 'idle' || others.length) return already;
+    // a replace stops a running session: read the unit's directory entry first; unreadable, it is not made
+    const sdg = require('./lib/service-directory.js').beforeChange(HM.UNIT, { action: 'replace', running: true, fetch: sdFetch });
+    if (!sdg.ok) return { code: ALREADY_RUNNING, out: `${already.out} It is not replaced: ${sdg.why}.` };
     if (!(stop || require('./team-revive.js').stopServer)(out.server, out.session.pid)) return { code: 1, out: `host-manager.js: the host-manager session ${out.session.sessionId} runs outside ${HM.UNIT}, and its Remote Control server (pid ${out.server}) did not stop; no session started.` };
     R.record(root, { type: 'host-manager-replaced', at: now || new Date().toISOString(), instance: hm.instance, server: out.server, pid: out.session.pid || null, session: out.session.sessionId, ...(out.leftover ? { leftover: true } : {}) });
     replaced = `host-manager.js: replaced the host-manager session ${out.session.sessionId}, whose Remote Control server (pid ${out.server}) ${out.leftover ? `ran in ${HM.UNIT}'s cgroup as a leftover, not its main process` : 'ran in no unit'}: stopped while idle, and the unit's own session starts.`;
@@ -820,8 +920,8 @@ function main(argv, { cwd = process.cwd(), env = process.env, who, ...deps } = {
   let o;
   try { o = parse(argv); } catch (err) { return { code: 2, out: `host-manager.js: ${err.message}\n${USAGE}` }; }
   const [cmd] = o._;
-  if (!['status', 'restart', 'tick', 'install', 'install-role', 'run-session'].includes(cmd) || o._.length > 1) return { code: 2, out: USAGE };
-  if (cmd !== 'status') {
+  if (!['status', 'directory', 'restart', 'tick', 'install', 'install-role', 'run-session'].includes(cmd) || o._.length > 1) return { code: 2, out: USAGE };
+  if (cmd !== 'status' && cmd !== 'directory') {
     const me = who || (() => { try { return require('./lib/gate-context.js').whoAmI({ cwd, env }); } catch (err) { return {}; } })();
     const no = refusal(cmd, cwd, env, me, o.instance);
     if (no) return { code: 1, out: no };
@@ -839,6 +939,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, who, ...deps } = {
     if (!o.project) return { code: 2, out: `host-manager.js: install needs --project <root> (the team whose manifest holds the host manager)\n${USAGE}` };
     return install(path.resolve(o.project), o, d);
   }
+  if (cmd === 'directory') return directory({ json: o.json, sdFetch: d.sdFetch });
   if (cmd === 'status') {
     const r = status(d);
     return { code: 0, out: o.json ? JSON.stringify({ teams: r.read.teams, units: r.read.units, unavailable: r.read.unavailable }, null, 2) : r.lines.join('\n') };
@@ -852,7 +953,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, who, ...deps } = {
   return tick(d);
 }
 
-module.exports = { UNIT_ROLES, roleUnitName, roleUnitFiles, installRole, liveHostManager, main, read, status, restart, tick, install, installTarget, runSession, sessionArgs, unitFiles, refusal, deliverAlert, lastPassOf, factsOf, sessionsNow, POLL_EVERY_MS, POLL_MAX_MS };
+module.exports = { UNIT_ROLES, registerUnits, roleUnitName, roleUnitFiles, installRole, liveHostManager, main, read, status, restart, tick, install, installTarget, runSession, sessionArgs, unitFiles, refusal, deliverAlert, lastPassOf, factsOf, sessionsNow, POLL_EVERY_MS, POLL_MAX_MS };
 
 if (require.main === module) {
   let r;

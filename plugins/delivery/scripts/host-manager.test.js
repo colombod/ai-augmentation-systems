@@ -13,6 +13,8 @@ const HMS = require('./host-manager.js');
 const HM = require('./lib/host-manager.js');
 const R = require('./lib/team-revive.js');
 const watchdog = require('./watchdog.js');
+const { fakeDirectory } = require('./testing/fake-service-directory.js');
+const SD = require('./lib/service-directory.js');
 
 // The guards read the process this runs in as well as what a caller passes: the tests run from a
 // directory that is no role directory, with no role in the environment, and put both back after.
@@ -114,6 +116,8 @@ function machine({ alphaRoles, betaRoles, beads = {}, live, units, bd = {}, host
   fs.mkdirSync(config, { recursive: true });
   const m = {
     base, home, alpha, beta, sd, spawned, alive, config, stops,
+    // the owner's service directory, a fake: every request the plugin makes to it, and its entries
+    dir: fakeDirectory(),
     beads: { [alpha.root]: beads.alpha || [], [beta.root]: beads.beta || [] },
     live: live !== undefined ? live : [],
     now: T0,
@@ -129,7 +133,7 @@ function machine({ alphaRoles, betaRoles, beads = {}, live, units, bd = {}, host
   };
   m.deps = () => ({
     env: { DELIVERY_HOST: 'pc', PATH: '/usr/bin', USER: 'dev' },
-    home, exec: sd.exec, has: () => true, live: () => m.live, spawn, cwd: base, who: { roleId: null }, now: m.now,
+    home, exec: sd.exec, has: () => true, live: () => m.live, spawn, cwd: base, who: { roleId: null }, now: m.now, sdFetch: m.dir.fetch,
     sleep: (msec) => { m.sleeps.push(msec); m.clockMs += msec; }, clock: () => m.clockMs,
     // a stopped server's session leaves the list, as a real one does
     stop: (server, pid) => { stops.push({ server, pid }); m.events.push(`stop ${server}`); if (Array.isArray(m.live)) m.live = m.live.filter((x) => !(pid && x.pid === pid)); return true; },
@@ -458,6 +462,59 @@ test('the start caps hold the owner\'s restart of a running role and say when it
   assert.match(r.out, /^Not restarted now: alpha builder \(held: started .*; the next start is after .* \(one start an hour\)\)\.$/m, r.out);
 });
 
+// Read before change (dec-chief-of-staff-000485): the owner's restart reads a plugin unit's entry in the
+// service directory before it restarts or starts it.
+test('the owner\'s restart reads the unit\'s directory entry first: the plugin\'s own is restarted, a missing one is registered and read again, another owner\'s is refused; unreachable, a running unit is refused and a down one is started with a row and a warning', () => {
+  const ownExec = (m) => `/usr/bin/env "node" "${path.join(m.alpha.root, '.delivery', 'bin', 'delivery.js')}" "host-manager.js" "run-session" "--project" "${m.alpha.root}" "--instance" "chief-of-staff"`;
+  const own = (m) => `delivery-role-chief-of-staff-${tag(m.alpha.root)}.service`;
+  const running = (dir) => {
+    const m = machine({ beads: WORK });
+    if (dir) m.dir = dir;
+    const c = runningRole(m, m.alpha, 'chief-of-staff', { pid: 72, server: false, bridge: null });
+    roleUnit(m, c.dir, own(m), ownExec(m));
+    m.sd.units[own(m)] = loaded(true);
+    return m;
+  };
+  const restarts = (m) => m.sd.calls.filter((x) => x === `systemctl --user restart ${own(m)}`).length;
+  // its own entry: read, then restarted
+  const a = running();
+  a.dir.entries.push(SD.entryFor(own(a)), ...Object.keys(a.sd.units).filter((u) => /^delivery-watchdog-/.test(u)).map((u) => SD.entryFor(u)), ...Object.keys(a.sd.units).filter((u) => /^delivery-watchdog-.*\.timer$/.test(u)).map((u) => SD.entryFor(u.replace(/\.timer$/, '.service'))));
+  a.run(['restart']);
+  assert.equal(restarts(a), 1);
+  assert.ok(a.dir.calls.includes('GET /api/services/local'));
+  assert.ok(!a.dir.calls.includes('POST /api/services'), 'nothing to register');
+  // missing: registered, read again, restarted
+  const b = running();
+  b.run(['restart']);
+  assert.equal(restarts(b), 1);
+  assert.deepEqual(b.dir.calls.slice(0, 3), ['GET /api/services/local', 'POST /api/services', 'GET /api/services/local']);
+  assert.equal(b.dir.entry(own(b)).owner, 'delivery plugin');
+  // another owner: refused with the reason, no restart, no cap counted
+  const c = running();
+  c.dir.entries.push({ ...SD.entryFor(own(c)), owner: 'colombod' });
+  const rc = c.run(['restart']);
+  assert.equal(restarts(c), 0, c.sd.calls.join('\n'));
+  assert.match(rc.out, new RegExp(`${esc(own(c))} was not restarted: the service directory lists ${esc(own(c))} as owned by "colombod", not by the delivery plugin`), rc.out);
+  assert.deepEqual(R.ledger(c.alpha.root).filter((x) => x.instance === 'chief-of-staff').map((x) => x.type), ['restart-refused']);
+  // unreachable: the running unit is not restarted, and the reply says the directory could not be read
+  const d = running(fakeDirectory({ down: true }));
+  const rd = d.run(['restart']);
+  assert.equal(restarts(d), 0);
+  assert.match(rd.out, /was not restarted: the service directory at http:\/\/127\.0\.0\.1:8085 could not be reached .*a restart of a running unit is not made/, rd.out);
+  // unreachable, the role down: its plugin unit is started, with a row and a warning, and registered on the next pass that reaches the directory
+  const e = machine({ beads: WORK });
+  e.dir = fakeDirectory({ down: true });
+  roleUnit(e, e.alpha.dir('chief-of-staff'), own(e), ownExec(e));
+  e.sd.units[own(e)] = loaded(false);
+  e.run(['restart']);
+  assert.ok(e.sd.calls.includes(`systemctl --user start ${own(e)}`), e.sd.calls.join('\n'));
+  assert.deepEqual(R.ledger(e.alpha.root).filter((x) => x.type === 'directory-unreachable').map((x) => [x.unit, x.action]), [[own(e), 'start']]);
+  assert.deepEqual(require('./lib/warnings.js').list(e.alpha.root).map((w) => w.kind), ['service-directory-unreachable']);
+  e.dir.down = false;
+  watchdog.directoryPass(e.alpha.root, { home: e.home, exec: e.sd.exec, sdFetch: e.dir.fetch });
+  assert.equal(e.dir.entry(own(e)).owner, 'delivery plugin', 'registered once the directory is back');
+});
+
 test('the owner\'s restart restarts a role through the plugin\'s own unit when idle, never in a scope; a unit the plugin did not write is named with the fix and never restarted, and with both on one directory neither is', () => {
   const ownExec = (m) => `/usr/bin/env "node" "${path.join(m.alpha.root, '.delivery', 'bin', 'delivery.js')}" "host-manager.js" "run-session" "--project" "${m.alpha.root}" "--instance" "chief-of-staff"`;
   const own = (m) => `delivery-role-chief-of-staff-${tag(m.alpha.root)}.service`;
@@ -766,7 +823,7 @@ test('the watchdog\'s start pass settles its host manager unit restart through i
   const lines = watchdog.defaultRevive(m.alpha.root, {
     team: m.alpha.team, env: { DELIVERY_HOST: 'pc', PATH: '/usr/bin', DELIVERY_CLAUDE_BIN: NO_CLAUDE }, now: m.now, bd: store([]), live: m.live, exec: m.sd.exec,
     sleep: (ms) => sleeps.push(ms), relist: () => m.live,
-    deps: { home: m.home, spawn: () => { throw new Error('no spawn'); }, stop: () => { throw new Error('no stop'); }, systemdRun: null, ...m.deps().teamDeps(m.alpha.root) },
+    deps: { home: m.home, spawn: () => { throw new Error('no spawn'); }, stop: () => { throw new Error('no stop'); }, systemdRun: null, sdFetch: m.dir.fetch, ...m.deps().teamDeps(m.alpha.root) },
   });
   assert.ok(m.sd.calls.includes(`systemctl --user restart ${HM.UNIT}`), `${m.sd.calls.join('\n')}\n${lines.join('\n')}`);
   assert.deepEqual(sleeps, [R.SETTLE_MS]);
@@ -1131,8 +1188,9 @@ test('run-session replaces an idle host-manager session running outside its unit
   const env = { DELIVERY_HOST: 'pc', PATH: '/usr/bin', USER: 'dev', DELIVERY_ROLE: 'host-manager' };
   const UNIT_CG = `0::/user.slice/user-1000.slice/user@1000.service/app.slice/${HM.UNIT}\n`;
   const OTHER_CG = '0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-term-1.scope\n';
-  const setup = ({ status = 'idle', again, serverCg = OTHER_CG, selfCg = UNIT_CG, server = { pid: 3531014, self: false }, stopOk = true, handUnit = false, mainPid = 'unread', show } = {}) => {
+  const setup = ({ status = 'idle', again, serverCg = OTHER_CG, selfCg = UNIT_CG, server = { pid: 3531014, self: false }, stopOk = true, handUnit = false, mainPid = 'unread', show, dir } = {}) => {
     const m = machine({ alphaRoles: HM_ROLES });
+    if (dir) m.dir = dir;
     m.env = { ...env, CLAUDE_CONFIG_DIR: m.config };
     if (handUnit) roleUnit(m, m.alpha.dir('host-manager'), 'claude-rc-hm.service', '/opt/tools/bin/claude remote-control --name host-manager@pc');
     const old = { sessionId: 'hm-old', pid: 3531100, cwd: m.alpha.dir('host-manager'), name: 'host-manager@pc', status };
@@ -1215,6 +1273,19 @@ test('run-session replaces an idle host-manager session running outside its unit
   const two = setup({ serverCg: `0::/user.slice/user-1000.slice/user@1000.service/app.slice/${HM.UNIT}/claude-rc-x.service\n`, mainPid: 0 });
   assert.equal(two.r.code, 3, two.r.out);
   assert.deepEqual(two.calls.stop, []);
+  // the replace stops a running session, so the unit's directory entry is read first: unreachable, or
+  // owned by another, nothing is stopped (exit 3, the reason in the reply); its own entry, it goes ahead
+  const unreach = setup({ dir: fakeDirectory({ down: true }) });
+  assert.equal(unreach.r.code, 3, unreach.r.out);
+  assert.deepEqual([unreach.calls.stop, unreach.calls.execve], [[], []]);
+  assert.match(unreach.r.out, /It is not replaced: the service directory at http:\/\/127\.0\.0\.1:8085 could not be reached .*a replace of a running unit is not made/);
+  const other = setup({ dir: fakeDirectory({ entries: [{ ...SD.entryFor(HM.UNIT), owner: 'colombod' }] }) });
+  assert.equal(other.r.code, 3, other.r.out);
+  assert.deepEqual(other.calls.stop, []);
+  assert.match(other.r.out, /not by the delivery plugin, so the plugin does not replace it/);
+  const listed = setup({ dir: fakeDirectory({ entries: [SD.entryFor(HM.UNIT)] }) });
+  assert.equal(listed.r.code, 0, listed.r.out);
+  assert.deepEqual(listed.calls.stop, [[3531014, 3531100]]);
   // a server that does not stop: no session is started beside it
   const d = setup({ stopOk: false });
   assert.equal(d.r.code, 1, d.r.out);
@@ -1353,6 +1424,31 @@ test('the watchdog pass starts the host manager\'s unit when it is installed and
   assert.ok(!m.sd.calls.slice(b2).some((c) => c.includes('reset-failed')));
 });
 
+test('the watchdog\'s start check reads the host manager unit\'s directory entry before the start: its own is started, another owner\'s is refused; unreachable, the down unit is started with a row and a warning, and registered on the next pass', () => {
+  const env = { ...process.env, DELIVERY_ROLE: '', DELIVERY_ROLE_ID: '', DELIVERY_ROLE_DIR: '' };
+  const check = (dir) => {
+    const m = machine();
+    fs.writeFileSync(path.join(HM.unitDir(m.home), HM.UNIT), '[Service]\nExecStart=/usr/bin/env node /x/delivery.js host-manager.js run-session\n');
+    m.sd.units[HM.UNIT] = loaded(false);
+    const out = watchdog.ensureHostManager(m.alpha.root, { home: m.home, exec: m.sd.exec, now: T0, live: [], env, sdFetch: dir.fetch });
+    return { m, out, started: m.sd.calls.includes(`systemctl --user start ${HM.UNIT}`) };
+  };
+  const own = check(fakeDirectory({ entries: [SD.entryFor(HM.UNIT)] }));
+  assert.ok(own.started, own.out);
+  const other = check(fakeDirectory({ entries: [{ ...SD.entryFor(HM.UNIT), owner: 'colombod' }] }));
+  assert.ok(!other.started);
+  assert.match(other.out, /^host manager: delivery-host-manager\.service is inactive and is not started: the service directory lists delivery-host-manager\.service as owned by "colombod"/);
+  assert.deepEqual(R.ledger(other.m.alpha.root).filter((x) => x.type === 'host-manager-start'), [], 'no start row');
+  const down = fakeDirectory({ down: true });
+  const u = check(down);
+  assert.ok(u.started, u.out);
+  assert.deepEqual(R.ledger(u.m.alpha.root).filter((x) => x.type === 'directory-unreachable').map((x) => [x.unit, x.action]), [[HM.UNIT, 'start']]);
+  assert.deepEqual(require('./lib/warnings.js').list(u.m.alpha.root).map((w) => w.kind), ['service-directory-unreachable']);
+  down.down = false;
+  watchdog.directoryPass(u.m.alpha.root, { home: u.m.home, exec: u.m.sd.exec, sdFetch: down.fetch });
+  assert.equal(down.entry(HM.UNIT).owner, 'delivery plugin');
+});
+
 // rv-198 at 65a1abd: beside a hand-started host manager, every separate watchdog run started the unit
 // again (7 starts in 13 min, then reset-failed and start again), each a host-manager-start row
 test('the watchdog pass neither resets nor starts the host manager\'s unit while a host-manager session is live, and writes no row; an unreadable list starts nothing', () => {
@@ -1444,14 +1540,17 @@ test('each watchdog run installs the host manager\'s units when they are missing
   const env = runEnv();
   // enable --now leaves the fake unit inactive, so the start check after the install starts it
   m.sd.units[HM.UNIT] = loaded(false);
-  const deps = { cwd: m.alpha.root, env, now: T0, live: [], bd: store([]), spawn: () => 1, sweep: () => ({ removed: [], failed: [] }), userGuard: () => null, update: { configDir: fs.mkdtempSync(path.join(os.tmpdir(), 'no-install-')) }, revive: () => [], home: m.home, hostUnit: { exec: m.sd.exec, home: m.home, has: () => true } };
+  const deps = { cwd: m.alpha.root, env, now: T0, live: [], bd: store([]), spawn: () => 1, sweep: () => ({ removed: [], failed: [] }), userGuard: () => null, update: { configDir: fs.mkdtempSync(path.join(os.tmpdir(), 'no-install-')) }, revive: () => [], home: m.home, hostUnit: { exec: m.sd.exec, home: m.home, has: () => true, sdFetch: m.dir.fetch } };
   const r = watchdog.main(['run', '--project', m.alpha.root], deps);
+  // each unit it wrote is registered with the service directory, read again before the start
+  for (const u of [HM.UNIT, HM.TICK_SERVICE, HM.TICK_TIMER]) assert.equal((m.dir.entry(u) || {}).owner, 'delivery plugin', u);
   assert.match(r.out, /host manager: installed its units \(.*delivery-host-manager\.service/, r.out);
   assert.ok(fs.existsSync(svc), r.out);
   for (const f of [HM.TICK_SERVICE, HM.TICK_TIMER]) assert.ok(fs.existsSync(path.join(HM.unitDir(m.home), f)), f);
   // the same commands host-manager.js install runs, then the start check
-  const sys = m.sd.calls.filter((c) => c.startsWith('systemctl'));
-  assert.deepEqual(sys, ['systemctl --user daemon-reload', `systemctl --user enable --now ${HM.UNIT}`, `systemctl --user enable --now ${HM.TICK_TIMER}`, `systemctl --user is-active ${HM.UNIT}`, `systemctl --user start ${HM.UNIT}`]);
+  // (the is-active reads before each start, and the directory pass's reads, are left out)
+  const sys = m.sd.calls.filter((c) => c.startsWith('systemctl') && !/ is-active | list-units /.test(c));
+  assert.deepEqual(sys, ['systemctl --user daemon-reload', `systemctl --user enable --now ${HM.UNIT}`, `systemctl --user enable --now ${HM.TICK_TIMER}`, `systemctl --user start ${HM.UNIT}`]);
   const rows = (type) => R.ledger(m.alpha.root).filter((x) => x.type === type);
   assert.equal(rows('host-manager-install').length, 1);
   const row = rows('host-manager-install')[0];
@@ -1807,6 +1906,353 @@ const SL = require('./lib/service-limits.js');
 const cosMarker = (m, root = m.alpha.root, dir = m.alpha.dir('chief-of-staff')) => fs.writeFileSync(path.join(dir, '.delivery-role.json'), JSON.stringify({ role: 'chief-of-staff', instance: 'chief-of-staff', project_root: root }));
 const cosUnit = (m) => `delivery-role-chief-of-staff-${tag(m.alpha.root)}.service`;
 const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// Every unit the plugin writes is registered with the owner's service directory when it is written; a
+// directory that cannot be reached never fails the install: the units go in, a line says they were not
+// registered, and the next pass registers them.
+test('install and install-role register each unit they write with the service directory; unreachable, the install still goes ahead, says so, and the next pass registers them', () => {
+  const m = machine({ alphaRoles: [{ id: 'chief-of-staff', host: 'pc' }, { id: 'host-manager', host: 'pc' }] });
+  const r = m.run(['install', '--project', m.alpha.root]);
+  assert.equal(r.code, 0, r.out);
+  for (const u of [HM.UNIT, HM.TICK_SERVICE, HM.TICK_TIMER]) {
+    const e = m.dir.entry(u);
+    assert.ok(e, u);
+    assert.deepEqual([e.owner, e.url, e.category, e.ttl], ['delivery plugin', `systemd-user://${u}`, 'delivery', 3600], u);
+  }
+  assert.match(r.out, /^Registered with the service directory: delivery-host-manager\.service, delivery-host-manager-tick\.service, delivery-host-manager-tick\.timer$/m, r.out);
+  assert.ok(m.sd.calls.includes(`systemctl --user enable --now ${HM.UNIT}`), 'started at once');
+  cosMarker(m);
+  const role = m.run(['install-role', '--project', m.alpha.root]);
+  assert.equal(role.code, 0, role.out);
+  assert.equal(m.dir.entry(cosUnit(m)).owner, 'delivery plugin');
+  // the directory down: the units are written and enabled, and started (they are down, so the start goes
+  // ahead with a row and a warning), and the reply says they are not registered
+  const n = machine({ alphaRoles: [{ id: 'chief-of-staff', host: 'pc' }, { id: 'host-manager', host: 'pc' }] });
+  n.dir = fakeDirectory({ down: true });
+  const d = n.run(['install', '--project', n.alpha.root]);
+  assert.equal(d.code, 0, d.out);
+  assert.ok(fs.existsSync(path.join(HM.unitDir(n.home), HM.UNIT)));
+  assert.ok(n.sd.calls.includes(`systemctl --user enable --now ${HM.UNIT}`), n.sd.calls.join('\n'));
+  assert.match(d.out, /^Not registered with the service directory: .*could not be reached.*; the watchdog's next pass registers them$/m, d.out);
+  assert.deepEqual(R.ledger(n.alpha.root).filter((x) => x.type === 'directory-unreachable').map((x) => x.unit), [HM.UNIT, HM.TICK_TIMER]);
+  assert.ok(require('./lib/warnings.js').list(n.alpha.root).some((w) => w.kind === 'service-directory-unreachable'));
+  // the directory back: the next pass registers all three
+  n.dir.down = false;
+  const line = watchdog.directoryPass(n.alpha.root, { home: n.home, exec: n.sd.exec, sdFetch: n.dir.fetch });
+  assert.match(line, /^service directory: registered delivery-host-manager-tick\.service, delivery-host-manager-tick\.timer, delivery-host-manager\.service, delivery-watchdog-[0-9a-f]+\.service$/, line);
+  for (const u of [HM.UNIT, HM.TICK_SERVICE, HM.TICK_TIMER]) assert.ok(n.dir.entry(u), u);
+});
+
+// POST upserts by name: an install reads the directory first and never posts a name another owner holds
+test('an install registers a free name and never posts one another owner holds: that entry is left unchanged and the reply names it', () => {
+  const m = machine({ alphaRoles: [{ id: 'chief-of-staff', host: 'pc' }, { id: 'host-manager', host: 'pc' }] });
+  m.dir = fakeDirectory({ entries: [{ name: HM.UNIT, url: 'systemd-user://owners-own', owner: 'colombod' }] });
+  const r = m.run(['install', '--project', m.alpha.root]);
+  assert.equal(r.code, 0, r.out);
+  assert.deepEqual([m.dir.entry(HM.UNIT).owner, m.dir.entry(HM.UNIT).url], ['colombod', 'systemd-user://owners-own'], 'the owner\'s entry is unchanged');
+  assert.equal(m.dir.calls.filter((c) => c === 'POST /api/services').length, 2, 'only the two free names are posted');
+  assert.match(r.out, /^Registered with the service directory: delivery-host-manager-tick\.service, delivery-host-manager-tick\.timer$/m, r.out);
+  assert.match(r.out, /^Not registered with the service directory, held by another owner: delivery-host-manager\.service \(the service directory lists delivery-host-manager\.service as owned by "colombod", not by the delivery plugin, so the plugin leaves that entry as it is\)$/m, r.out);
+  assert.ok(!(HM.UNIT in m.dir.names()), 'not on the plugin\'s list');
+  // and its start is refused, so it is enabled only
+  assert.match(r.out, /Not started now: the service directory lists delivery-host-manager\.service as owned by "colombod".*; delivery-host-manager\.service is enabled only\./, r.out);
+  // install-role the same: the Chief of Staff's unit held by the owner is not posted
+  cosMarker(m);
+  m.dir.entries.push({ name: cosUnit(m), url: 'systemd-user://x', owner: 'colombod' });
+  const before = m.dir.calls.filter((c) => c === 'POST /api/services').length;
+  const role = m.run(['install-role', '--project', m.alpha.root]);
+  assert.equal(role.code, 0, role.out);
+  assert.equal(m.dir.calls.filter((c) => c === 'POST /api/services').length, before, 'no POST for it');
+  assert.equal(m.dir.entry(cosUnit(m)).owner, 'colombod');
+  assert.match(role.out, new RegExp(`^Not registered with the service directory, held by another owner: ${esc(cosUnit(m))} `, 'm'), role.out);
+});
+
+// The host jobs' units are the plugin's (watchdog.js jobFiles): host-manager.js restart and the tick read
+// each one's entry in the service directory before a start or restart, as for every other plugin unit;
+// a refused one is named and the rest of the restart goes ahead.
+test('the owner\'s restart reads each host job unit\'s directory entry first: a free one is restarted; one another owner holds, or one the plugin registered that someone removed, is not, is named, and the rest goes ahead', () => {
+  const m = machine({ beads: WORK });
+  const a = tag(m.alpha.root);
+  const b = tag(m.beta.root);
+  const SC = 'systemctl --user';
+  m.sd.units[`delivery-watchdog-${a}.timer`] = loaded(true);
+  m.dir.entries.push({ name: `delivery-watchdog-${a}.timer`, url: 'http://x', owner: 'colombod' });
+  const r = m.run(['restart']);
+  assert.equal(r.code, 0, r.out);
+  assert.ok(!m.sd.calls.includes(`${SC} restart delivery-watchdog-${a}.timer`), m.sd.calls.join('\n'));
+  assert.ok(!m.sd.calls.includes(`${SC} start --no-block delivery-watchdog-${a}.service`), 'no run of a job whose timer is refused');
+  assert.equal(m.dir.entry(`delivery-watchdog-${a}.timer`).owner, 'colombod', 'left as it is');
+  assert.match(r.out, new RegExp(`^Not restarted: alpha's host job: delivery-watchdog-${a}\\.timer is not restarted: the service directory lists delivery-watchdog-${a}\\.timer as owned by "colombod", not by the delivery plugin, so the plugin does not restart it\\.$`, 'm'), r.out);
+  // the rest goes ahead: beta's free job is registered, restarted and run once; the roles still come back
+  assert.ok(m.sd.calls.includes(`${SC} restart delivery-watchdog-${b}.timer`), m.sd.calls.join('\n'));
+  assert.ok(m.sd.calls.includes(`${SC} start --no-block delivery-watchdog-${b}.service`));
+  assert.equal(m.dir.entry(`delivery-watchdog-${b}.timer`).owner, 'delivery plugin');
+  assert.ok(m.spawned.length > 0, 'the team\'s start pass still runs');
+  // an entry the plugin registered that someone removed: not registered again, not restarted, named
+  const n = machine({ beads: WORK });
+  const nb = tag(n.beta.root);
+  SD.remember(`delivery-watchdog-${nb}.timer`, { fetch: n.dir.fetch });
+  n.dir.entries.push(SD.entryFor(HM.TICK_TIMER)); // the directory still lists the plugin's: it lost nothing
+  const rn = n.run(['restart']);
+  assert.ok(!n.sd.calls.includes(`${SC} restart delivery-watchdog-${nb}.timer`), n.sd.calls.join('\n'));
+  assert.equal(n.dir.entry(`delivery-watchdog-${nb}.timer`), null, 'not registered again');
+  assert.match(rn.out, new RegExp(`^Not restarted: beta's host job: delivery-watchdog-${nb}\\.timer is not restarted: the entry the delivery plugin registered for delivery-watchdog-${nb}\\.timer was removed from the service directory`, 'm'), rn.out);
+  assert.ok(n.sd.calls.includes(`${SC} restart delivery-watchdog-${tag(n.alpha.root)}.timer`), 'alpha\'s job is restarted');
+  // its service held by another owner while its timer is the plugin's: the timer restarts, the run is refused and named
+  const s2 = machine({ beads: WORK });
+  const sa = tag(s2.alpha.root);
+  s2.dir.entries.push({ name: `delivery-watchdog-${sa}.service`, url: 'http://x', owner: 'colombod' });
+  const rs = s2.run(['restart']);
+  assert.ok(s2.sd.calls.includes(`${SC} restart delivery-watchdog-${sa}.timer`));
+  assert.ok(!s2.sd.calls.includes(`${SC} start --no-block delivery-watchdog-${sa}.service`), s2.sd.calls.join('\n'));
+  assert.match(rs.out, new RegExp(`^Not restarted: alpha's host job: its timer restarted, but delivery-watchdog-${sa}\\.service is not run: the service directory lists delivery-watchdog-${sa}\\.service as owned by "colombod"`, 'm'), rs.out);
+});
+
+test('restart --down-only and the tick read a host job unit\'s directory entry before starting it: a free down timer is started; one another owner holds is not, and is named', () => {
+  const SC = 'systemctl --user';
+  const free = machine();
+  const a = tag(free.alpha.root);
+  free.sd.units[`delivery-watchdog-${a}.timer`] = loaded(false, 'Sun 2026-11-08 09:00:00 UTC');
+  free.run(['restart', '--down-only']);
+  assert.ok(free.sd.calls.includes(`${SC} start delivery-watchdog-${a}.timer`), free.sd.calls.join('\n'));
+  assert.equal(free.dir.entry(`delivery-watchdog-${a}.timer`).owner, 'delivery plugin');
+  assert.ok(free.sd.calls.includes(`${SC} start --no-block delivery-watchdog-${a}.service`), 'and one run of its service');
+  // its timer the plugin's, its service held by another owner: the timer starts, the service is not run
+  const svc = machine();
+  const v = tag(svc.alpha.root);
+  svc.sd.units[`delivery-watchdog-${v}.timer`] = loaded(false, 'Sun 2026-11-08 09:00:00 UTC');
+  svc.dir.entries.push({ name: `delivery-watchdog-${v}.service`, url: 'http://x', owner: 'colombod' });
+  svc.run(['restart', '--down-only']);
+  assert.ok(svc.sd.calls.includes(`${SC} start delivery-watchdog-${v}.timer`), svc.sd.calls.join('\n'));
+  assert.ok(!svc.sd.calls.includes(`${SC} start --no-block delivery-watchdog-${v}.service`), svc.sd.calls.join('\n'));
+  const held = machine();
+  const h = tag(held.alpha.root);
+  held.sd.units[`delivery-watchdog-${h}.timer`] = loaded(false, 'Sun 2026-11-08 09:00:00 UTC');
+  held.dir.entries.push({ name: `delivery-watchdog-${h}.timer`, url: 'http://x', owner: 'colombod' });
+  const r = held.run(['restart', '--down-only']);
+  assert.ok(!held.sd.calls.some((c) => c.includes(`start delivery-watchdog-${h}.timer`) || c.includes(`start --no-block delivery-watchdog-${h}.service`)), held.sd.calls.join('\n'));
+  assert.match(r.out, new RegExp(`^Not back: delivery-watchdog-${h}\\.timer \\(not started: the service directory lists delivery-watchdog-${h}\\.timer as owned by "colombod", not by the delivery plugin, so the plugin does not start it\\);`, 'm'), r.out);
+  // the tick's one run of a silent job's service: refused the same way when another owner holds it
+  const roles = [{ id: 'chief-of-staff', host: 'pc' }, { id: 'host-manager', host: 'pc' }];
+  const k = machine({ alphaRoles: roles });
+  k.live = [{ cwd: k.alpha.dir('chief-of-staff') }, { cwd: k.beta.dir('chief-of-staff') }, { cwd: k.beta.dir('builder') }];
+  const ka = tag(k.alpha.root);
+  k.dir.entries.push({ name: `delivery-watchdog-${ka}.service`, url: 'http://x', owner: 'colombod' });
+  const passes = { [k.alpha.root]: Date.parse(T0) - 40 * MIN, [k.beta.root]: Date.parse(T0) - 5 * MIN };
+  const t = k.run(['tick'], { lastPass: (root) => passes[root] });
+  assert.ok(!k.sd.calls.includes(`${SC} start --no-block delivery-watchdog-${ka}.service`), k.sd.calls.join('\n'));
+  assert.match(t.out, new RegExp(`^Not back: alpha's host job, still silent: its timer runs but no pass since .*, and delivery-watchdog-${ka}\\.service was not started: the service directory lists delivery-watchdog-${ka}\\.service as owned by "colombod"`, 'm'), t.out);
+});
+
+// team-revive.js start (the host manager's lane runs it) starts a role's own unit only after the unit's
+// service-directory entry is read, as every other path does, even with no unit start handed to it.
+test('team-revive.js start reads a role unit\'s directory entry before starting it: a free one is started; one another owner holds, or one the plugin registered that someone removed, is not', () => {
+  const TR = require('./team-revive.js');
+  const SC = 'systemctl --user';
+  const ownExec = (m) => `/usr/bin/env "node" "${path.join(m.alpha.root, '.delivery', 'bin', 'delivery.js')}" "host-manager.js" "run-session" "--project" "${m.alpha.root}" "--instance" "chief-of-staff"`;
+  const own = (m) => `delivery-role-chief-of-staff-${tag(m.alpha.root)}.service`;
+  const go = (dir) => {
+    const m = machine({ beads: WORK });
+    if (dir) m.dir = dir(m);
+    roleUnit(m, m.alpha.dir('chief-of-staff'), own(m), ownExec(m));
+    m.sd.units[own(m)] = loaded(false);
+    const r = TR.main(['start', '--project', m.alpha.root], { cwd: m.base, env: { DELIVERY_HOST: 'pc', PATH: '/usr/bin', DELIVERY_CLAUDE_BIN: NO_CLAUDE }, home: m.home, live: [], relist: () => [], only: ['chief-of-staff'], spawn: () => 4242, settle: null, systemdRun: null, unitExec: m.sd.exec, sdFetch: m.dir.fetch, who: { root: m.alpha.root, team: m.alpha.team, roleId: null }, ...m.deps().teamDeps(m.alpha.root) });
+    return { m, r, started: m.sd.calls.includes(`${SC} start ${own(m)}`), refused: R.ledger(m.alpha.root).filter((x) => x.type === 'start-refused') };
+  };
+  const free = go();
+  assert.ok(free.started, free.m.sd.calls.join('\n'));
+  assert.equal(free.m.dir.entry(own(free.m)).owner, 'delivery plugin', 'registered first');
+  const held = go((m) => fakeDirectory({ entries: [{ name: own(m), url: 'http://x', owner: 'colombod' }] }));
+  assert.ok(!held.started, held.m.sd.calls.join('\n'));
+  assert.equal(held.refused.length, 1);
+  assert.match(held.refused[0].why, /owned by "colombod", not by the delivery plugin, so the plugin does not start it/);
+  const removed = go((m) => fakeDirectory({ entries: [SD.entryFor(HM.TICK_TIMER)], registered: [own(m), HM.TICK_TIMER] }));
+  assert.ok(!removed.started, removed.m.sd.calls.join('\n'));
+  assert.equal(removed.m.dir.entry(own(removed.m)), null, 'not registered again');
+  assert.match(removed.refused[0].why, /was removed from the service directory/);
+});
+
+// An install never brings back a name the owner removed from the directory: it is not posted, and the
+// start after it is refused, so the unit is enabled only. A name that expired is registered and started.
+test('install does not register again a unit whose entry the plugin registered and someone removed, and does not start it; an expired one is registered and started', () => {
+  const SC = 'systemctl --user';
+  const roles = [{ id: 'chief-of-staff', host: 'pc' }, { id: 'host-manager', host: 'pc' }];
+  const m = machine({ alphaRoles: roles });
+  m.dir = fakeDirectory({ entries: [SD.entryFor(HM.TICK_TIMER)], registered: [HM.UNIT, HM.TICK_TIMER] });
+  const r = m.run(['install', '--project', m.alpha.root]);
+  assert.equal(r.code, 0, r.out);
+  assert.equal(m.dir.entry(HM.UNIT), null, 'not registered again');
+  assert.match(r.out, /^Not registered with the service directory again, its entry removed since the plugin registered it \(the owner may have taken it out of the plugin's hands\): delivery-host-manager\.service$/m, r.out);
+  assert.ok(!m.sd.calls.includes(`${SC} enable --now ${HM.UNIT}`), m.sd.calls.join('\n'));
+  assert.match(r.out, /^Not started now: the entry the delivery plugin registered for delivery-host-manager\.service was removed from the service directory.*; delivery-host-manager\.service is enabled only\.$/m, r.out);
+  const x = machine({ alphaRoles: roles });
+  x.dir = fakeDirectory({ entries: [SD.entryFor(HM.TICK_TIMER)], registered: [HM.UNIT, HM.TICK_TIMER], registeredAt: new Date(Date.now() - 2 * 3600e3).toISOString() });
+  const rx = x.run(['install', '--project', x.alpha.root]);
+  assert.equal(x.dir.entry(HM.UNIT).owner, 'delivery plugin', 'expired: registered again');
+  assert.ok(x.sd.calls.includes(`${SC} enable --now ${HM.UNIT}`), rx.out);
+  // the watchdog's own install: a removed job unit is not posted again either
+  const w = machine();
+  const t = watchdog.tagOf(w.alpha.root);
+  const d = fakeDirectory({ entries: [SD.entryFor(HM.TICK_TIMER)], registered: [`delivery-watchdog-${t}.path`, HM.TICK_TIMER] });
+  const rw = watchdog.main(['install', '--apply', '--project', w.alpha.root], { cwd: w.alpha.root, env: { PATH: '/usr/bin', DELIVERY_HOST: 'pc' }, home: w.home, platform: 'linux', exec: w.sd.exec, has: () => true, live: [], hostUnit: { sdFetch: d.fetch } });
+  assert.equal(d.entry(`delivery-watchdog-${t}.path`), null);
+  assert.match(rw.out, new RegExp(`^Not registered with the service directory again, .*: delivery-watchdog-${t}\\.path$`, 'm'), rw.out);
+  assert.equal(d.entry(`delivery-watchdog-${t}.timer`).owner, 'delivery plugin');
+});
+
+// A directory that lost every entry (reset, or restarted empty after a host restart) does not lock the
+// plugin's units out: its missing names are registered again and the changes go ahead.
+test('a directory that lost every entry: the next pass registers the missing names again and the owner\'s restart goes ahead; one up since before still refuses a removed name', () => {
+  const SC = 'systemctl --user';
+  const m = machine({ beads: WORK });
+  const a = tag(m.alpha.root);
+  const b = tag(m.beta.root);
+  m.run(['restart']);
+  const restarts = (u) => m.sd.calls.filter((c) => c === `${SC} restart ${u}`).length;
+  assert.equal(restarts(`delivery-watchdog-${a}.timer`), 1);
+  // the directory comes back empty
+  m.dir.entries = [];
+  m.run(['restart']);
+  assert.equal(restarts(`delivery-watchdog-${a}.timer`), 2, 'restarted again');
+  assert.equal(restarts(`delivery-watchdog-${b}.timer`), 2);
+  assert.equal(m.dir.entry(`delivery-watchdog-${a}.timer`).owner, 'delivery plugin', 'registered again');
+  // empty again: the watchdog pass registers the units it finds
+  m.dir.entries = [];
+  const line = watchdog.directoryPass(m.alpha.root, { home: m.home, exec: m.sd.exec, sdFetch: m.dir.fetch });
+  assert.match(line, /^service directory: registered /, line);
+  assert.doesNotMatch(line, /not registered again/, line);
+  // a restart registers again what that pass did not reach (beta's job, last seen before the loss)
+  m.run(['restart']);
+  assert.equal(restarts(`delivery-watchdog-${b}.timer`), 3);
+  // up since then (the plugin's other entries listed): a name removed after it was seen again is refused
+  m.dir.entries = m.dir.entries.filter((e) => e.name !== `delivery-watchdog-${b}.timer`);
+  m.run(['restart']);
+  assert.equal(restarts(`delivery-watchdog-${b}.timer`), 3, 'not restarted');
+  assert.equal(restarts(`delivery-watchdog-${a}.timer`), 4);
+  assert.equal(m.dir.entry(`delivery-watchdog-${b}.timer`), null, 'not registered again');
+});
+
+// the watchdog's own install registers the job's units, which are the plugin's
+test('watchdog.js install registers the job\'s service, timer and path units with the service directory, and not a name another owner holds', () => {
+  const m = machine();
+  const d = fakeDirectory();
+  const t = watchdog.tagOf(m.alpha.root);
+  d.entries.push({ name: `delivery-watchdog-${t}.path`, url: 'http://x', owner: 'colombod' });
+  const r = watchdog.main(['install', '--apply', '--project', m.alpha.root], { cwd: m.alpha.root, env: { PATH: '/usr/bin', DELIVERY_HOST: 'pc' }, home: m.home, platform: 'linux', exec: m.sd.exec, has: () => true, live: [], hostUnit: { sdFetch: d.fetch } });
+  assert.equal(r.code, 0, r.out);
+  for (const x of ['service', 'timer']) assert.equal(d.entry(`delivery-watchdog-${t}.${x}`).owner, 'delivery plugin', x);
+  assert.equal(d.entry(`delivery-watchdog-${t}.path`).owner, 'colombod', 'left as it is');
+  assert.match(r.out, new RegExp(`^Registered with the service directory: delivery-watchdog-${t}\\.service, delivery-watchdog-${t}\\.timer$`, 'm'), r.out);
+  assert.match(r.out, new RegExp(`^Not registered with the service directory, held by another owner: delivery-watchdog-${t}\\.path `, 'm'), r.out);
+});
+
+// Each pass keeps the directory current: an active plugin unit gets a heartbeat (the directory's health
+// reads it, not a TCP probe), a unit with no entry is registered, an entry whose unit is gone is removed,
+// an entry under another owner is left, and a directory that cannot be reached is said once.
+test('the watchdog pass sends a heartbeat for each active plugin unit and scope, registers one missing, removes the entry of a unit gone, and leaves another owner\'s entry', () => {
+  const m = machine({ alphaRoles: [{ id: 'chief-of-staff', host: 'pc' }, { id: 'host-manager', host: 'pc' }] });
+  m.run(['install', '--project', m.alpha.root]);
+  const scope = 'delivery-role-builder-1763287200000.scope';
+  m.dir.entries.push(SD.entryFor(scope), SD.entryFor('delivery-role-reviewer-1.scope'), { ...SD.entryFor('delivery-role-other-2.scope'), owner: 'colombod' }, { name: 'muxplex', url: 'http://x', owner: 'colombod' });
+  m.sd.units[HM.UNIT] = loaded(true);
+  m.sd.units[HM.TICK_TIMER] = loaded(true);
+  m.sd.units[HM.TICK_SERVICE] = loaded(false);
+  m.sd.units[scope] = loaded(true);
+  const exec = (cmd, args) => (args[1] === 'list-units' ? `${scope} loaded active running a role\n` : m.sd.exec(cmd, args));
+  // the tick service's entry expired with its ttl (registered over an hour ago, no heartbeat since: it is not active)
+  m.dir.entries = m.dir.entries.filter((e) => e.name !== HM.TICK_SERVICE);
+  SD.remember(HM.TICK_SERVICE, { fetch: m.dir.fetch, now: Date.now() - 2 * 3600e3 });
+  // the gone scope was registered from here; an entry of the plugin's another host or user wrote is not on the list
+  SD.remember('delivery-role-reviewer-1.scope', { fetch: m.dir.fetch });
+  m.dir.entries.push(SD.entryFor('delivery-role-elsewhere-3.scope'));
+  const line = watchdog.directoryPass(m.alpha.root, { home: m.home, exec, sdFetch: m.dir.fetch });
+  assert.equal(m.dir.beats[HM.UNIT], 1);
+  assert.equal(m.dir.beats[HM.TICK_TIMER], 1);
+  assert.equal(m.dir.beats[scope], 1, 'an active scope');
+  assert.ok(!m.dir.beats[HM.TICK_SERVICE], 'an inactive unit gets no heartbeat');
+  assert.ok(m.dir.entry(HM.TICK_SERVICE), 'a unit with no entry is registered');
+  assert.equal(m.dir.entry('delivery-role-reviewer-1.scope'), null, 'a scope gone: removed');
+  assert.ok(!('delivery-role-reviewer-1.scope' in m.dir.names()), 'and forgotten');
+  assert.ok(m.dir.entry('delivery-role-elsewhere-3.scope'), 'an entry not on this list is not removed');
+  assert.ok(m.dir.entry('delivery-role-other-2.scope') && m.dir.entry('muxplex'), 'another owner\'s entries are left');
+  assert.match(line, /^service directory: registered delivery-host-manager-tick\.service, delivery-watchdog-[0-9a-f]+\.service; refreshed .*; removed delivery-role-reviewer-1\.scope$/, line);
+  assert.equal(m.dir.entries.filter((e) => /^delivery-watchdog-[0-9a-f]+\.service$/.test(e.name) && e.owner === 'delivery plugin').length, 1, 'the watchdog job\'s unit file is registered too');
+  const down = fakeDirectory({ down: true });
+  // an entry the plugin registered that someone removed (within its ttl): not registered again, said
+  m.dir.entries = m.dir.entries.filter((e) => e.name !== HM.TICK_TIMER);
+  const posts = m.dir.calls.filter((c) => c === 'POST /api/services').length;
+  const again = watchdog.directoryPass(m.alpha.root, { home: m.home, exec, sdFetch: m.dir.fetch });
+  assert.equal(m.dir.entry(HM.TICK_TIMER), null, 'not registered again');
+  assert.equal(m.dir.calls.filter((c) => c === 'POST /api/services').length, posts, 'no POST');
+  assert.match(again, /not registered again, its entry was removed since the plugin registered it \(the owner may have taken it out of the plugin's hands\) delivery-host-manager-tick\.timer/, again);
+  assert.match(watchdog.directoryPass(m.alpha.root, { home: m.home, exec, sdFetch: down.fetch }), /^service directory: 5 plugin units not registered or refreshed \(the service directory at http:\/\/127\.0\.0\.1:8085 could not be reached .*\); the next pass that reaches it does$/);
+});
+
+test('a role scope a start path creates is registered with the service directory: the start pass\'s start and the wake\'s scoped start; a directory down never holds the start back', () => {
+  const TR = require('./team-revive.js');
+  const m = machine({ beads: WORK });
+  const spawned = [];
+  TR.revive(m.alpha.root, m.alpha.team, { start: true, cwd: m.base, env: { DELIVERY_HOST: 'pc', PATH: '/usr/bin', DELIVERY_CLAUDE_BIN: NO_CLAUDE }, home: m.home, live: [], relist: () => [], only: ['chief-of-staff'], spawn: (bin, args) => { spawned.push(args); return 4242; }, settle: null, systemdRun: '/usr/bin/systemd-run', sdFetch: m.dir.fetch, ...m.deps().teamDeps(m.alpha.root) });
+  const unit = R.ledger(m.alpha.root).find((x) => x.type === 'start').unit;
+  assert.match(unit, /^delivery-role-chief-of-staff-\d+$/);
+  assert.equal(m.dir.entry(`${unit}.scope`).owner, 'delivery plugin', 'under the name systemctl lists it by');
+  assert.equal(m.dir.entry(`${unit}.scope`).ttl, 3600, 'a scope that ends expires by itself');
+  // the wake's and --launch's scoped start (lib/role-scope.js startRole)
+  const RS = require('./lib/role-scope.js');
+  const d = fakeDirectory();
+  const log = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'rs-')), 'w.log');
+  const fake = () => ({ pid: 77, on() {}, unref() {} });
+  const r = RS.startRole('claude', ['-p', 'go'], { instance: 'builder', env: {}, cwd: m.base, logPath: log, systemdRun: '/usr/bin/systemd-run', spawn: fake, settle: () => new Set(), sdFetch: d.fetch });
+  assert.equal(r.pid, 77);
+  assert.equal(d.entry(`${r.unit}.scope`).owner, 'delivery plugin');
+  // down: started all the same
+  const r2 = RS.startRole('claude', ['-p', 'go'], { instance: 'builder', env: {}, cwd: m.base, logPath: log, systemdRun: '/usr/bin/systemd-run', spawn: fake, settle: () => new Set(), sdFetch: fakeDirectory({ down: true }).fetch });
+  assert.equal(r2.pid, 77);
+  // a scope name another owner holds: not posted, left as it is, and said (a ledger row; startRole's result)
+  const o = machine({ beads: WORK });
+  const held = fakeDirectory({ entries: [{ name: `${unit}.scope`, url: 'http://x', owner: 'colombod' }] });
+  TR.revive(o.alpha.root, o.alpha.team, { start: true, cwd: o.base, env: { DELIVERY_HOST: 'pc', PATH: '/usr/bin', DELIVERY_CLAUDE_BIN: NO_CLAUDE }, home: o.home, live: [], relist: () => [], only: ['chief-of-staff'], spawn: () => 4243, settle: null, systemdRun: '/usr/bin/systemd-run', sdFetch: held.fetch, ...o.deps().teamDeps(o.alpha.root) });
+  assert.equal(R.ledger(o.alpha.root).find((x) => x.type === 'start').unit, unit, 'the same start, so the same scope name');
+  assert.ok(!held.calls.includes('POST /api/services'), 'no POST for it');
+  assert.equal(held.entry(`${unit}.scope`).owner, 'colombod');
+  const row = R.ledger(o.alpha.root).find((x) => x.type === 'directory-held');
+  assert.deepEqual([row.unit, row.owner], [`${unit}.scope`, 'colombod']);
+  const RSheld = { pid: 0 };
+  const hf = (method, p, body) => (method === 'GET' ? { status: 200, body: [{ name: RSheld.unit, owner: 'colombod' }] } : { status: 200, body });
+  const realSpawn = (bin, args) => { RSheld.unit = `${args.find((a) => a.startsWith('--unit=')).slice(7)}.scope`; return fake(); };
+  const r3 = RS.startRole('claude', ['-p', 'go'], { instance: 'builder', env: {}, cwd: m.base, logPath: log, systemdRun: '/usr/bin/systemd-run', spawn: realSpawn, settle: () => new Set(), sdFetch: (mth, p, b) => { if (mth === 'POST') RSheld.posted = true; return hf(mth, p, b); } });
+  assert.equal(r3.pid, 77, 'the start runs all the same');
+  assert.ok(!RSheld.posted, 'no POST for a scope name another owner holds');
+  assert.match(r3.directoryHeld, /owned by "colombod", not by the delivery plugin/);
+  // the wake's start takes the pass's directory (one bounded request path per pass), not a fetch of its own
+  const wd = fakeDirectory();
+  const pid = watchdog.spawnWake('claude', ['-p', 'go'], { cwd: m.base, env: { DELIVERY_ROLE: 'builder' }, logPath: log, systemdRun: '/usr/bin/systemd-run', spawn: fake, settle: () => new Set(), stillMissing: () => true, sdFetch: wd.fetch });
+  assert.equal(pid, 77);
+  assert.equal(wd.entries.filter((e) => /^delivery-role-builder-\d+\.scope$/.test(e.name)).length, 1, 'registered through the fetch it was handed');
+});
+
+test('host-manager.js directory lists this node\'s entries and their health, the plugin\'s own first, in any role session; it writes nothing', () => {
+  const m = machine();
+  m.dir.entries.push({ ...SD.entryFor(HM.UNIT), source: 'dynamic' }, { name: 'muxplex', owner: 'colombod', source: 'static', links: [{ url: 'http://127.0.0.1:8090' }] });
+  m.dir.beats[HM.UNIT] = 1;
+  const r = m.run(['directory'], { env: { DELIVERY_ROLE: 'builder', DELIVERY_ROLE_ID: 'builder' }, who: { roleId: 'builder' } });
+  assert.equal(r.code, 0, r.out);
+  assert.deepEqual(r.out.split('\n'), [
+    'Service directory http://127.0.0.1:8085: 2 entries on this node, 1 the delivery plugin\'s.',
+    `Plugin: ${HM.UNIT}, up, dynamic, systemd-user://${HM.UNIT}`,
+    'Other: muxplex, down, owner colombod, static, http://127.0.0.1:8090',
+  ]);
+  assert.deepEqual(m.dir.calls, ['GET /api/services/local', 'GET /api/health'], 'reads only');
+  const j = JSON.parse(m.run(['directory', '--json']).out);
+  assert.deepEqual(j.entries.map((e) => [e.name, e.ours, e.health]), [[HM.UNIT, true, 'up'], ['muxplex', false, 'down']]);
+  m.dir.down = true;
+  const d = m.run(['directory']);
+  assert.equal(d.code, 1);
+  assert.match(d.out, /service directory at http:\/\/127\.0\.0\.1:8085 could not be reached/);
+  // in the host manager's lane, as a read
+  const groups = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'hooks', 'lane-groups.json'), 'utf8'));
+  assert.ok(groups['host-manager'].some((g) => /host-manager\.js$/.test(g.arg_prefix || '') && g.sub.includes('directory')));
+});
 
 test('install-role writes the Chief of Staff\'s own unit: run-session in its role directory, bounded restarts, KillMode=process and the one-session task limit', () => {
   const m = machine();
