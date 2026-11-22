@@ -2075,14 +2075,31 @@ function mergeAttempt(command, cwd) {
     const branches = defaultBranches(dir);
     const current = gitIn(dir, ['rev-parse', '--abbrev-ref', 'HEAD']);
     if (sub === 'merge') return !rest.includes('--abort') && !!current && branches.has(current);
-    const args = rest.slice(1).filter((a) => !a.startsWith('-'));
-    const refspecs = args.slice(1);
-    if (!refspecs.length) return !!current && branches.has(current); // pushes the current branch
-    return refspecs.some((r) => {
+    // --all pushes every branch and --mirror every ref, so both can update a default branch (hjx.1.6.26).
+    if (rest.some((a) => a === '--all' || a === '--mirror' || /^--mirror=/.test(a))) return true;
+    // A refspec whose destination can update a default branch: its name written bare, as heads/<b> or
+    // refs/heads/<b> (with or without a leading +), HEAD onto the current branch, or a wildcard that spans
+    // refs/heads and so includes the default branches (hjx.1.6.26: heads/main, refs/heads/*, +x:main all
+    // slipped the earlier refs/heads-only strip).
+    const hitsDefault = (r) => {
       const dst = r.includes(':') ? r.slice(r.lastIndexOf(':') + 1) : r;
-      const name = dst.replace(/^\+/, '').replace(/^refs\/heads\//, '');
-      return branches.has(name) || (dst === 'HEAD' && !!current && branches.has(current));
-    });
+      if (dst.replace(/^\+/, '') === 'HEAD') return !!current && branches.has(current);
+      const name = dst.replace(/^\+/, '').replace(/^refs\/heads\//, '').replace(/^heads\//, '');
+      if (name.includes('*')) return true;
+      return branches.has(name);
+    };
+    const args = rest.slice(1).filter((a) => !a.startsWith('-'));
+    const cmdRefspecs = args.slice(1);
+    if (cmdRefspecs.length) return cmdRefspecs.some(hitsDefault);
+    // No refspec on the command line: the remote's configured push refspecs decide (remote.<remote>.push),
+    // otherwise the current branch (push.default simple/current). The remote is the one named, else the
+    // current branch's tracking remote, else origin.
+    const tracked = current ? gitIn(dir, ['config', '--get', `branch.${current}.remote`]) : null;
+    const remoteName = args[0] || tracked || 'origin';
+    const configured = gitIn(dir, ['config', '--get-all', `remote.${remoteName}.push`]);
+    const pushRefs = configured ? configured.split('\n').filter(Boolean) : [];
+    if (pushRefs.length) return pushRefs.some(hitsDefault);
+    return !!current && branches.has(current); // pushes the current branch
   });
 }
 

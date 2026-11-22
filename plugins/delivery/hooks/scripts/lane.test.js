@@ -1012,6 +1012,7 @@ test('merging is the Delivery Manager\'s: builder and spike researcher lanes are
     'git push origin team/builder-1:refs/heads/main',
     'git push --force origin +HEAD:master',
   ];
+  const STAFFING = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/staffing' });
   for (const policy of [POLICIES[BUILDER], SPIKE]) {
     for (const cmd of refused) {
       const d = run(policy, cmd);
@@ -1029,9 +1030,54 @@ test('merging is the Delivery Manager\'s: builder and spike researcher lanes are
     }
     assert.equal(decideLane({ toolName: 'mcp__github__merge_pull_request', toolInput: {}, policy, ...ctx() }).allow, false);
   }
-  // the delivery lead merges
+  // hjx.1.6.26: default-branch push forms the lane missed (heads/main and refs/heads/main destinations,
+  // the HEAD:heads/main form, --all, --mirror, and a refs/heads/* wildcard). Each is refused, per form, for
+  // every non-Delivery-Manager role the review named (builder, product-manager, staffing) and the spike
+  // researcher; the Delivery Manager still may. (On team/builder-1 here, not the default branch.)
+  const missed = ['git push origin feat:heads/main', 'git push origin HEAD:heads/main', 'git push origin +feat:refs/heads/main',
+    'git push --all origin', 'git push --mirror origin', 'git push origin refs/heads/*:refs/heads/*', 'git push origin +refs/heads/*'];
+  for (const policy of [POLICIES[BUILDER], SPIKE, POLICIES[PM], STAFFING]) {
+    for (const cmd of missed) {
+      const d = run(policy, cmd);
+      assert.equal(d.allow, false, `${policy.roleId}: ${cmd}`);
+      assert.match(d.reason, /merging is the Delivery Manager's/, `${policy.roleId}: ${cmd}`);
+    }
+  }
+  // the delivery lead merges through gh (it pushes nothing to the product repository itself)
   assert.equal(run(POLICIES[DL], 'gh pr merge 12 --squash').allow, true);
   assert.equal(run(POLICIES[COS], 'gh pr merge 12').allow, false);
+});
+
+// hjx.1.6.26: a bare `git push` with no refspec can still update a default branch when remote.<remote>.push
+// is configured to push one; the lane reads that config and classes it as a merge for non-DM roles. A local
+// git config change that repoints origin's url or origin/HEAD, or sets push.default to matching, can still
+// reach a default branch the lane does not model: this guards a mistaken role, not a process on the host.
+test('hjx.1.6.26: a bare push with remote.<remote>.push onto a default branch is a merge; onto another branch it is not', () => {
+  const product = fs.mkdtempSync(path.join(os.tmpdir(), 'lane-pushcfg-'));
+  const g = (...a) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...a], { cwd: product, stdio: 'ignore' });
+  // current branch is a neutral feature branch (not a team/<instance> branch), so the only reason a bare
+  // push could be refused is the configured push destination, not the foreign-branch guard
+  g('init', '-q', '-b', 'main'); g('commit', '-q', '--allow-empty', '-m', 'init'); g('checkout', '-q', '-b', 'feature-x');
+  g('remote', 'add', 'origin', 'https://example.invalid/r.git');
+  const run = (policy, command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy, ...ctx(), cwd: product });
+  const STAFFING = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/staffing' });
+  const roles = [POLICIES[BUILDER], POLICIES[PM], STAFFING];
+  // configured to push main: a bare push (even from a non-default branch) updates main, so it is refused
+  g('config', 'remote.origin.push', 'refs/heads/main:refs/heads/main');
+  for (const policy of roles) {
+    for (const cmd of ['git push', 'git push origin']) {
+      const d = run(policy, cmd);
+      assert.equal(d.allow, false, `${policy.roleId}: ${cmd} with remote.origin.push=main`);
+      assert.match(d.reason, /merging is the Delivery Manager's/, `${policy.roleId}: ${cmd}`);
+    }
+  }
+  // configured to push only the feature branch: a bare push does not update a default branch, so the merge
+  // guard does not class it as a merge (checked on a builder, whose lane pushes the product repo here)
+  g('config', '--unset-all', 'remote.origin.push');
+  g('config', 'remote.origin.push', 'refs/heads/feature-x:refs/heads/feature-x');
+  assert.equal(run(POLICIES[BUILDER], 'git push').allow, true, 'bare push with remote.origin.push=feature-x is not a merge');
+  const { mergeAttempt } = require('./lane.js');
+  assert.equal(mergeAttempt('git push', product), false, 'the classifier itself does not flag a feature-only configured push');
 });
 
 // hjx.1.6.18: pull requests are closed and merged only by the Delivery Manager (dec-chief-of-staff-000314).
