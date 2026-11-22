@@ -39,7 +39,7 @@ The failures come from the 2026-11-22 post-mortem and the analyses of the Chief 
 
 ## Decisions only the owner can make
 
-1. **Standing team or per-sprint team.** The contracts assume roles run only while a declared sprint needs them. The earlier design kept 13 long-lived sessions. This is the largest change.
+1. **Standing team or per-sprint team.** The contracts assume roles run only while a declared sprint needs them. The earlier design kept 13 long-lived sessions. This is the largest change. If per-sprint, the plan proposes a thin runner over `claude -p` as Sprint 3's engine (see [PLAN.md](PLAN.md)). Attractor is not chosen, because it has no run-level time or spend cap, no stop and no resume. The owner decides whether to build the runner at all.
 2. **Sprint length.** The contracts require a bound on time, spend and review rounds for each sprint and do not choose them.
 3. **Attention budget size.** The limit on decision requests and messages per sprint, and what happens at the limit.
 4. **The usage budget.** Its unit, its size, and whether it is per week, per sprint, or both. The contracts require it to be hard.
