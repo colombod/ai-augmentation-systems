@@ -105,18 +105,10 @@ function checkout(pr, head, { roleDir, team, env, spawn, out, err }) {
   return 0;
 }
 
-// A clone that holds this plugin's test runner, at its root or up to three directories down: searched for,
-// because a plugin does not know the layout of the repository it ships from.
-function holdsRunner(dir, depth = 3) {
-  if (fs.existsSync(path.join(dir, 'scripts', 'testing', 'run-tests.js'))) return true;
-  if (!depth) return false;
-  let subs = [];
-  try { subs = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return false; }
-  return subs.some((e) => e.isDirectory() && e.name !== '.git' && e.name !== 'node_modules' && holdsRunner(path.join(dir, e.name), depth - 1));
-}
-// Another product's test command may install its dependencies, so its seal keeps the network. This
-// plugin's own suite never does, whatever command runs it: named in the line, or a clone that holds the runner.
-const keepsNetwork = (dir, command) => !/run-tests\.js/.test(command) && !holdsRunner(dir);
+// Another product's test command may install its dependencies, so its seal keeps the network. A line that
+// names this plugin's runner does not ask for it. That is a convenience: however this plugin's suite is
+// started, the runner itself refuses to run it in a seal that kept the network.
+const keepsNetwork = (command) => !/run-tests\.js/.test(command);
 
 function test(pr, { roleDir, team, env, spawn, out, err, platform }) {
   const c = cloneDir(roleDir, pr, { mustExist: true });
@@ -131,10 +123,11 @@ function test(pr, { roleDir, team, env, spawn, out, err, platform }) {
   const started = Date.now();
   const minutes = team && Number.isFinite(Number(team.test_timeout_minutes)) && Number(team.test_timeout_minutes) > 0 ? Number(team.test_timeout_minutes) : 60;
   const win = platform === 'win32';
+  if (!win && !keepsNetwork(t.command)) out('review-run: the network is not kept for this run: its command names this plugin\'s test runner, which runs only in a private network');
   // elsewhere through the sealed runner: the product's suite gets a capped private /tmp the OS destroys,
   // as every test run does (Copilot on #117); the runner keeps this directory and runs the line in sh
   const shell = win ? { cmd: env.ComSpec || 'cmd.exe', args: ['/d', '/s', '/c', `"${t.command}"`] }
-    : { cmd: process.execPath, args: [path.join(__dirname, 'testing', 'run-tests.js'), ...(keepsNetwork(c.dir, t.command) ? ['--keep-network-for-review'] : []), '--', t.command] };
+    : { cmd: process.execPath, args: [path.join(__dirname, 'testing', 'run-tests.js'), ...(keepsNetwork(t.command) ? ['--keep-network-for-review'] : []), '--', t.command] };
   // windowsVerbatimArguments: cmd.exe does not read Node's \" escaping (node's own shell: true sets it)
   const r = spawn(shell.cmd, shell.args, { cwd: c.dir, env: cleanEnv(env), stdio: 'inherit', timeout: minutes * 60e3, windowsVerbatimArguments: win });
   const secs = Math.round((Date.now() - started) / 1000);

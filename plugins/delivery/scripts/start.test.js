@@ -47,6 +47,7 @@ function start(args, { path: binDir = bin(), config = claudeConfig(), cwd, env: 
     // this environment is built from nothing, so the seal's mark is carried over by hand: without it a
     // --keep-alive here would register its scratch units with a real service directory
     ...(process.env.DELIVERY_SEAL_ACTIVE ? { DELIVERY_SEAL_ACTIVE: process.env.DELIVERY_SEAL_ACTIVE } : {}),
+    ...(process.env.DELIVERY_UNSEALED_TEST_RUN ? { DELIVERY_UNSEALED_TEST_RUN: process.env.DELIVERY_UNSEALED_TEST_RUN } : {}),
     PATH: `${binDir}${path.delimiter}/bin`, HOME: extra.HOME || os.tmpdir(), CLAUDE_CONFIG_DIR: config, BD_FAKE_STORE: extra.BD_FAKE_STORE || path.join(mk('start-bd-'), 'store.json'),
     GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0',
     GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.test', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.test',

@@ -44,7 +44,7 @@ function checkoutVisible() {
     // checkout and the plugin itself when it lives under /tmp too (Copilot on #117); nothing else
     const expected = [...new Set(R.keepPaths([dir, path.join(__dirname, '..', '..')]).map((p) => p.split('/')[2]))].sort();
     // the runner's own seal token lives on the private tmpfs, not the host's /tmp
-    const seen = lines.slice(1).filter((f) => f && f !== R.SEAL_FILE).sort();
+    const seen = lines.slice(1).filter((f) => f && f !== R.SEAL_FILE && f !== R.HOST_NET_FILE).sort();
     if (seen.join(' ') !== expected.join(' ')) { console.error(`seal-check: FAILED, the seal shows ${seen.join(' ') || 'nothing'} of the host's /tmp, not just ${expected.join(' ')}`); return 1; }
     console.log('seal-check: a checkout under /tmp is visible in a fresh seal, and nothing else of the host\'s /tmp is');
     return 0;
@@ -157,6 +157,20 @@ if (own) { const s = net.createServer((x) => x.destroy()); s.on('error', (e) => 
     });
     const reach = await sealed('');
     if (!/^refused /m.test(reach.out)) return `a process with an empty environment inside a seal was not refused the host's loopback (${reach.out || `exit ${reach.status}`})`;
+    // the seal keeps the host's namespace on record: on a host with a lone loopback, the only proof of a private one
+    const recorded = spawnSync(process.execPath, [path.join(__dirname, 'run-tests.js'), '--', `cat /tmp/${R.HOST_NET_FILE}; echo; readlink /proc/self/ns/net`], { cwd: dir, env, encoding: 'utf8', timeout: 30000 });
+    const [onRecord, inSeal] = String(recorded.stdout || '').trim().split('\n');
+    if (onRecord !== fs.readlinkSync('/proc/self/ns/net') || !inSeal || inSeal === onRecord) return `the seal did not record the host's network namespace (on record ${onRecord}, in the seal ${inSeal})`;
+    // no environment variable keeps the network, whatever it is called
+    for (const k of ['DELIVERY_TEST_KEEP_NETWORK', 'DELIVERY_KEEP_NETWORK', 'KEEP_NETWORK', 'DELIVERY_TEST_NETWORK']) {
+      const asked = await new Promise((resolve) => {
+        const p = spawn(process.execPath, [path.join(__dirname, 'run-tests.js'), '--', `${process.execPath} ${probe} ${port}`], { cwd: dir, env: { ...env, [k]: '1' } });
+        let o = '';
+        p.stdout.on('data', (d) => { o += d; });
+        p.on('close', () => resolve(o.trim()));
+      });
+      if (!/^refused /m.test(asked)) return `${k}=1 kept the network for a sealed run (${asked})`;
+    }
     const own = await sealed(' own');
     if (!/^reached$/m.test(own.out)) return `a test server on the seal's own loopback could not be reached (${own.out || `exit ${own.status}`})`;
   } finally {
@@ -201,7 +215,7 @@ async function keepNetworkCheck() {
     const probe = path.join(dir, 'probe.js');
     fs.writeFileSync(probe, `const c = require('net').connect(${port}, '127.0.0.1'); c.on('connect', () => { console.log('reached'); c.destroy(); }); c.on('error', (e) => console.log('refused ' + e.code));\n`);
     const line = `${process.execPath} ${probe}`;
-    fs.writeFileSync(path.join(scripts, 'review-run.js'), `const r = require('child_process').spawn(process.execPath, [${JSON.stringify(path.join(scripts, 'testing', 'run-tests.js'))}, '--keep-network-for-review', '--', ${JSON.stringify(line)}], { stdio: 'inherit' });\nr.on('close', (c) => process.exit(c === null ? 1 : c));\n`);
+    fs.writeFileSync(path.join(scripts, 'review-run.js'), `const r = require('child_process').spawn(process.execPath, [${JSON.stringify(path.join(scripts, 'testing', 'run-tests.js'))}, '--keep-network-for-review', '--', process.argv[2] || ${JSON.stringify(line)}], { stdio: 'inherit' });\nr.on('close', (c) => process.exit(c === null ? 1 : c));\n`);
     const env = { ...process.env };
     delete env.DELIVERY_SEAL_ACTIVE;
     const run = (args) => new Promise((resolve) => {
@@ -215,13 +229,22 @@ async function keepNetworkCheck() {
     const kept = await run([path.join(scripts, 'review-run.js')]);
     if (kept.status !== 0 || !/^reached$/m.test(kept.out)) return `review-run's run did not keep the network (exit ${kept.status}: ${kept.out.trim()} ${kept.err.trim().slice(0, 160)})`;
     if (!/the network is KEPT/.test(kept.err)) return 'a run that kept the network did not say so';
+    // this plugin's suite, started under another name so nothing in the line gives it away, stops in that seal
+    const ranMark = path.join(dir, 'suite-ran');
+    const fixture = path.join(dir, 'fixture.test.js');
+    fs.writeFileSync(fixture, `require('fs').writeFileSync(${JSON.stringify(ranMark)}, 'ran');\nrequire('node:test')('x', () => {});\n`);
+    const renamed = path.join(scripts, 'testing', 'renamed-runner.js');
+    fs.copyFileSync(path.join(__dirname, 'run-tests.js'), renamed);
+    fs.writeFileSync(path.join(dir, 'suite.sh'), `DELIVERY_TEST_FILES=${fixture} exec ${process.execPath} ${renamed}\n`);
+    const suite = await run([path.join(scripts, 'review-run.js'), `sh ${path.join(dir, 'suite.sh')}`]);
+    if (suite.status === 0 || fs.existsSync(ranMark) || !/runs only in a private network/.test(suite.err)) return `the suite ran in a seal that kept the network (exit ${suite.status}: ${suite.err.trim().slice(0, 160)})`;
     const other = await run([path.join(scripts, 'testing', 'run-tests.js'), '--keep-network-for-review', '--', line]);
     if (other.status !== 2 || /reached/.test(other.out) || !/review-run\.js's alone/.test(other.err)) return `the word from another parent was not refused (exit ${other.status}: ${other.out.trim()})`;
   } finally {
     host.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }
-  console.log('seal-check: only review-run.js keeps the network, and the run says so; the same word from another parent runs nothing');
+  console.log('seal-check: only review-run.js keeps the network, and the run says so; the suite under another name stops in that seal; the same word from another parent runs nothing');
   return null;
 }
 

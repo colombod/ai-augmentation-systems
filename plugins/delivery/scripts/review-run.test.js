@@ -191,21 +191,20 @@ test('review-run cleanEnv clears every DELIVERY_, BEADS_ and BD_ variable, keeps
   assert.deepEqual(Object.keys(out).sort(), ['BDX', 'DELIVERY_SEAL_ACTIVE', 'PATH']);
 });
 
-test('review-run keeps the network only for another product: a command or a clone holding this plugin\'s runner stays isolated, and team.json cannot ask for it', () => {
+test('review-run asks to keep the network for a product command, says when it does not, and team.json cannot ask for it', () => {
   const { keepsNetwork } = require('./review-run.js');
-  const other = repo({ 'package.json': '{}' });
-  assert.equal(keepsNetwork(other, 'npm ci && npm test'), true);
-  assert.equal(keepsNetwork(other, 'node tools/scripts/testing/run-tests.js'), false);
-  for (const at of ['scripts', 'a/scripts', 'a/b/scripts', 'a/b/c/scripts']) assert.equal(keepsNetwork(repo({ [`${at}/testing/run-tests.js`]: '//' }), 'make test'), false, `the runner under ${at}, whatever the command`);
-  assert.equal(keepsNetwork(repo({ 'a/b/c/d/scripts/testing/run-tests.js': '//' }), 'make test'), true, 'past the search depth');
-  assert.equal(keepsNetwork(repo({ 'node_modules/x/scripts/testing/run-tests.js': '//' }), 'npm test'), true, 'a dependency is not this repository');
-  // what review-run starts: the word sits before the --, from review-run and not from the product's line
+  assert.equal(keepsNetwork('npm ci && npm test'), true);
+  assert.equal(keepsNetwork('node tools/scripts/testing/run-tests.js'), false);
   const { roleDir, team, first } = setup();
   main(['checkout', '7', first], { env: process.env, cwd: roleDir, roleDir, team, ...capture() });
   const runs = [];
   const spawn = (cmd, args, o) => (cmd === 'git' ? require('child_process').spawnSync(cmd, args, o) : (runs.push(args), { status: 0 }));
-  assert.equal(main(['test', '7'], { env: process.env, cwd: roleDir, roleDir, team: { ...team, test_command: 'npm test' }, spawn, ...capture(), platform: 'linux' }), 0);
+  const product = capture();
+  assert.equal(main(['test', '7'], { env: process.env, cwd: roleDir, roleDir, team: { ...team, test_command: 'npm test' }, spawn, ...product, platform: 'linux' }), 0);
   assert.deepEqual(runs[0].slice(1), ['--keep-network-for-review', '--', 'npm test']);
-  assert.equal(main(['test', '7'], { env: { ...process.env, DELIVERY_TEST_KEEP_NETWORK: '1' }, cwd: roleDir, roleDir, team: { ...team, keep_network: true, test_command: 'node x/run-tests.js' }, spawn, ...capture(), platform: 'linux' }), 0);
+  assert.doesNotMatch(product.lines.join('\n'), /network is not kept/);
+  const own = capture();
+  assert.equal(main(['test', '7'], { env: { ...process.env, DELIVERY_TEST_KEEP_NETWORK: '1' }, cwd: roleDir, roleDir, team: { ...team, keep_network: true, test_command: 'node x/run-tests.js' }, spawn, ...own, platform: 'linux' }), 0);
   assert.deepEqual(runs[1].slice(1), ['--', 'node x/run-tests.js']);
+  assert.match(own.lines.join('\n'), /the network is not kept for this run: its command names this plugin's test runner/);
 });

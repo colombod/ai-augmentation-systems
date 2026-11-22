@@ -71,7 +71,9 @@ function parentScript(ppid = process.ppid) {
   } catch (e) { return null; }
 }
 // null when this run may keep the host's network, else why not: its parent is this plugin's own
-// review-run.js, and the command is not this plugin's runner, whose suite always stays isolated
+// review-run.js, and the command does not name this runner. A guard against a mistake, not a boundary: a
+// process on the host that could fake its parent already has the network. What keeps this plugin's suite
+// off the host is networkProblem below, which the suite itself checks wherever it was started from.
 function keepNetworkProblem(command, { parent = parentScript(), reviewRun = path.join(__dirname, '..', 'review-run.js') } = {}) {
   let own = null;
   try { own = fs.realpathSync(reviewRun); } catch (e) { own = null; }
@@ -162,6 +164,24 @@ function sealProblem({ sealedRun, sealActive, tmpDir = '/tmp', mountinfo, init =
   if (!token || token !== String(sealActive)) return `no seal token in ${tmpDir} matches DELIVERY_SEAL_ACTIVE`;
   return null;
 }
+// The host's network namespace, as the run that made the seal read it: the sealed child keeps it in its
+// private /tmp, so every run nested in the seal can compare its own with it.
+const HOST_NET_FILE = '.delivery-seal-host-net';
+const netNamespace = () => { try { return fs.readlinkSync('/proc/self/ns/net'); } catch (e) { return null; } };
+const netInterfaces = (dev) => String(dev || '').split('\n').slice(2).map((l) => l.split(':')[0].trim()).filter(Boolean);
+// null when this process is in a private network, else why not. With the host's namespace on record, it
+// must differ from this one. A seal that recorded none (an older runner's) counts only with a lone loopback.
+function networkProblem({ own = netNamespace(), host = readHostNet(), dev = readNetDev() } = {}) {
+  if (host) return own && own !== host ? null : 'it shares the host\'s network namespace';
+  const names = netInterfaces(dev);
+  return names.length === 1 && names[0] === 'lo' ? null : `its network has ${names.join(', ') || 'no readable interfaces'}, not a lone loopback`;
+}
+function readHostNet(tmpDir = '/tmp') { try { return fs.readFileSync(path.join(tmpDir, HOST_NET_FILE), 'utf8').trim() || null; } catch (e) { return null; } }
+function readNetDev() { try { return fs.readFileSync('/proc/net/dev', 'utf8'); } catch (e) { return ''; } }
+// what a run the owner recorded as unsealed carries instead of a seal: no seal is claimed by it, and the
+// service directory's client treats it as a test run, so that exception still cannot post to a real directory
+const UNSEALED_MARK = { DELIVERY_UNSEALED_TEST_RUN: '1' };
+const runMark = ({ sealed, inSeal }) => (sealed || inSeal ? {} : UNSEALED_MARK);
 // a seal flag counts as set unless it is empty or 0
 const claimed = (v) => v !== undefined && v !== '' && v !== '0';
 // null when the owner's record id verifies (operator.js verify, run from here), else why not
@@ -232,6 +252,10 @@ function guardCount(dir, sealed, limit) {
 }
 module.exports.guardCount = guardCount;
 module.exports.sealArgs = sealArgs;
+module.exports.networkProblem = networkProblem;
+module.exports.HOST_NET_FILE = HOST_NET_FILE;
+module.exports.netInterfaces = netInterfaces;
+module.exports.runMark = runMark;
 module.exports.KEEP_NETWORK = KEEP_NETWORK;
 module.exports.parentScript = parentScript;
 module.exports.keepNetworkProblem = keepNetworkProblem;
@@ -288,6 +312,8 @@ if (require.main === module) {
     const p = sealProblem({ sealedRun });
     if (p) refuse(`this run claims a seal it is not in (${p})`);
     sealed = true;
+    if (process.env.DELIVERY_SEAL_HOST_NET) fs.writeFileSync(path.join('/tmp', HOST_NET_FILE), process.env.DELIVERY_SEAL_HOST_NET);
+    delete process.env.DELIVERY_SEAL_HOST_NET;
   } else if (claimed(sealActive)) {
     const p = sealProblem({ sealActive });
     if (p) refuse(`DELIVERY_SEAL_ACTIVE is set, but this run is not in a seal (${p}); unset it, or run inside a sealed run`);
@@ -312,7 +338,7 @@ if (require.main === module) {
       const at = own.indexOf(KEEP_NETWORK);
       if (keepNetwork) own.splice(at, 1);
       const [cmd, args] = sealArgs(bwrap, cap, [process.execPath, __filename, ...own], keepPaths([process.cwd(), root]), true, { keepNetwork: Boolean(keepNetwork) });
-      const childEnv = { ...process.env, DELIVERY_SEALED_RUN: `host-tmp:${host ? host.id : 'none'}:${nonce}` };
+      const childEnv = { ...process.env, DELIVERY_SEALED_RUN: `host-tmp:${host ? host.id : 'none'}:${nonce}`, DELIVERY_SEAL_HOST_NET: netNamespace() || '' };
       delete childEnv.DELIVERY_SEAL_ACTIVE;
       const r = spawnSync(cmd, args, { env: childEnv, input: nonce, stdio: ['pipe', 'inherit', 'inherit'] });
       if (r.error) { process.stderr.write(`run-tests: could not start the sealed run (${r.error.message})\n`); process.exit(1); }
@@ -322,6 +348,13 @@ if (require.main === module) {
     const p = ownerOptOut(process.env.DELIVERY_TEST_UNSEALED_RECORD);
     if (p) refuse(`${why}, so this run would not be sealed, and a run that is not sealed can leave files in the host's /tmp; ${p}. ${optedOut ? 'Unset DELIVERY_TEST_UNSEALED' : 'Install bubblewrap'}`);
     process.stderr.write(`run-tests: ${why}: this run is NOT sealed (owner record ${process.env.DELIVERY_TEST_UNSEALED_RECORD}); it uses a private directory under the system temp dir, removed at the end\n`);
+  }
+  // this plugin's own suite never runs on the host's network, whatever path or command started it: in a seal
+  // that kept the network for another product's command, it stops here. The run the owner recorded as
+  // unsealed is the one named exception, and it carries the mark the directory client reads.
+  if (!command && (sealed || inSeal)) {
+    const net = networkProblem();
+    if (net) refuse(`this plugin's test suite runs only in a private network, and ${net}`);
   }
   // sealed: /tmp is the run's own capped tmpfs, and the token in it proves the seal to nested runs;
   // otherwise a private directory, removed at the end
@@ -351,7 +384,7 @@ if (require.main === module) {
   };
   const { spawn } = require('child_process');
   // the runs nested in a seal record into a registry inside it, gone with it, never the user's own
-  const env = { ...cleanEnv(process.env), ...clockEnv(clock, process.env), TMPDIR: tmp, TMP: tmp, TEMP: tmp, ...(sealed || inSeal ? { DELIVERY_TMP_REGISTRY: registry } : {}), ...(token ? { DELIVERY_SEAL_ACTIVE: token } : {}) };
+  const env = { ...cleanEnv(process.env), ...clockEnv(clock, process.env), TMPDIR: tmp, TMP: tmp, TEMP: tmp, ...(sealed || inSeal ? { DELIVERY_TMP_REGISTRY: registry } : {}), ...(token ? { DELIVERY_SEAL_ACTIVE: token } : {}), ...runMark({ sealed, inSeal }) };
   // 3k4.1.2.2.1: a capture cut short named no failing test. The suite also reports as TAP into a file
   // of the run's own (the terminal keeps the reporter it would get), and the runner closes with every
   // failing test read from it. A caller that picks its own reporters keeps them as they are.
