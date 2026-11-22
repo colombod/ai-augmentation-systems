@@ -123,16 +123,56 @@ test('a live session of this team named <instance>@<team> is offered by its sock
 
 // A bare instance name does not reach a session listed as <instance>@<team>: the send would fail, be reported
 // as "not running" and wait for the watchdog while the role is live, so the sender gets its socket instead.
-test('a bare instance name whose session is live as <instance>@<team> is refused with its socket; with no live session, or no socket, it is still kept for the role', () => {
+async function withSockets(n, fn) {
+  const net = require('net');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sgs-'));
+  const paths = Array.from({ length: n }, (_, i) => path.join(dir, `${i}.sock`));
+  const servers = await Promise.all(paths.map((p) => new Promise((resolve) => { const x = net.createServer(); x.listen(p, () => resolve(x)); })));
+  try { return await fn(paths, dir); } finally { await Promise.all(servers.map((x) => new Promise((resolve) => x.close(resolve)))); }
+}
+const notRefused = (d) => assert.ok(!d || d.permissionDecision !== 'deny', JSON.stringify(d));
+
+test('a bare instance name whose session is live as <instance>@<team> is refused with its socket', () => withSockets(1, ([sock]) => {
   const a = teamWith('alpha', 'builder-1', 'staffing');
-  const atName = { ...live(a.dir('staffing'), 'staffing@alpha'), messagingSocketPath: '/run/x/42.sock' };
-  const d = hook(a.dir('builder-1'), 'builder-1', 'staffing', sessionsDir([atName]));
+  const d = hook(a.dir('builder-1'), 'builder-1', 'staffing', sessionsDir([{ ...live(a.dir('staffing'), 'staffing@alpha'), messagingSocketPath: sock }]));
   assert.equal(d.permissionDecision, 'deny', JSON.stringify(d));
-  assert.match(d.permissionDecisionReason, /staffing is running: send to uds:\/run\/x\/42\.sock\./);
-  for (const rows of [[], [live(a.dir('staffing'), 'staffing@alpha')]]) {
-    const kept = hook(a.dir('builder-1'), 'builder-1', 'staffing', sessionsDir(rows));
-    assert.ok(!kept || kept.permissionDecision !== 'deny', JSON.stringify(kept));
+  assert.equal(d.permissionDecisionReason.split('\n').pop(), `staffing is running: send to uds:${sock}.`);
+}));
+
+test('with no live session, no socket on record, a socket file that has gone or a path that is no socket, the bare name is kept for the role', () => withSockets(0, (_, dir) => {
+  const a = teamWith('alpha', 'builder-1', 'staffing');
+  const plain = path.join(dir, 'plain');
+  fs.writeFileSync(plain, '');
+  const at = (p) => ({ ...live(a.dir('staffing'), 'staffing@alpha'), messagingSocketPath: p });
+  for (const rows of [[], [live(a.dir('staffing'), 'staffing@alpha')], [at(path.join(dir, 'gone.sock'))], [at(plain)], [at(dir)]]) notRefused(hook(a.dir('builder-1'), 'builder-1', 'staffing', sessionsDir(rows)));
+}));
+
+test('a session in our role directory named for another team or another role is never offered as that role', () => withSockets(2, ([one, two]) => {
+  const a = teamWith('alpha', 'builder-1', 'staffing');
+  for (const name of ['reviewer@beta', 'staffing@beta', 'builder-1@alpha']) {
+    const d = hook(a.dir('builder-1'), 'builder-1', 'staffing', sessionsDir([{ ...live(a.dir('staffing'), name), messagingSocketPath: one }]));
+    assert.ok(!d || !String(d.permissionDecisionReason).includes(`send to uds:${one}`), `${name}: ${JSON.stringify(d)}`);
   }
+  // beside the real one, only the real one is offered
+  const d = hook(a.dir('builder-1'), 'builder-1', 'staffing', sessionsDir([{ ...live(a.dir('staffing'), 'reviewer@beta'), messagingSocketPath: one }, { ...live(a.dir('staffing'), 'staffing@alpha'), messagingSocketPath: two }]));
+  assert.ok(!String(d && d.permissionDecisionReason).includes(`send to uds:${one}`), JSON.stringify(d));
+}));
+
+test('after a restart every role running as <instance>@<team> resolves, by its bare name, to its own socket and no other', async () => {
+  const M = require('../../scripts/lib/manifest.js');
+  const team = JSON.parse(fs.readFileSync(path.join(FIXTURE, 'team.json'), 'utf8'));
+  const all = M.expandInstances(team).filter((i) => !(i.role && i.role.retired)).map((i) => i.instance);
+  await withSockets(all.length, (socks) => {
+    const a = teamWith('alpha', ...all);
+    const rows = all.map((x, i) => ({ ...live(a.dir(x), `${x}@alpha`), messagingSocketPath: socks[i] }));
+    const s = sessionsDir(rows);
+    const from = all[0];
+    all.forEach((x, i) => {
+      const d = hook(a.dir(from), from, x, s);
+      assert.equal(d && d.permissionDecision, 'deny', `${x}: ${JSON.stringify(d)}`);
+      assert.equal(d.permissionDecisionReason.split('\n').pop(), `${x} is running: send to uds:${socks[i]}.`, x);
+    });
+  });
 });
 
 // rv-191-delivery-lead-2 finding 3: a send to a name another team's live session also holds is refused,

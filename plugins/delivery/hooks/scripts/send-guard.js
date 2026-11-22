@@ -146,6 +146,21 @@ function liveTeamAddresses(team, own) {
   }
   return out.sort((a, b) => a.to.localeCompare(b.to));
 }
+// The sockets of this team's live sessions of `instance` named <instance>@<team>, which a bare name does not
+// reach. The session must be ours by its name as well as its directory, so one named for another team in our
+// role directory is never offered, and its socket must be there: a record left by a session whose socket has
+// gone is no address, and the send then falls through to being kept for the role.
+const isSocket = (p) => { try { return fs.statSync(p).isSocket(); } catch (err) { return false; } };
+function liveSockets(instance, team, own) {
+  try {
+    return liveSessionsReached(own.dir || sessionsDir(), null)
+      .filter((s) => String(s.name).includes('@') && teamInstanceOf(s, team, own) === instance && ourSession(s, team, own)
+        && typeof s.messagingSocketPath === 'string' && isSocket(s.messagingSocketPath))
+      .map((s) => `uds:${s.messagingSocketPath}`).sort();
+  } catch (err) {
+    return [];
+  }
+}
 // how a refused sender reaches this team now, in a form SendMessage takes (hjx.1.6.13): this team's live
 // sessions by their listed name (or uds: socket), else that none is live and a bare instance name is kept
 // for its role. Without the sender's context (no sessions to read) it says which forms work.
@@ -229,8 +244,8 @@ function judge(team, to, host, own = null) {
     if (inst && noOtherLiveSession(instance, team, own)) {
       // a bare name does not reach a session listed as <instance>@<team>: the send would fail and be kept as
       // "not running" while the role is live, so the sender is given the socket that reaches it now
-      const sockets = liveTeamAddresses(team, own).filter((x) => x.instance.toLowerCase() === inst.instance.toLowerCase() && x.to.startsWith('uds:'));
-      if (sockets.length) return { reason: `${inst.instance} is running: send to ${sockets.map((x) => x.to).join(' or ')}.` };
+      const sockets = liveSockets(inst.instance, team, own);
+      if (sockets.length) return { reason: `${inst.instance} is running: send to ${sockets.join(' or ')}.` };
       // no "@" advice: SendMessage refuses that form (hjx.1.6.13)
       return { warn: `delivery: "${SN.bareTarget(to)}" is this team's instance ${inst.instance}, and no live session outside this team holds that name: allowed. If it is not running, the send is kept for ${inst.instance} and the watchdog wakes it with it.` };
     }
