@@ -689,6 +689,64 @@ test('a host manager\'s unit restart that left the same old session running is t
 // run-session's exit 3 did on a real host) is a failed start: a `failed` row names it, the hourly cap does
 // not hold the next try, and the daily cap still counts it, so a crash loop stays bounded. One whose unit
 // stayed up is held for the hour as before. The same rule as a spawned start that exits within SETTLE_MS.
+// hjx.1.6.12.2: restarts in a pass run one after another with a settle between. Each row carries the time
+// its own session was stopped, so a reply the old session gives while it waits its turn is not a turn since
+// the restart and does not cost it the first-turn wake.
+test('a restart row is stamped when its session is stopped; a reply the old session gave before that stop keeps the first-turn wake', () => {
+  const TR = require('./team-revive.js');
+  const WD = require('./lib/watchdog.js');
+  const base = Date.parse(T0);
+  const replied = base + MIN; // after the pass began, before this role's stop
+  const stoppedAt = base + 2 * MIN;
+  const slowReads = (td, took) => ({ ...td, bd: { ...td.bd, list: (...x) => { took(); return td.bd.list(...x); } } });
+  const pass = (m, extra, directoryMs = 0) => {
+    let c = 1e6;
+    const read = m.deps().sdFetch;
+    return TR.revive(m.alpha.root, m.alpha.team, { start: true, cwd: m.base, env: { DELIVERY_HOST: 'pc', PATH: '/usr/bin', DELIVERY_CLAUDE_BIN: NO_CLAUDE }, home: m.home, live: m.live,
+      // the restarts before this one took two minutes
+      relist: () => { c = 1e6 + 2 * MIN; return m.live; }, clock: () => c, systemdRun: null, spawn: () => 4242, stop: () => { c += 10e3; return true; }, restartUnit: () => { c += 10e3; }, sdFetch: (...x) => { c = 1e6 + 2 * MIN + directoryMs; return read(...x); }, ...slowReads(m.deps().teamDeps(m.alpha.root), () => { c += 1000; }), now: T0, ...extra });
+  };
+  const wakes = (m, instance, sessionId, dir) => {
+    const transcript = path.join(dir, 'after-restart.jsonl');
+    fs.writeFileSync(transcript, `${JSON.stringify({ type: 'assistant', timestamp: iso(replied), message: { role: 'assistant', content: [{ type: 'text', text: 'the old session finishing a reply' }] } })}\n`);
+    require('./lib/roster.js').registerInstance(m.alpha.root, { instance, session_id: sessionId, host: 'pc', role_dir: dir, now: iso(stoppedAt + 20e3), transcript_path: transcript });
+    const bd = { list: () => [], ready: () => [], show: () => null };
+    return WD.read(m.alpha.root, { bd, now: iso(stoppedAt + 5 * MIN), installed: true, pause: { paused: false } }).stalls.filter((x) => x.kind === 'started' && x.target === instance).map((x) => x.key);
+  };
+  // through a user unit
+  const u = machine({ alphaRoles: HM_ROLES });
+  hostManagerUnit(u);
+  const hm = runningRole(u, u.alpha, 'host-manager', { pid: 90, version: '1.1.0' });
+  pass(u);
+  const unitRow = R.ledger(u.alpha.root).find((x) => x.type === 'restart');
+  assert.equal(unitRow.at, iso(stoppedAt + 10e3), 'as restartUnit returned, its session stopped; not the pass start');
+  assert.deepEqual(wakes(u, 'host-manager', hm.sessionId, hm.dir), [`started:host-manager:${iso(stoppedAt + 10e3)}`]);
+  // a server stopped here, the other path
+  const p = machine();
+  const b = runningRole(p, p.alpha, 'builder', { pid: 72, version: '1.1.0' });
+  // its last start ran in a scope, so the service directory is read just before the stop, and that read takes 30 s
+  R.record(p.alpha.root, { type: 'start', at: iso(base - 3 * 60 * MIN), instance: 'builder', pid: 7, unit: 'delivery-role-builder-1.scope' });
+  pass(p, {}, 30e3);
+  const row = R.ledger(p.alpha.root).find((x) => x.type === 'restart' && x.instance === 'builder');
+  assert.equal(row.at, iso(stoppedAt + 40e3), 'after the directory read, as its stop returned');
+  assert.deepEqual(wakes(p, 'builder', b.sessionId, b.dir), [`started:builder:${iso(stoppedAt + 40e3)}`]);
+  // no fixed time: the pass's slow reads (1.5 s here) do not move the row off the real time of the stop
+  const g = machine();
+  runningRole(g, g.alpha, 'builder', { pid: 72, version: '1.1.0' });
+  const real = Date.parse('2026-11-08T11:00:00Z');
+  let clk = real;
+  const td = g.deps().teamDeps(g.alpha.root);
+  const slowBd = { ...td.bd, list: (...x) => { clk += 1500; return td.bd.list(...x); } };
+  TR.revive(g.alpha.root, g.alpha.team, { start: true, cwd: g.base, env: { DELIVERY_HOST: 'pc', PATH: '/usr/bin', DELIVERY_CLAUDE_BIN: NO_CLAUDE }, home: g.home, live: g.live,
+    relist: () => g.live, clock: () => clk, systemdRun: null, spawn: () => 4242, stop: () => { clk += 500; return true; }, sdFetch: g.deps().sdFetch, ...td, bd: slowBd, now: undefined });
+  assert.equal(R.ledger(g.alpha.root).find((x) => x.type === 'restart' && x.instance === 'builder').at, iso(clk), 'the clock as the stop returned');
+  // the other direction: a reply after the stop is the turn, and no wake is due
+  const t = path.join(b.dir, 'after-restart.jsonl');
+  fs.appendFileSync(t, `${JSON.stringify({ type: 'assistant', timestamp: iso(stoppedAt + MIN), message: { role: 'assistant', content: [{ type: 'text', text: 'reading my beads' }] } })}\n`);
+  const bd = { list: () => [], ready: () => [], show: () => null };
+  assert.deepEqual(WD.read(p.alpha.root, { bd, now: iso(stoppedAt + 5 * MIN), installed: true, pause: { paused: false } }).stalls.filter((x) => x.kind === 'started' && x.target === 'builder'), []);
+});
+
 test('a host manager unit restart whose unit is down after the settle is retried at the next pass, not held for the hour; one that stayed up is held; the daily cap still bounds it', () => {
   const TR = require('./team-revive.js');
   const m = machine({ alphaRoles: HM_ROLES });

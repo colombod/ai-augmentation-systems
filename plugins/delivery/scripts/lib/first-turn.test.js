@@ -122,6 +122,41 @@ test('a pass reads the revive ledger: a session on the roster started since it w
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+// hjx.1.6.12.2: after the 0.43.97 install, 7 of 12 restarted roles never took a turn. The restart's
+// SessionStart hook moves the roster's last_seen past the start (and its own records touch the
+// transcript), so "active since the start" read as yes and no first-turn wake fired. The rule now asks
+// whether the session has taken a turn (a reply in its transcript) since the start.
+test('a restarted role whose SessionStart marked it seen, with no turn since, still gets its first-turn wake', () => {
+  const TR = require('./team-revive.js');
+  const { registerInstance } = require('./roster.js');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-seen-'));
+  try {
+    const restartAt = NOW - 5 * 60e3;
+    const transcript = path.join(root, 's-b3.jsonl');
+    // what a fresh start writes before any turn: the hook's context, no reply
+    fs.writeFileSync(transcript, `${JSON.stringify({ type: 'attachment', timestamp: iso(restartAt + 20e3), attachment: { type: 'hook_additional_context' } })}\n`);
+    const at = (t) => { fs.utimesSync(transcript, new Date(t), new Date(t)); };
+    at(restartAt + 20e3);
+    registerInstance(root, { instance: 'builder-3', session_id: 's-b3', host: 'pc', model: 'opus', role_dir: root, now: iso(restartAt + 20e3), transcript_path: transcript });
+    TR.record(root, { type: 'restart', at: iso(restartAt), instance: 'builder-3', pid: 2, session_id: 'session_x', from: '0.43.96', to: '0.43.97' });
+    const bd = { list: () => [], ready: () => [], show: () => null };
+    const started = () => WD.read(root, { bd, now: iso(NOW), installed: true, pause: { paused: false } }).stalls.filter((s) => s.kind === 'started').map((s) => s.key);
+    assert.deepEqual(started(), [`started:builder-3:${iso(restartAt)}`], 'last_seen and the transcript moved past the restart, but no turn was taken');
+    // an API error (a usage limit, an overload) is not a turn either
+    fs.appendFileSync(transcript, `${JSON.stringify({ type: 'assistant', timestamp: iso(restartAt + 40e3), isApiErrorMessage: true, message: { role: 'assistant', content: [{ type: 'text', text: 'API Error' }] } })}\n`);
+    at(restartAt + 40e3);
+    assert.deepEqual(started(), [`started:builder-3:${iso(restartAt)}`], 'an error row is no turn');
+    // the other direction: once the session replies after the restart, no first-turn wake
+    fs.appendFileSync(transcript, `${JSON.stringify({ type: 'assistant', timestamp: iso(restartAt + 60e3), message: { role: 'assistant', content: [{ type: 'text', text: 'reading my beads' }] } })}\n`);
+    at(restartAt + 60e3);
+    assert.deepEqual(started(), [], 'it took a turn after the restart');
+    // a reply from before the restart is not a turn since it
+    fs.writeFileSync(transcript, `${JSON.stringify({ type: 'assistant', timestamp: iso(restartAt - 60e3), message: { role: 'assistant', content: [{ type: 'text', text: 'old turn' }] } })}\n`);
+    at(restartAt + 30e3);
+    assert.deepEqual(started(), [`started:builder-3:${iso(restartAt)}`]);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 // criterion 4: idle with ready work is a stall within one pass. The team-wide idle rule (lib/idle.js)
 // fires only when nothing at all is in progress, so one builder idle beside ready stories went unseen
 // while any other bead moved. Each idle builder is now woken to claim a ready story of its own.
