@@ -11,7 +11,8 @@
 // sealed tmpfs's own counters (statfs). Last, a run started inside a seal made the way delivery 0.43.18
 // and earlier make it (DELIVERY_SEAL_ACTIVE=1, no token), as an installed plugin's review-run.js does with
 // a pull request's own runner, must run, and a run nested in it must still be held to a token. Exit 0 when all hold; 1 with what failed; 2 when it cannot run
-// here (no bwrap, or already inside a seal).
+// here (no bwrap, or already inside a seal). It also proves a sealed process cannot reach the host's loopback
+// and that a seal that cannot be created runs nothing.
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -43,7 +44,7 @@ function checkoutVisible() {
     // checkout and the plugin itself when it lives under /tmp too (Copilot on #117); nothing else
     const expected = [...new Set(R.keepPaths([dir, path.join(__dirname, '..', '..')]).map((p) => p.split('/')[2]))].sort();
     // the runner's own seal token lives on the private tmpfs, not the host's /tmp
-    const seen = lines.slice(1).filter((f) => f && f !== R.SEAL_FILE).sort();
+    const seen = lines.slice(1).filter((f) => f && f !== R.SEAL_FILE && f !== R.HOST_NET_FILE).sort();
     if (seen.join(' ') !== expected.join(' ')) { console.error(`seal-check: FAILED, the seal shows ${seen.join(' ') || 'nothing'} of the host's /tmp, not just ${expected.join(' ')}`); return 1; }
     console.log('seal-check: a checkout under /tmp is visible in a fresh seal, and nothing else of the host\'s /tmp is');
     return 0;
@@ -127,6 +128,148 @@ async function olderSealCheck() {
   return null;
 }
 
+// A sealed run has a network of its own: a process in it, even one started with an empty environment (which
+// loses the seal's mark), cannot reach a listener on the host's loopback, and its own loopback works for a
+// test's fake server. The same probe run outside the seal reaches the listener, so the refusal means something.
+async function networkCheck() {
+  const net = require('net');
+  const dir = fs.mkdtempSync(path.join(__dirname, '.seal-check-'));
+  const probe = path.join(dir, 'probe.js');
+  fs.writeFileSync(probe, `const net = require('net');
+const port = Number(process.argv[2]);
+const own = process.argv[3] === 'own';
+const go = (done) => { const c = net.connect(port, '127.0.0.1'); c.on('connect', () => { console.log('reached'); c.destroy(); done(); }); c.on('error', (e) => { console.log('refused ' + e.code); done(); }); };
+if (own) { const s = net.createServer((x) => x.destroy()); s.on('error', (e) => { console.log('no loopback ' + e.code); }); s.listen(port, '127.0.0.1', () => go(() => s.close())); } else go(() => {});
+`);
+  const host = net.createServer((c) => c.destroy());
+  await new Promise((resolve) => host.listen(0, '127.0.0.1', resolve));
+  const { port } = host.address();
+  try {
+    const env = { ...process.env };
+    delete env.DELIVERY_SEAL_ACTIVE;
+    const outside = await new Promise((resolve) => { const p = spawn(process.execPath, [probe, String(port)], { env }); let o = ''; p.stdout.on('data', (d) => { o += d; }); p.on('close', () => resolve(o.trim())); });
+    if (outside !== 'reached') return `the probe outside a seal did not reach the host listener (${outside})`;
+    const sealed = (mode) => new Promise((resolve) => {
+      const p = spawn(process.execPath, [path.join(__dirname, 'run-tests.js'), '--', `env -i ${process.execPath} ${probe} ${port}${mode}`], { cwd: dir, env });
+      let o = '';
+      p.stdout.on('data', (d) => { o += d; });
+      p.on('close', (status) => resolve({ status, out: o.trim() }));
+    });
+    const reach = await sealed('');
+    if (!/^refused /m.test(reach.out)) return `a process with an empty environment inside a seal was not refused the host's loopback (${reach.out || `exit ${reach.status}`})`;
+    // the seal keeps the host's namespace on record: on a host with a lone loopback, the only proof of a private one
+    const recorded = spawnSync(process.execPath, [path.join(__dirname, 'run-tests.js'), '--', `cat /tmp/${R.HOST_NET_FILE}; echo; readlink /proc/self/ns/net`], { cwd: dir, env, encoding: 'utf8', timeout: 30000 });
+    const [onRecord, inSeal] = String(recorded.stdout || '').trim().split('\n');
+    if (onRecord !== fs.readlinkSync('/proc/self/ns/net') || !inSeal || inSeal === onRecord) return `the seal did not record the host's network namespace (on record ${onRecord}, in the seal ${inSeal})`;
+    // no environment variable keeps the network, whatever it is called
+    for (const k of ['DELIVERY_TEST_KEEP_NETWORK', 'DELIVERY_KEEP_NETWORK', 'KEEP_NETWORK', 'DELIVERY_TEST_NETWORK']) {
+      const asked = await new Promise((resolve) => {
+        const p = spawn(process.execPath, [path.join(__dirname, 'run-tests.js'), '--', `${process.execPath} ${probe} ${port}`], { cwd: dir, env: { ...env, [k]: '1' } });
+        let o = '';
+        p.stdout.on('data', (d) => { o += d; });
+        p.on('close', () => resolve(o.trim()));
+      });
+      if (!/^refused /m.test(asked)) return `${k}=1 kept the network for a sealed run (${asked})`;
+    }
+    const own = await sealed(' own');
+    if (!/^reached$/m.test(own.out)) return `a test server on the seal's own loopback could not be reached (${own.out || `exit ${own.status}`})`;
+  } finally {
+    host.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  console.log('seal-check: a process with an empty environment in a seal cannot reach the host loopback, and its own loopback works');
+  return null;
+}
+
+// Where the seal cannot be created (a host that refuses the namespaces), the run fails with bubblewrap's
+// error: the command is never run unsealed, where it could reach a service on the host.
+function noSealCheck() {
+  const dir = fs.mkdtempSync(path.join(__dirname, '.seal-check-'));
+  try {
+    const fake = path.join(dir, 'bwrap');
+    fs.writeFileSync(fake, '#!/bin/sh\necho "bwrap: No permissions to create a new namespace" >&2\nexit 1\n', { mode: 0o755 });
+    const env = { ...process.env, PATH: `${dir}${path.delimiter}${process.env.PATH}` };
+    delete env.DELIVERY_SEAL_ACTIVE;
+    const r = spawnSync(process.execPath, [path.join(__dirname, 'run-tests.js'), '--', 'echo ran-without-a-seal'], { cwd: dir, env, encoding: 'utf8', timeout: 30000 });
+    if (r.status === 0 || /ran-without-a-seal/.test(String(r.stdout))) return `a run whose seal could not be created went ahead (exit ${r.status}: ${String(r.stdout).trim().slice(0, 100)})`;
+    if (!/No permissions to create a new namespace/.test(String(r.stderr))) return `a run whose seal could not be created did not say why (${String(r.stderr).trim().slice(0, 120)})`;
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  console.log('seal-check: a run whose seal cannot be created fails with the reason and runs nothing');
+  return null;
+}
+
+// The one way to keep the network, end to end: a copy of the runner beside a review-run.js of its own reaches
+// the host listener and says so; the same word from any other parent is refused and runs nothing.
+async function keepNetworkCheck() {
+  const net = require('net');
+  const dir = fs.mkdtempSync(path.join(__dirname, '.seal-check-'));
+  const host = net.createServer((c) => c.destroy());
+  await new Promise((resolve) => host.listen(0, '127.0.0.1', resolve));
+  const { port } = host.address();
+  try {
+    const scripts = path.join(dir, 'scripts');
+    fs.mkdirSync(path.join(scripts, 'testing'), { recursive: true });
+    for (const f of ['run-tests.js', 'sweep.js']) fs.copyFileSync(path.join(__dirname, f), path.join(scripts, 'testing', f));
+    const probe = path.join(dir, 'probe.js');
+    fs.writeFileSync(probe, `const c = require('net').connect(${port}, '127.0.0.1'); c.on('connect', () => { console.log('reached'); c.destroy(); }); c.on('error', (e) => console.log('refused ' + e.code));\n`);
+    const line = `${process.execPath} ${probe}`;
+    fs.writeFileSync(path.join(scripts, 'review-run.js'), `const r = require('child_process').spawn(process.execPath, [${JSON.stringify(path.join(scripts, 'testing', 'run-tests.js'))}, '--keep-network-for-review', '--', process.argv[2] || ${JSON.stringify(line)}], { stdio: 'inherit' });\nr.on('close', (c) => process.exit(c === null ? 1 : c));\n`);
+    const env = { ...process.env };
+    delete env.DELIVERY_SEAL_ACTIVE;
+    const run = (args) => new Promise((resolve) => {
+      const p = spawn(process.execPath, args, { cwd: dir, env });
+      let out = '';
+      let err = '';
+      p.stdout.on('data', (d) => { out += d; });
+      p.stderr.on('data', (d) => { err += d; });
+      p.on('close', (status) => resolve({ status, out, err }));
+    });
+    const kept = await run([path.join(scripts, 'review-run.js')]);
+    if (kept.status !== 0 || !/^reached$/m.test(kept.out)) return `review-run's run did not keep the network (exit ${kept.status}: ${kept.out.trim()} ${kept.err.trim().slice(0, 160)})`;
+    if (!/the network is KEPT/.test(kept.err)) return 'a run that kept the network did not say so';
+    // this plugin's suite, started under another name so nothing in the line gives it away, stops in that seal
+    const ranMark = path.join(dir, 'suite-ran');
+    const fixture = path.join(dir, 'fixture.test.js');
+    fs.writeFileSync(fixture, `require('fs').writeFileSync(${JSON.stringify(ranMark)}, 'ran');\nrequire('node:test')('x', () => {});\n`);
+    const renamed = path.join(scripts, 'testing', 'renamed-runner.js');
+    fs.copyFileSync(path.join(__dirname, 'run-tests.js'), renamed);
+    fs.writeFileSync(path.join(dir, 'suite.sh'), `DELIVERY_TEST_FILES=${fixture} exec ${process.execPath} ${renamed}\n`);
+    const suite = await run([path.join(scripts, 'review-run.js'), `sh ${path.join(dir, 'suite.sh')}`]);
+    if (suite.status === 0 || fs.existsSync(ranMark) || !/runs only in a private network/.test(suite.err)) return `the suite ran in a seal that kept the network (exit ${suite.status}: ${suite.err.trim().slice(0, 160)})`;
+    const other = await run([path.join(scripts, 'testing', 'run-tests.js'), '--keep-network-for-review', '--', line]);
+    if (other.status !== 2 || /reached/.test(other.out) || !/review-run\.js's alone/.test(other.err)) return `the word from another parent was not refused (exit ${other.status}: ${other.out.trim()})`;
+  } finally {
+    host.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  console.log('seal-check: only review-run.js keeps the network, and the run says so; the suite under another name stops in that seal; the same word from another parent runs nothing');
+  return null;
+}
+
+// The run the owner recorded as unsealed, end to end with a stand-in for the record's check: a process in it
+// has the mark, and still has it after clearRoleEnv, the first statement of every test file.
+function unsealedMarkCheck() {
+  const dir = fs.mkdtempSync(path.join(__dirname, '.seal-check-'));
+  try {
+    const scripts = path.join(dir, 'scripts');
+    fs.mkdirSync(path.join(scripts, 'testing'), { recursive: true });
+    for (const f of ['run-tests.js', 'sweep.js', 'role-env.js']) fs.copyFileSync(path.join(__dirname, f), path.join(scripts, 'testing', f));
+    fs.writeFileSync(path.join(scripts, 'operator.js'), "console.log(JSON.stringify({ ok: true }));\n");
+    const show = path.join(dir, 'show.js');
+    fs.writeFileSync(show, `console.log('before=' + process.env.DELIVERY_UNSEALED_TEST_RUN);\nrequire(${JSON.stringify(path.join(scripts, 'testing', 'role-env.js'))}).clearRoleEnv();\nconsole.log('after=' + process.env.DELIVERY_UNSEALED_TEST_RUN);\n`);
+    const env = { ...process.env, DELIVERY_TEST_UNSEALED: '1', DELIVERY_TEST_UNSEALED_RECORD: 'dec-seal-check-1' };
+    delete env.DELIVERY_SEAL_ACTIVE;
+    const r = spawnSync(process.execPath, [path.join(scripts, 'testing', 'run-tests.js'), '--', `${process.execPath} ${show}`], { cwd: dir, env, encoding: 'utf8', timeout: 30000 });
+    if (r.status !== 0 || !/^before=1$/m.test(r.stdout) || !/^after=1$/m.test(r.stdout)) return `the owner-recorded unsealed run lost its mark (exit ${r.status}: ${String(r.stdout).trim().replace(/\n/g, ' ')} ${String(r.stderr).trim().slice(0, 120)})`;
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  console.log('seal-check: a run the owner recorded as unsealed carries its mark, and clearRoleEnv keeps it');
+  return null;
+}
+
 async function main() {
   if (process.env.DELIVERY_SEAL_ACTIVE && process.env.DELIVERY_SEAL_ACTIVE !== '0') { console.error('seal-check: run it outside a sealed run'); return 2; }
   if (!R.bwrapPath(process.env)) { console.error('seal-check: bubblewrap (bwrap) not found: a run cannot be sealed on this host'); return 2; }
@@ -134,7 +277,7 @@ async function main() {
   if (killed !== 0) return killed;
   const visible = checkoutVisible();
   if (visible !== 0) return visible;
-  for (const check of [sizeCapCheck, inodeCapCheck, olderSealCheck]) {
+  for (const check of [sizeCapCheck, inodeCapCheck, olderSealCheck, networkCheck, noSealCheck, keepNetworkCheck, unsealedMarkCheck]) {
     const problem = await check();
     if (problem) { console.error(`seal-check: FAILED, ${problem}`); return 1; }
   }

@@ -315,3 +315,21 @@ test('the starts through a user unit are listed with their reasons, and each is 
   assert.match(u.body, new RegExp(`^TasksMax=${SL.needOf(u.unit, 0)}$`, 'm'));
   assert.match(u.body, /"host-manager\.js" "run-session"/);
 });
+
+test('a live session never carries the unsealed test run mark: neither the scoped start nor the team start passes it on', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'live-env-'));
+  const env = { PATH: process.env.PATH, HOME: dir, KEEP: 'x', DELIVERY_UNSEALED_TEST_RUN: '1' };
+  const seen = [];
+  const spawn = (b, a, o) => { seen.push(o.env); return { pid: 4242, on() {}, unref() {} }; };
+  require('./lib/role-scope.js').startRole('/bin/true', [], { instance: 'builder', env, cwd: dir, logPath: path.join(dir, 'a.log'), systemdRun: null, spawn, settle: () => new Set() });
+  assert.equal(seen[0].DELIVERY_UNSEALED_TEST_RUN, undefined);
+  assert.equal(seen[0].KEEP, 'x');
+  assert.equal(env.DELIVERY_UNSEALED_TEST_RUN, '1', 'the caller keeps its own');
+  const out = path.join(dir, 'seen');
+  require('./team-revive.js').spawnRemote(process.execPath, ['-e', `require('fs').writeFileSync(${JSON.stringify(`${out}.tmp`)}, String(process.env.DELIVERY_UNSEALED_TEST_RUN) + ' ' + process.env.KEEP); require('fs').renameSync(${JSON.stringify(`${out}.tmp`)}, ${JSON.stringify(out)})`], { cwd: dir, env, logPath: path.join(dir, 'b.log') });
+  for (let i = 0; i < 200 && !fs.existsSync(out); i++) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+  assert.equal(fs.readFileSync(out, 'utf8'), 'undefined x');
+});

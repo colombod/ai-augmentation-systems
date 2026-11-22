@@ -11,4 +11,13 @@ function freshSessionEnv(env, extra = {}) {
   return { ...out, ...extra };
 }
 
-module.exports = { freshSessionEnv, PARENT_SESSION_VARS };
+// A live session is no test run: the mark of an unsealed test run never passes to a session or a scope
+// started from it, which inherit their caller's environment and would then skip the service directory.
+function withoutTestRunMark(env) {
+  if (!env || env.DELIVERY_UNSEALED_TEST_RUN === undefined) return env;
+  const out = { ...env };
+  delete out.DELIVERY_UNSEALED_TEST_RUN;
+  return out;
+}
+
+module.exports = { freshSessionEnv, withoutTestRunMark, PARENT_SESSION_VARS };
