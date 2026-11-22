@@ -68,24 +68,36 @@ const DRILL_LABEL = (host) => `outage-drill:${host}`;
 // dotted level up (hjx.1.6.6's story is hjx.1.6). Only those two: a broader ancestor (hjx.1, hjx) would
 // widen what can authorise a network cut and a host restart.
 const storyOf = (bead) => { const s = String(bead); const i = s.lastIndexOf('.'); return i > 0 ? s.slice(0, i) : null; };
-const beadNamesDrill = (scopeBeads, bead) => !!bead && scopeBeads.some((s) => s === bead || s === storyOf(bead));
-// The labels on a bead, read through bd (never trusted from the caller). { labels } or { error }; a read
-// that fails is an error, so the bead path fails closed.
+// two bead ids are the same whether written short (hjx.1.6) or full (<prefix>-hjx.1.6): the scope may
+// carry either form (rv-229 F7). Equal, or one is the other with a `-` prefix before it.
+const sameBead = (a, b) => !!a && !!b && (a === b || String(a).endsWith(`-${b}`) || String(b).endsWith(`-${a}`));
+const beadNamesDrill = (scopeBeads, bead) => !!bead && scopeBeads.some((s) => sameBead(s, bead) || sameBead(s, storyOf(bead)));
+// The labels on a bead, read through bd with lookupBead (never trusted from the caller): { labels } or
+// { error }. A read that fails, a missing bead, or a bead whose returned id is not the one named all fail
+// closed (rv-229 F4/F6), so the bead path cannot be satisfied by an unreadable or substituted bead.
 function readBeadLabels(root, bead, env) {
-  try {
-    const b = require('./lib/bd.js').makeBd({ cwd: root, env }).show(bead);
-    return { labels: (b && Array.isArray(b.labels)) ? b.labels : [] };
-  } catch (err) { return { error: String((err && err.message) || err) }; }
+  const BD = require('./lib/bd.js');
+  const r = BD.lookupBead(BD.makeBd({ cwd: root, env }), bead);
+  if (r.error || r.missing || !r.bead) return { error: BD.lookupProblem(bead, r) };
+  if (!sameBead(r.bead.id, bead)) return { error: `bd returned ${r.bead.id} for ${bead}, not the bead named` };
+  return { labels: Array.isArray(r.bead.labels) ? r.bead.labels : [] };
 }
-const CUT = /\bnetwork\b[^.?!]*\b(?:cut|off|down|disconnect\w*)\b|\b(?:cut|disconnect\w*)\b[^.?!]*\bnetwork\b/i;
+// consent to a network CUT needs a verb of cutting it, not a bare state word: "cut its network" and
+// "take the network down" consent; "the network was down" (rv-229 F2, the billing sentence) does not.
+const CUT = /\b(?:cut|disconnect\w*|sever\w*|unplug\w*)\b[^.?!]*\bnetwork\b|\bnetwork\b[^.?!]*\b(?:cut|disconnect\w*|sever\w*|unplug\w*|offline)\b|\b(?:take|bring|knock|shut)\b[^.?!]*\bnetwork\b[^.?!]*\b(?:down|off|offline)\b|\bturn\b[^.?!]*\bnetwork\b[^.?!]*\boff\b/i;
 const RESTART = /\b(?:restart\w*|reboot\w*)\b/i;
 // fails closed: without the negation lexicon no words are taken as a yes
 const negated = (q) => { let neg; try { ({ hasNegation: neg } = require('./lib/operator-records.js')); } catch (err) { return true; } return typeof neg !== 'function' || neg(String(q || '').normalize('NFKC').replace(/[‘’ʼ]/g, "'").toLowerCase(), { before: false }); };
 function consent(root, id, verifyRecord, host, bead, beadLabels) {
   const verify = verifyRecord || require('./lib/operator-records.js').verifyRecord;
   let chain = [];
-  const v = ownerRecord(root, id, (r, i) => { const out = verify(r, i, { noLedger: true }); chain = (out && Array.isArray(out.chain)) ? out.chain : []; return out; });
+  let notes = [];
+  const v = ownerRecord(root, id, (r, i) => { const out = verify(r, i, { noLedger: true }); chain = (out && Array.isArray(out.chain)) ? out.chain : []; notes = (out && Array.isArray(out.notes)) ? out.notes : []; return out; });
   if (!v.ok) return v;
+  // a consent the owner withdrew is not consent: verifyRecord reports a revocation or supersession only in
+  // its notes (it still verifies), so the drill refuses a record noted as revoked or superseded (rv-229 F3)
+  const withdrawn = notes.find((n) => new RegExp(`^${String(id).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} was (revoked|superseded)\\b`).test(String(n)));
+  if (withdrawn) return { ok: false, why: `${withdrawn.replace(/ \(after.*$/, '')}, so it is no longer the owner's consent` };
   const want = DRILL_LABEL(host);
   const scope = (v.head && v.head.scope) || {};
   const labels = Array.isArray(scope.labels) ? scope.labels : [];
