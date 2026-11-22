@@ -458,6 +458,28 @@ Gates keep work flowing. Each check has one of three levels:
   refusal for starting the next wave arrives with waves (phase 2). `bug` and `security` beads are
   exempt.
 
+**Story files change through `stories.js`.** The gates read a story as a recipe, so each change to one
+is checked when it is made, with the gates' own parser, and a bad value is refused naming its field,
+with the file left byte for byte as it was (exit 1). `node ${CLAUDE_PLUGIN_ROOT}/scripts/stories.js new --from <draft> [--file <name>.md]`
+creates a story from a whole draft written to a temporary file first, and writes nothing unless every
+field passes: a frontmatter value outside the template's (a size other than S, M or L, a status other
+than draft, ready, in-progress, done or superseded), a criterion holding text in angle brackets outside
+a code span, or a criterion whose probe is missing or names no `where:` or no `by: test|reality-check`.
+It reads a story that opens with a leading HTML comment, as the gates do. After that, `set <story> <field> <value>`
+changes one frontmatter field (validating the exact value written, so a trailing `# ...` is part of the
+value and must pass), `criterion <story> <n> --text '...' --probe '...'`
+replaces criterion n or adds the next one and leaves every other criterion line as it was (so their
+hashes and evidence rows stand), and `section <story> --heading '<heading>' (--body '...' | --body-file <f>) [--new]`
+writes a prose section under a heading the story already has or a `templates/story.md` heading (matched on
+the text before any `:` or `(`); a genuinely new free-text heading needs `--new`. The section write is
+fence-aware (a `## x` inside a code fence is body text, found and replaced whole, not left behind) and a
+rewrite with a section's own current text is byte-identical. Each write is through a temp file and an
+atomic rename. `<story>` is a file name or a story id. A change takes effect in the plan when
+`plan-sync.js apply` publishes it (the merge gate runs it; run it by hand to publish sooner). There is no
+generated story index (ADR-004). Only the Delivery Manager runs it in a role session. Every lane, `any`
+included, refuses a write whose target is a story file — Write, Edit, a redirect, `sed -i`, or a `cp`/`mv`
+into it — naming the command; a read that copies a story out is not a write and is allowed.
+
 **The warnings ledger.** `.delivery/warnings/<instance>.ndjson` in the project repo, one file per
 instance (a session with no role writes `local-<host hash>.ndjson`), so sessions on different hosts
 never write the same file. Append-only: `{type: "warning", id: "w-<instance>-<time><random>", kind,
@@ -1677,24 +1699,14 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   nothing is scheduled or cut. `DELIVERY_HOST`, when set, must name this machine (its short hostname), and `plan` says so when
   it does not. It refuses a record that is not the owner's
   verified word, a cut outside 1 to 30 minutes, a run without `--restart`, and a second drill on the same
-  record. The authority is the `drill-consent.json` file on the planning repository's default branch,
-  which names the host, the record and the bead. The run reads it from the fetched default branch
-  (`git fetch` then the blob at `FETCH_HEAD`), never the working tree, and fails closed if it cannot be
-  read; it then accepts the record only when the file names this host, names this record, and the record's
-  own scope names the file's bead or its direct story (the bead one dotted level up, not a broader
-  ancestor). The Delivery Manager, who alone can land a commit on the default branch, commits the file
-  after reading the owner's words; a bd label was dropped because such a label is writable through too many
-  forms (`bd create -ql`, `-vl`, `-lfoo=bar,<label>`, `-f file`) and the bd guard is a discipline aid, not
-  a boundary. The record must also be a decision or an answer resting on the owner's captured input, not an
-  ack, a delegation or a revocation that merely cites one. The owner's own words must still name the
-  network cut and the restart
-  with no negation (a second filter the file does not replace). Those words are the verified quote, or, for an answer to a confirmation, the
+  record. The record must be consent to this drill: its scope carries the label `outage-drill:<host>`
+  for the host the drill would cut, and the owner's own words name the network cut and the restart
+  with no negation. Those words are the verified quote, or, for an answer to a confirmation, the
   question the owner was shown and the answer they picked, captured with their input; a question that
   negates the cut or the restart ("but do not restart", "without cutting") is refused as negated owner
   words are; the scope and the
   statement the recording agent wrote never count as the owner's words. Any other verified owner
-  record is refused. The host stays bound by `DELIVERY_HOST` and this machine's name whichever way the
-  record is scoped, so a bead-scoped consent still cuts only this host. Before it schedules anything a run claims the record with an exclusive
+  record is refused. Before it schedules anything a run claims the record with an exclusive
   `drill-<id>.claim` file beside `drills.ndjson`, so a second run started at the same time is refused; a
   run that fails before its row is written gives the claim back, and one killed between the two leaves
   it, for `plan` to show. The cut drops the session that runs it, so in this order it schedules the restore

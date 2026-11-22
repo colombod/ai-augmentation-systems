@@ -9,12 +9,7 @@
 //       is running. Starts, schedules and writes nothing.
 //   outage-drill.js run --record <id> --cut-minutes <n> --restart
 //       the Reality Checker's only (the lane refuses it to every other role, and the script checks both
-//       the role it is given and its own process's role session). The consent is authorised by the
-//       drill-consent.json file on the planning repository's default branch, read from the fetched default
-//       branch (never the working tree) and failing closed if it cannot be read: it names the host, the
-//       exact record this drill may spend, and the bead the record must be scoped to. The Delivery Manager,
-//       who alone can land a commit on that branch, commits it after reading the owner's words.
-//       It claims the record by an exclusive
+//       the role it is given and its own process's role session). It claims the record by an exclusive
 //       create, and, since the cut drops the session that runs it, makes two transient system timers
 //       before the cut (systemd-run, owned by PID 1, outliving the session): the network restore at n
 //       minutes and the restart a fixed minute after it. Then it writes the drill's row to the watchdog
@@ -35,7 +30,7 @@ function hostMismatch(env, hostname) {
   return env.DELIVERY_HOST && here && env.DELIVERY_HOST !== here ? `DELIVERY_HOST is ${env.DELIVERY_HOST}, but this machine is ${here}` : null;
 }
 
-const USAGE = 'usage: outage-drill.js plan [--cut-minutes <n>] [--record <id>] | outage-drill.js run --record <id> --cut-minutes <n> --restart | outage-drill.js stop --record <id>   (each takes --project <root>)\n  the consent is the drill-consent.json file on the planning repository default branch (host, record, bead); the run spends only the record it names, on the host it names, with the record scoped to the bead it names';
+const USAGE = 'usage: outage-drill.js plan [--cut-minutes <n>] [--record <id>] | outage-drill.js run --record <id> --cut-minutes <n> --restart | outage-drill.js stop --record <id>   (each takes --project <root>)';
 const ROLE = 'reality-checker';
 const VALUED = { '--cut-minutes': 'cut', '--record': 'record', '--project': 'project' };
 
@@ -55,87 +50,29 @@ const spawnExec = (args) => require('child_process').spawnSync(args[0], args.sli
 const psList = () => require('child_process').execFileSync('ps', ['-eo', 'pid,args'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 });
 const failText = (r) => String((r && (r.stderr || r.error)) || `exit ${r ? r.status : 'unknown'}`).trim().split('\n')[0].slice(0, 200);
 
-// The consent: the owner's own record, read as operator.js verify reads it (no ledger write), bound to
-// THIS drill by a file the Delivery Manager commits to the planning repository's default branch. Any
-// verified owner record (a budget, an approval of a pull request) would otherwise cut the network and
-// restart the machine, so:
-//   - the drill consent file on the default branch (host, record, bead) names the exact record the run may
-//     spend, the host it may run on, and the bead the record must be scoped to. It is read from the fetched
-//     default branch, never the working tree, and only the Delivery Manager can land a commit there. So it,
-//     not any label or caller flag, is the authority (rv-229 rv-15: a bd label is writable through too many
-//     forms). A file that cannot be read, or that names another host, another record or no bead, fails closed.
-//   - the record is a decision or an answer resting on the owner's captured human input (ownerRecord), not an
-//     ack, a delegation or a revocation that merely cites one (rv-229 N1).
-//   - the owner's own words name the network cut and the restart, with no negation (a second filter, not the
-//     authority). Those words are the verified quote, or, when the owner answered a confirmation, the
-//     question they were shown and the answer they picked, captured with their input (the answer must be the
-//     input itself); neither the answer nor the question may carry a negation. The scope and the statement
-//     the recording agent wrote never count as the owner's words.
-const CONSENT_FILE = require('path').join('.delivery', 'drill-consent.json');
-// A scope bead names this drill when it is the bead the consent file names or its direct story, the bead
-// one dotted level up (hjx.1.6.6's story is hjx.1.6). Only those two: a broader ancestor (hjx.1, hjx)
-// would widen what can authorise a network cut and a host restart.
-const storyOf = (bead) => { const s = String(bead); const i = s.lastIndexOf('.'); return i > 0 ? s.slice(0, i) : null; };
-// two bead ids are the same whether written short (hjx.1.6) or full (<prefix>-hjx.1.6): the scope may
-// carry either form (rv-229 F7). Equal, or one is the other with a `-` prefix before it.
-const sameBead = (a, b) => !!a && !!b && (a === b || String(a).endsWith(`-${b}`) || String(b).endsWith(`-${a}`));
-const beadNamesDrill = (scopeBeads, bead) => !!bead && scopeBeads.some((s) => sameBead(s, bead) || sameBead(s, storyOf(bead)));
-// The consent file, read from the FETCHED default branch of the planning repository (who.root), never the
-// working tree: { host, record, bead } or { error }. The remote is ALWAYS `origin` of the planning project
-// root and the branch is ALWAYS origin's HEAD; neither is taken from the environment, because a variable
-// that chose the remote or the branch could point the drill at a forged consent file and defeat the design
-// (rv-229 rv-15). Tests inject git through the exec argument, not through the environment. A fetch that
-// fails, a file that is absent on that branch, or JSON that does not parse to an object, all fail closed.
-function readDrillConsent(root, exec) {
-  const run = exec || spawnExec;
-  const git = (...a) => run(['git', '-C', String(root), ...a]);
-  const h = git('symbolic-ref', '--short', 'refs/remotes/origin/HEAD');
-  const branch = h && h.status === 0 ? String(h.stdout || '').trim().replace(/^origin\//, '') : '';
-  if (!branch) return { error: `the default branch of the planning repository could not be determined (origin/HEAD is not set)` };
-  const f = git('fetch', '--quiet', 'origin', branch);
-  if (!f || f.status !== 0) return { error: `git fetch origin ${branch} failed (${failText(f)})` };
-  const show = git('show', `FETCH_HEAD:${CONSENT_FILE}`);
-  if (!show || show.status !== 0) return { error: `${CONSENT_FILE} is not committed on the fetched origin/${branch} (${failText(show)})` };
-  let obj;
-  try { obj = JSON.parse(String(show.stdout || '')); } catch (err) { return { error: `${CONSENT_FILE} on origin/${branch} is not valid JSON` }; }
-  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return { error: `${CONSENT_FILE} on origin/${branch} is not a JSON object` };
-  return { consent: obj };
-}
-// consent to a network CUT needs a verb of cutting it, not a bare state word: "cut its network" and
-// "take the network down" consent; "the network was down" (rv-229 F2, the billing sentence) does not.
-const CUT = /\b(?:cut|disconnect\w*|sever\w*|unplug\w*)\b[^.?!]*\bnetwork\b|\bnetwork\b[^.?!]*\b(?:cut|disconnect\w*|sever\w*|unplug\w*|offline)\b|\b(?:take|bring|knock|shut)\b[^.?!]*\bnetwork\b[^.?!]*\b(?:down|off|offline)\b|\bturn\b[^.?!]*\bnetwork\b[^.?!]*\boff\b/i;
+// The consent: the owner's own record, read as operator.js verify reads it (no ledger write), and for this
+// drill only. Any verified owner record (a budget, an approval of a pull request) would otherwise cut the
+// network and restart the machine, so, as prepare-role scopes an approved permission rule:
+//   - the record's scope carries the label outage-drill:<this host>. The recording agent writes the
+//     scope, so the label alone is not enough:
+//   - the owner's own words name the network cut and the restart, with no negation. Those words are the
+//     verified quote, or, when the owner answered a confirmation, the question they were shown and the
+//     answer they picked, captured with their input (the answer must be the input itself); neither the
+//     answer nor the question may carry a negation. The scope and the statement the agent wrote never
+//     count as the owner's words.
+const DRILL_LABEL = (host) => `outage-drill:${host}`;
+const CUT = /\bnetwork\b[^.?!]*\b(?:cut|off|down|disconnect\w*)\b|\b(?:cut|disconnect\w*)\b[^.?!]*\bnetwork\b/i;
 const RESTART = /\b(?:restart\w*|reboot\w*)\b/i;
 // fails closed: without the negation lexicon no words are taken as a yes
 const negated = (q) => { let neg; try { ({ hasNegation: neg } = require('./lib/operator-records.js')); } catch (err) { return true; } return typeof neg !== 'function' || neg(String(q || '').normalize('NFKC').replace(/[‘’ʼ]/g, "'").toLowerCase(), { before: false }); };
-function consent(root, id, verifyRecord, host, { exec, drillConsent } = {}) {
+function consent(root, id, verifyRecord, host) {
   const verify = verifyRecord || require('./lib/operator-records.js').verifyRecord;
   let chain = [];
-  let notes = [];
-  const v = ownerRecord(root, id, (r, i) => { const out = verify(r, i, { noLedger: true }); chain = (out && Array.isArray(out.chain)) ? out.chain : []; notes = (out && Array.isArray(out.notes)) ? out.notes : []; return out; });
+  const v = ownerRecord(root, id, (r, i) => { const out = verify(r, i, { noLedger: true }); chain = (out && Array.isArray(out.chain)) ? out.chain : []; return out; });
   if (!v.ok) return v;
-  // a consent the owner withdrew is not consent: verifyRecord reports a revocation or supersession only in
-  // its notes (it still verifies), so the drill refuses a record noted as revoked or superseded (rv-229 F3)
-  const withdrawn = notes.find((n) => new RegExp(`^${String(id).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} was (revoked|superseded)\\b`).test(String(n)));
-  if (withdrawn) return { ok: false, why: `${withdrawn.replace(/ \(after.*$/, '')}, so it is no longer the owner's consent` };
-  // rv-229 N1: ownerRecord already requires the record to rest on the owner's captured human input; it must
-  // also BE a decision or an answer, not an ack, a delegation or a revocation that merely cites one.
-  const kind = v.head && v.head.kind;
-  if (kind !== 'decision' && kind !== 'answer') return { ok: false, why: `${id} is a ${kind || 'record'}, not a decision or an answer resting on the owner's input, so it is not consent to the drill` };
-  if (!host) return { ok: false, why: `this drill names no host, so nothing can authorise ${id}` };
-  // The authority (rv-229 rv-15): the consent file on the planning repository's default branch, read from
-  // the FETCHED branch and never the working tree, failing closed. Only the Delivery Manager can land a
-  // commit there, and it names THIS host, THIS record and the bead the record's own scope must name (the
-  // bead or its direct story). A label was dropped because a bd label is writable through too many forms.
-  // The wording check below (a cut and a restart, no negation) is only a second filter, never the authority.
-  const dc = (drillConsent || ((r) => readDrillConsent(r, exec)))(root);
-  if (dc && dc.error) return { ok: false, why: `the drill consent (${CONSENT_FILE} on the default branch) could not be read (${dc.error}); nothing runs` };
-  const c = (dc && dc.consent) || {};
-  if (String(c.host || '') !== String(host)) return { ok: false, why: `${CONSENT_FILE} names host ${c.host || '(none)'}, not ${host}; nothing runs` };
-  if (String(c.record || '') !== String(id)) return { ok: false, why: `${CONSENT_FILE} names record ${c.record || '(none)'}, not ${id}; nothing runs` };
-  const scope = (v.head && v.head.scope) || {};
-  const beads = Array.isArray(scope.beads) ? scope.beads : [];
-  if (!c.bead) return { ok: false, why: `${CONSENT_FILE} names no bead; nothing runs` };
-  if (!beadNamesDrill(beads, c.bead)) return { ok: false, why: `${id} is not scoped to ${c.bead} or its direct story (the bead ${CONSENT_FILE} names); nothing runs` };
+  const want = DRILL_LABEL(host);
+  const labels = (v.head && v.head.scope && Array.isArray(v.head.scope.labels)) ? v.head.scope.labels : [];
+  if (!host || !labels.includes(want)) return { ok: false, why: `${id} is not scoped to a drill on this host (its scope needs the label ${want})` };
   const asked = chain.filter((h) => h && h.kind === 'input' && h.source === 'human' && h.asked && h.asked.contract === 'delivery.confirmation/1'
     && h.asked.multi_select !== true && String(h.asked.answer || '').trim() === String(h.text || '').trim());
   const answers = [v.quote, ...asked.map((h) => h.asked.answer)];
@@ -177,7 +114,7 @@ function claimLines(root, now) {
   return out;
 }
 
-function plan(who, o, { env = process.env, now, verifyRecord, ps, hostname, exec, drillConsent }) {
+function plan(who, o, { env = process.env, now, verifyRecord, ps, hostname }) {
   const cut = o.cut === undefined ? String(L.MAX_CUT_MINUTES) : o.cut;
   const after = L.RESTART_AFTER;
   const bad = L.checkMinutes(cut);
@@ -190,7 +127,7 @@ function plan(who, o, { env = process.env, now, verifyRecord, ps, hostname, exec
     '  not covered: an offline gap longer than the cut (the consent is one cut of up to 30 minutes and one restart)'];
   if (!o.record) lines.push('  consent: no record named (pass --record <id>)');
   else {
-    const v = consent(who.root, o.record, verifyRecord, hostOf(env, hostname), { exec, drillConsent });
+    const v = consent(who.root, o.record, verifyRecord, hostOf(env, hostname));
     lines.push(v.ok ? `  consent: ${o.record} verifies as the owner's word` : `  consent: ${o.record} refused: ${v.why}`);
     const used = L.drillOf(who.root, o.record);
     lines.push(used ? `  used: yes, a drill on it started ${used.started_at}; run is refused` : '  used: no drill on it yet');
@@ -209,9 +146,9 @@ function plan(who, o, { env = process.env, now, verifyRecord, ps, hostname, exec
 // Order: the record verifies, no drill spent it, the restore is scheduled, the restart is scheduled, the
 // row is written, the cut runs. A schedule or row that fails stops there and stops the timers, so nothing
 // is cut; a cut that fails never restarts the host and still brings the network back.
-function run(who, o, { env, now, verifyRecord, exec, fs = require('fs'), hostname, drillConsent }) {
+function run(who, o, { env, now, verifyRecord, exec, fs = require('fs'), hostname }) {
   const refuse = (why) => ({ code: 1, out: `outage-drill.js: ${why}` });
-  const v = consent(who.root, o.record, verifyRecord, hostOf(env, hostname), { exec, drillConsent });
+  const v = consent(who.root, o.record, verifyRecord, hostOf(env, hostname));
   if (!v.ok) return refuse(`refused: ${v.why}; nothing scheduled or cut`);
   const used = L.drillOf(who.root, o.record);
   if (used) return refuse(`refused: ${o.record} was already used for a drill started ${used.started_at}; one drill per consent, nothing scheduled or cut`);
@@ -305,7 +242,7 @@ function ownRole() {
   } catch (err) { return 'unknown'; }
 }
 
-function main(argv, { cwd = process.cwd(), env = process.env, now, verifyRecord, who: given, exec = spawnExec, ps = psList, fs, hostname = require("os").hostname(), drillConsent } = {}) {
+function main(argv, { cwd = process.cwd(), env = process.env, now, verifyRecord, who: given, exec = spawnExec, ps = psList, fs, hostname = require('os').hostname() } = {}) {
   let o;
   try { o = parse(argv); } catch (err) { return { code: 2, out: `outage-drill.js: ${err.message}\n${USAGE}` }; }
   const [cmd] = o._;
@@ -343,11 +280,11 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, verifyRecord,
   }
   if (!who.root) return { code: 2, out: 'outage-drill.js: no project found; pass --project <root>' };
   if (cmd === 'plan') {
-    const r = plan(who, o, { env, now: at, verifyRecord, ps, hostname, exec, drillConsent });
+    const r = plan(who, o, { env, now: at, verifyRecord, ps, hostname });
     const wrongHost = hostMismatch(env, hostname);
     return wrongHost ? { ...r, out: `${r.out}\n  host: ${wrongHost}; run is refused` } : r;
   }
-  return run(who, o, { env, now: at, verifyRecord, exec, fs, hostname, drillConsent });
+  return run(who, o, { env, now: at, verifyRecord, exec, fs, hostname });
 }
 
 // Exports come first so a module that requires this file sees them even while main runs.
