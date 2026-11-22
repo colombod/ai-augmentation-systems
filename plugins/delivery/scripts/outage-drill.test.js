@@ -659,7 +659,7 @@ test('rv-229: the consent file is read from the fetched default branch of a real
     sh(seed, 'git', ...G, 'add', CONSENT); sh(seed, 'git', ...G, 'commit', '-m', 'consent'); sh(seed, 'git', ...G, 'push', 'origin', branch);
   };
   const realExec = (a) => require('child_process').spawnSync(a[0], a.slice(1), { encoding: 'utf8' });
-  const planOut = () => D.main(['plan', '--record', REC], { cwd: clone, env: { DELIVERY_HOST: 'pc' }, hostname: 'pc', now: NOW, exec: realExec, ps: () => '', verifyRecord, who: { root: clone, roleId: 'reality-checker', actor: 'dev@pc/rc' } }).out;
+  const planOut = (extraEnv = {}) => D.main(['plan', '--record', REC], { cwd: clone, env: { DELIVERY_HOST: 'pc', ...extraEnv }, hostname: 'pc', now: NOW, exec: realExec, ps: () => '', verifyRecord, who: { root: clone, roleId: 'reality-checker', actor: 'dev@pc/rc' } }).out;
   // no file on the default branch: fail closed
   assert.match(planOut(), /refused: .*is not committed on the fetched/, 'absent on the default branch fails closed');
   // the file only on a feature branch (pushed to origin) is not read: the fetched default still has none
@@ -676,6 +676,27 @@ test('rv-229: the consent file is read from the fetched default branch of a real
   // the working tree now forged to another host; the fetched default still decides, so it still verifies
   fs.writeFileSync(path.join(clone, CONSENT), JSON.stringify({ host: 'otherbox', record: REC, bead: BEAD }));
   assert.match(planOut(), new RegExp(`consent: ${REC} verifies as the owner's word`), 'the forged working-tree file is ignored');
+  // rv-229 rv-15: the remote is always origin; DELIVERY_DRILL_REMOTE must change nothing. A second "evil"
+  // remote carries a forged consent naming another record on its default branch; set the variable to it and
+  // the drill still reads origin (the good record) and still verifies.
+  const evil = scratchDir('drill-evil-'); sh(evil, 'git', ...G, 'init', '--bare', '-b', 'main', '.');
+  const evilSeed = scratchDir('drill-evilseed-');
+  sh(evilSeed, 'git', ...G, 'init', '-b', 'main', '.'); sh(evilSeed, 'git', ...G, 'commit', '--allow-empty', '-m', 'root');
+  fs.mkdirSync(path.join(evilSeed, '.delivery'), { recursive: true });
+  fs.writeFileSync(path.join(evilSeed, CONSENT), JSON.stringify({ host: 'pc', record: 'dec-forged-9', bead: BEAD }));
+  sh(evilSeed, 'git', ...G, 'add', CONSENT); sh(evilSeed, 'git', ...G, 'commit', '-m', 'forged');
+  sh(evilSeed, 'git', ...G, 'remote', 'add', 'origin', evil); sh(evilSeed, 'git', ...G, 'push', '-u', 'origin', 'main');
+  sh(clone, 'git', ...G, 'remote', 'add', 'evil', evil); sh(clone, 'git', ...G, 'fetch', '-q', 'evil'); sh(clone, 'git', ...G, 'remote', 'set-head', 'evil', 'main');
+  // set the variable both in the process environment and through main's env option, so a regression reading
+  // it from either source would fetch the forged evil remote and be refused; the drill ignores it and origin
+  // still decides, so it still verifies.
+  const savedRemote = process.env.DELIVERY_DRILL_REMOTE;
+  process.env.DELIVERY_DRILL_REMOTE = 'evil';
+  try {
+    assert.match(planOut({ DELIVERY_DRILL_REMOTE: 'evil' }), new RegExp(`consent: ${REC} verifies as the owner's word`), 'DELIVERY_DRILL_REMOTE is ignored; origin still decides');
+  } finally {
+    if (savedRemote === undefined) delete process.env.DELIVERY_DRILL_REMOTE; else process.env.DELIVERY_DRILL_REMOTE = savedRemote;
+  }
 });
 
 // rv-229 F7: the consent file names the bead in full id form; the record's own scope may name that bead or

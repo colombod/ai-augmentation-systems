@@ -81,26 +81,24 @@ const storyOf = (bead) => { const s = String(bead); const i = s.lastIndexOf('.')
 const sameBead = (a, b) => !!a && !!b && (a === b || String(a).endsWith(`-${b}`) || String(b).endsWith(`-${a}`));
 const beadNamesDrill = (scopeBeads, bead) => !!bead && scopeBeads.some((s) => sameBead(s, bead) || sameBead(s, storyOf(bead)));
 // The consent file, read from the FETCHED default branch of the planning repository (who.root), never the
-// working tree: { host, record, bead } or { error }. The default branch comes from the remote's HEAD (set
-// by clone), overridable for tests. A fetch that fails, a file that is absent on that branch, or JSON that
-// does not parse to an object, all fail closed (rv-229 rv-15). git is run through the injected exec.
-function readDrillConsent(root, env, exec) {
+// working tree: { host, record, bead } or { error }. The remote is ALWAYS `origin` of the planning project
+// root and the branch is ALWAYS origin's HEAD; neither is taken from the environment, because a variable
+// that chose the remote or the branch could point the drill at a forged consent file and defeat the design
+// (rv-229 rv-15). Tests inject git through the exec argument, not through the environment. A fetch that
+// fails, a file that is absent on that branch, or JSON that does not parse to an object, all fail closed.
+function readDrillConsent(root, exec) {
   const run = exec || spawnExec;
   const git = (...a) => run(['git', '-C', String(root), ...a]);
-  const remote = (env && env.DELIVERY_DRILL_REMOTE) || 'origin';
-  let branch = (env && env.DELIVERY_DRILL_DEFAULT_BRANCH) || '';
-  if (!branch) {
-    const h = git('symbolic-ref', '--short', `refs/remotes/${remote}/HEAD`);
-    if (h && h.status === 0) branch = String(h.stdout || '').trim().replace(new RegExp(`^${remote}/`), '');
-  }
-  if (!branch) return { error: `the default branch of the planning repository could not be determined (set the remote HEAD)` };
-  const f = git('fetch', '--quiet', remote, branch);
-  if (!f || f.status !== 0) return { error: `git fetch ${remote} ${branch} failed (${failText(f)})` };
+  const h = git('symbolic-ref', '--short', 'refs/remotes/origin/HEAD');
+  const branch = h && h.status === 0 ? String(h.stdout || '').trim().replace(/^origin\//, '') : '';
+  if (!branch) return { error: `the default branch of the planning repository could not be determined (origin/HEAD is not set)` };
+  const f = git('fetch', '--quiet', 'origin', branch);
+  if (!f || f.status !== 0) return { error: `git fetch origin ${branch} failed (${failText(f)})` };
   const show = git('show', `FETCH_HEAD:${CONSENT_FILE}`);
-  if (!show || show.status !== 0) return { error: `${CONSENT_FILE} is not committed on the fetched ${remote}/${branch} (${failText(show)})` };
+  if (!show || show.status !== 0) return { error: `${CONSENT_FILE} is not committed on the fetched origin/${branch} (${failText(show)})` };
   let obj;
-  try { obj = JSON.parse(String(show.stdout || '')); } catch (err) { return { error: `${CONSENT_FILE} on ${remote}/${branch} is not valid JSON` }; }
-  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return { error: `${CONSENT_FILE} on ${remote}/${branch} is not a JSON object` };
+  try { obj = JSON.parse(String(show.stdout || '')); } catch (err) { return { error: `${CONSENT_FILE} on origin/${branch} is not valid JSON` }; }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return { error: `${CONSENT_FILE} on origin/${branch} is not a JSON object` };
   return { consent: obj };
 }
 // consent to a network CUT needs a verb of cutting it, not a bare state word: "cut its network" and
@@ -109,7 +107,7 @@ const CUT = /\b(?:cut|disconnect\w*|sever\w*|unplug\w*)\b[^.?!]*\bnetwork\b|\bne
 const RESTART = /\b(?:restart\w*|reboot\w*)\b/i;
 // fails closed: without the negation lexicon no words are taken as a yes
 const negated = (q) => { let neg; try { ({ hasNegation: neg } = require('./lib/operator-records.js')); } catch (err) { return true; } return typeof neg !== 'function' || neg(String(q || '').normalize('NFKC').replace(/[‘’ʼ]/g, "'").toLowerCase(), { before: false }); };
-function consent(root, id, verifyRecord, host, { env, exec, drillConsent } = {}) {
+function consent(root, id, verifyRecord, host, { exec, drillConsent } = {}) {
   const verify = verifyRecord || require('./lib/operator-records.js').verifyRecord;
   let chain = [];
   let notes = [];
@@ -129,7 +127,7 @@ function consent(root, id, verifyRecord, host, { env, exec, drillConsent } = {})
   // commit there, and it names THIS host, THIS record and the bead the record's own scope must name (the
   // bead or its direct story). A label was dropped because a bd label is writable through too many forms.
   // The wording check below (a cut and a restart, no negation) is only a second filter, never the authority.
-  const dc = (drillConsent || ((r) => readDrillConsent(r, env, exec)))(root);
+  const dc = (drillConsent || ((r) => readDrillConsent(r, exec)))(root);
   if (dc && dc.error) return { ok: false, why: `the drill consent (${CONSENT_FILE} on the default branch) could not be read (${dc.error}); nothing runs` };
   const c = (dc && dc.consent) || {};
   if (String(c.host || '') !== String(host)) return { ok: false, why: `${CONSENT_FILE} names host ${c.host || '(none)'}, not ${host}; nothing runs` };
@@ -192,7 +190,7 @@ function plan(who, o, { env = process.env, now, verifyRecord, ps, hostname, exec
     '  not covered: an offline gap longer than the cut (the consent is one cut of up to 30 minutes and one restart)'];
   if (!o.record) lines.push('  consent: no record named (pass --record <id>)');
   else {
-    const v = consent(who.root, o.record, verifyRecord, hostOf(env, hostname), { env, exec, drillConsent });
+    const v = consent(who.root, o.record, verifyRecord, hostOf(env, hostname), { exec, drillConsent });
     lines.push(v.ok ? `  consent: ${o.record} verifies as the owner's word` : `  consent: ${o.record} refused: ${v.why}`);
     const used = L.drillOf(who.root, o.record);
     lines.push(used ? `  used: yes, a drill on it started ${used.started_at}; run is refused` : '  used: no drill on it yet');
@@ -213,7 +211,7 @@ function plan(who, o, { env = process.env, now, verifyRecord, ps, hostname, exec
 // is cut; a cut that fails never restarts the host and still brings the network back.
 function run(who, o, { env, now, verifyRecord, exec, fs = require('fs'), hostname, drillConsent }) {
   const refuse = (why) => ({ code: 1, out: `outage-drill.js: ${why}` });
-  const v = consent(who.root, o.record, verifyRecord, hostOf(env, hostname), { env, exec, drillConsent });
+  const v = consent(who.root, o.record, verifyRecord, hostOf(env, hostname), { exec, drillConsent });
   if (!v.ok) return refuse(`refused: ${v.why}; nothing scheduled or cut`);
   const used = L.drillOf(who.root, o.record);
   if (used) return refuse(`refused: ${o.record} was already used for a drill started ${used.started_at}; one drill per consent, nothing scheduled or cut`);
