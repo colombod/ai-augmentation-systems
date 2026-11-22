@@ -765,12 +765,13 @@ const handlers = {
     if (!obj) throw new R.OperatorError('not_found', `record ${id} was not found (operator.js refresh pulls other hosts; operator.js find lists records)`);
     // the record is displayed as stored; its words count as the operator's only if it validates
     const v = R.verifyRecord(ctx.projectRoot, id, { refresh: ctx.refreshOnce, noLedger: true });
-    const validity = v.ok ? { ok: true } : { ok: false, code: v.code, error: v.error };
-    const lines = [`${obj.id}  ${obj.kind}${obj.test === true ? ' [test]' : ''}`, v.ok ? 'validity: valid' : `validity: invalid (${v.code}): ${v.error}`,
+    // valid as a record is not the same as the operator's word: an ack or a test record is valid and does not verify
+    const validity = v.ok || v.valid ? { ok: true } : { ok: false, code: v.code, error: v.error };
+    const lines = [`${obj.id}  ${obj.kind}${obj.test === true ? ' [test]' : ''}`, validity.ok ? 'validity: valid' : `validity: invalid (${v.code}): ${v.error}`,
       `by: ${obj.by && obj.by.instance} (${obj.by && obj.by.role}) at ${obj.ts}`];
     for (const k of ['statement', 'question', 'text', 'answer', 'confidence', 'rationale', 'reason']) if (obj[k]) lines.push(`${k}: ${obj[k]}`);
-    if (obj.quote && !v.ok) lines.push("quote: withheld, the record does not validate (the raw record is in --json)");
-    if (obj.quote && v.ok) {
+    if (obj.quote && !validity.ok) lines.push("quote: withheld, the record does not validate (the raw record is in --json)");
+    if (obj.quote && validity.ok) {
       const cid = (obj.cites || []).find((c) => String(c).startsWith('in-'));
       const inp = cid ? log.getInput(ctx.projectRoot, cid) : null;
       lines.push(`operator quote: ${quoted((inp && R.excerptFor(inp.text, obj.quote)) || obj.quote)}`);

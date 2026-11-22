@@ -529,3 +529,24 @@ test('a question-box answer opening with the test marker is a test input; a plai
   ].map((r) => JSON.stringify(r)).join('\n')}\n`);
   assert.deepStrictEqual(t.readHumanInputs(f).inputs.map((i) => [i.text, i.source]), [['[reality-check test input] use mysql', 'test'], ['B', 'human']]);
 });
+
+// chief-of-staff-11.1: the shape a SendMessage is logged in: the harness's wrapper, the sender's words in origin.body
+test('a peer message whose own words open with the test marker is a test input; one quoting it is a peer', () => {
+  const wrap = (body) => `Another Claude session sent a message:\n<cross-session-message from="uds:/x.sock" from-name="reality-checker" from-mode="prompting">\n${body}\n</cross-session-message>`;
+  const rec = (body, over = {}) => ({ type: 'user', isMeta: true, promptSource: 'system', uuid: 'p1', timestamp: ts(1), sessionId: SID,
+    origin: { kind: 'peer', from: 'uds:/x.sock', name: 'reality-checker', body }, message: { role: 'user', content: wrap(body) }, ...over });
+  const mark = '[reality-check test input] test decision: record that the test label is t1';
+  assert.strictEqual(t.classifyRecord(rec(mark)).source, 'test');
+  assert.strictEqual(t.classifyRecord(rec(`  ${mark}`)).source, 'test', 'leading whitespace, as on a prompt');
+  assert.strictEqual(t.classifyRecord(rec(`the check types ${mark}`)).source, 'peer', 'quoted mid-message');
+  // no body to read: the wrapper is not the sender's words, so it stays a peer
+  const { body, ...noBody } = rec(mark).origin;
+  assert.strictEqual(t.classifyRecord(rec(mark, { origin: noBody })).source, 'peer');
+  // the same message queued while the session was busy
+  const queued = (b) => ({ type: 'attachment', uuid: 'q1', timestamp: ts(2), sessionId: SID, attachment: { type: 'queued_command', commandMode: 'prompt', prompt: wrap(b), origin: { kind: 'peer', from: 'uds:/x.sock', body: b } } });
+  assert.strictEqual(t.classifyRecord(queued(mark)).source, 'test');
+  assert.strictEqual(t.classifyRecord(queued(`see ${mark}`)).source, 'peer');
+  // a body on anything but a peer record is not read: the record's own text decides
+  assert.strictEqual(t.classifyRecord({ ...R.humanString('use postgres', 3), origin: { kind: 'human', body: mark } }).source, 'human');
+});
+

@@ -43,7 +43,11 @@ const isRelay = (text) => RELAY_OPENING.test(String(text).trim());
 // marker it fails safe: it can only take an input away from the operator's word, never add one.
 const TEST_MARKER = '[reality-check test input]';
 const isTestInput = (text) => String(text).trim().startsWith(TEST_MARKER);
-const marked = (source, text) => (source !== 'system' && isTestInput(text) ? 'test' : source);
+// a peer record's text opens with the harness's wrapper (the notice and the cross-session-message tag);
+// the sender's own words are origin.body, so the opening is judged there, and a peer quoting the marker
+// mid-message stays a peer
+const wordsOf = (text, origin) => (origin && origin.kind === 'peer' && typeof origin.body === 'string' ? origin.body : text);
+const marked = (source, text, origin) => (source !== 'system' && isTestInput(wordsOf(text, origin)) ? 'test' : source);
 
 function textOf(content) {
   if (typeof content === 'string') return content;
@@ -76,7 +80,7 @@ function classifyRecord(record) {
     } else if (kind === 'peer') source = 'peer';
     else if (kind) source = 'system';
     else source = 'unknown';
-    source = marked(source, text);
+    source = marked(source, text, origin);
     return {
       source, text,
       ext_id: a.delivery_id || record.uuid || null,
@@ -108,7 +112,7 @@ function classifyRecord(record) {
     // harness-injected UI notes that carry no origin at all are not operator input either
     source = head.startsWith('<command-name>') || head.startsWith('<local-command') ? 'system' : 'unknown';
   }
-  source = marked(source, text);
+  source = marked(source, text, origin);
   return {
     source, text,
     ext_id: record.promptId || record.uuid || null,

@@ -512,8 +512,10 @@ test('pending lists unrecorded human inputs only; ack and records remove them', 
   assert.strictEqual(codeOf(() => R.ack({ projectRoot: root, input: 'in-pc-009999', reason: 'x', by: COS })), 'not_found');
   assert.deepStrictEqual(R.pending(root, { since: '2099-10-13T10:00:06.000Z' }).inputs.map((i) => i.id), ['in-pc-000005']);
   assert.deepStrictEqual(R.pending(root, { sessionId: 'nobody' }).inputs, []);
+  // a valid record, and not the operator's word: an ack carries no decision
   const v = R.verifyRecord(root, 'ack-chief-of-staff-000002');
-  assert.strictEqual(v.ok, true, JSON.stringify(v));
+  assert.strictEqual(v.valid, true, JSON.stringify(v));
+  assert.deepStrictEqual([v.ok, v.code], [false, 'not_operator_word']);
 });
 
 // ---- questions and the ledger ----
@@ -596,8 +598,11 @@ test('verify of question, withdrawal and ack records checks only their chains', 
   const root = fixture();
   const q = ask(root);
   const w = R.withdraw({ projectRoot: root, question: q.id, reason: 'not needed anymore', by: COS });
-  assert.strictEqual(R.verifyRecord(root, q.id).ok, true);
-  assert.strictEqual(R.verifyRecord(root, w.id).ok, true);
+  // their chains hold, so they are valid records; neither is the operator's word
+  for (const x of [q, w]) {
+    const v = R.verifyRecord(root, x.id);
+    assert.deepStrictEqual([v.ok, v.valid, v.code], [false, true, 'not_operator_word']);
+  }
 });
 
 test('listRecords reads every instance file', () => {
@@ -1383,7 +1388,7 @@ test('R4 B4: an instance that left team.json keeps only its recorded history; an
     assert.strictEqual(R.verifyRecord(root, fa.id).code, 'unknown_instance');
     assert.strictEqual(R.verifyRecord(root, fd.id).code, 'unknown_instance');
     assert.match(R.verifyRecord(root, fd.id).error, /restore the instance in \.delivery\/team\/team\.json to re-check it/);
-    assert.strictEqual(R.verifyRecord(root, a1.id).ok, true, 'the recorded history stays valid');
+    assert.strictEqual(R.verifyRecord(root, a1.id).valid, true, 'the recorded history stays valid');
     const p = R.pending(root, {});
     assert.ok(p.inputs.some((e) => e.id === 'in-pc-000001'));
     assert.deepStrictEqual(p.problems.filter((x) => x.detail === 'unknown_instance').map((x) => x.id).sort(), [fa.id, fd.id].sort());
@@ -1464,7 +1469,7 @@ test('R5 B1: a departed instance is judged by the role its head recorded, never 
   const check = (label) => {
     assert.strictEqual(R.verifyRecord(root, fa.id).code, 'role_mismatch', label);
     assert.strictEqual(R.verifyRecord(root, fd.id).code, 'role_mismatch', label);
-    assert.strictEqual(R.verifyRecord(root, a1.id).ok, true, `${label}: legitimate history stays valid`);
+    assert.strictEqual(R.verifyRecord(root, a1.id).valid, true, `${label}: legitimate history stays valid`);
     assert.ok(R.pending(root, {}).inputs.some((e) => e.id === 'in-pc-000001'), label);
     assert.strictEqual(R.ledger(root, {})[0].status, 'open', label);
   };
@@ -1482,7 +1487,7 @@ test('R5 B1: a departed instance is judged by the role its head recorded, never 
   assert.strictEqual(R.verifyRecord(root, fa.id).code, 'unknown_instance');
   assert.ok(R.pending(root, {}).inputs.some((e) => e.id === 'in-pc-000004'), 'its ack no longer counts');
   writeManifest(root);
-  assert.strictEqual(R.verifyRecord(root, a1.id).ok, true, 'restoring the manifest re-checks and restores it');
+  assert.strictEqual(R.verifyRecord(root, a1.id).valid, true, 'restoring the manifest re-checks and restores it');
   assert.strictEqual(JSON.parse(fs.readFileSync(headsFile, 'utf8'))['records/builder-1'].role, 'builder', 'and stamps the role on the old head');
 });
 
