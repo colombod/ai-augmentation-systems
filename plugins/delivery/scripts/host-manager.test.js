@@ -2477,3 +2477,24 @@ test('after the fix --check prints (the hand-written unit stopped and disabled, 
     assert.ok(!fs.existsSync(path.join(HM.unitDir(m.home), cosUnit(m))), what);
   }
 });
+
+test('a restart by the watchdog start pass drops no kick, as that run waits for the settle itself; the same restart from outside a run drops one', () => {
+  const KICK = require('./lib/kick.js');
+  const TR = require('./team-revive.js');
+  const setup = () => {
+    const m = machine({ alphaRoles: HM_ROLES });
+    hostManagerUnit(m);
+    runningRole(m, m.alpha, 'host-manager', { pid: 90, version: '1.1.0' });
+    return m;
+  };
+  const env = { DELIVERY_HOST: 'pc', PATH: '/usr/bin', DELIVERY_CLAUDE_BIN: NO_CLAUDE };
+  const inRun = setup();
+  watchdog.defaultRevive(inRun.alpha.root, { team: inRun.alpha.team, env, now: inRun.now, bd: store(WORK), live: inRun.live, exec: inRun.sd.exec, sleep: () => {}, relist: () => inRun.live,
+    deps: { home: inRun.home, spawn: () => { throw new Error('no spawn'); }, stop: () => { throw new Error('no stop'); }, systemdRun: null, sdFetch: inRun.dir.fetch, ...inRun.deps().teamDeps(inRun.alpha.root) } });
+  assert.ok(inRun.sd.calls.includes(`systemctl --user restart ${HM.UNIT}`), inRun.sd.calls.join('\n'));
+  assert.equal(KICK.waiting(inRun.alpha.root), 0);
+  const outside = setup();
+  TR.revive(outside.alpha.root, outside.alpha.team, { start: true, cwd: outside.base, env, home: outside.home, live: outside.live, relist: () => outside.live, systemdRun: null, spawn: () => { throw new Error('no spawn'); }, stop: () => { throw new Error('no stop'); },
+    restartUnit: () => {}, sdFetch: outside.dir.fetch, ...outside.deps().teamDeps(outside.alpha.root), now: outside.now });
+  assert.equal(KICK.waiting(outside.alpha.root), 1);
+});

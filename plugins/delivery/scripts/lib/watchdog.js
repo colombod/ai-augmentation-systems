@@ -725,6 +725,30 @@ function reviveStarts(root) {
   return out;
 }
 
+// When the newest settle of a start still waiting for its first turn ends (ms), or null. A first-turn wake is
+// due START_SETTLE_MIN after a start, and a pass that comes just before that leaves it to the next timer
+// pass, up to 15 minutes on. Only each role's newest start counts, only while it is settling and the
+// session has taken no turn since, so the answer is never more than one settle and a few seconds away.
+const SETTLE_GRACE_MS = 5000;
+function settleEnd(starts, sessionList, nowMs) {
+  const settle = START_SETTLE_MIN * 60e3;
+  const newest = new Map();
+  for (const r of starts || []) {
+    if (!r || !['start', 'restart'].includes(r.type) || !r.instance || !Number.isFinite(ms(r.at))) continue;
+    const had = newest.get(r.instance);
+    if (!had || ms(r.at) > ms(had.at)) newest.set(r.instance, r);
+  }
+  let end = null;
+  for (const r of newest.values()) {
+    const at = ms(r.at);
+    if (at > nowMs || nowMs - at >= settle) continue;
+    const h = (sessionList || []).find((s) => s && s.instance === r.instance);
+    if (!h || (Number.isFinite(h.lastTurn) && h.lastTurn >= at)) continue;
+    end = Math.max(end === null ? -Infinity : end, at + settle + SETTLE_GRACE_MS);
+  }
+  return end;
+}
+
 function read(root, { bd, now, team, rows, installed, pause: given } = {}) {
   try {
     const Goal = require('./goal.js');
@@ -1173,4 +1197,4 @@ function wakeArgs(s, prompt, live, { prefix = null } = {}) {
   return { mode: 'resume', args: ['--resume', s.session, '-p', prompt] };
 }
 
-module.exports = { MESSAGE_CHARS, shorten, FINISH_WINDOW_MS, overdueWakes, stopWake, finishStops, waitingRoles, noteWaiting, waitedRoles, chiefOf, KILL_GRACE_MS, START_SLACK_MS, procReads, reviveStarts, START_SETTLE_MIN, START_FRESH_H, MANAGER_STEP, managerPrs, refusedInstalls, MANAGER_DAILY_CAP, MANAGER_MESSAGE_DAILY_CAP, ASSIGNED_DAILY_CAP, MANAGER_ASSIGNED_DAILY_CAP, reviewFacts, capsOf, ASSIGNED_IDLE_MIN, WAKE_OPENING, wakePrompt, withA3s, FRESH_ABOVE, contextOf, MESSAGE_EVERY_MS, MESSAGE_DAILY_CAP, WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };
+module.exports = { settleEnd, SETTLE_GRACE_MS, MESSAGE_CHARS, shorten, FINISH_WINDOW_MS, overdueWakes, stopWake, finishStops, waitingRoles, noteWaiting, waitedRoles, chiefOf, KILL_GRACE_MS, START_SLACK_MS, procReads, reviveStarts, START_SETTLE_MIN, START_FRESH_H, MANAGER_STEP, managerPrs, refusedInstalls, MANAGER_DAILY_CAP, MANAGER_MESSAGE_DAILY_CAP, ASSIGNED_DAILY_CAP, MANAGER_ASSIGNED_DAILY_CAP, reviewFacts, capsOf, ASSIGNED_IDLE_MIN, WAKE_OPENING, wakePrompt, withA3s, FRESH_ABOVE, contextOf, MESSAGE_EVERY_MS, MESSAGE_DAILY_CAP, WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };

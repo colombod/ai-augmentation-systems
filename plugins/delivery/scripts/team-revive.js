@@ -237,6 +237,14 @@ function settleStarts(pids, { waitMs = R.SETTLE_MS, stepMs = 2000, isExited = ex
 // A start pass holds the project's start lock (lib/team-revive.js startLock) from its read of the facts to
 // its last ledger row, so a second pass (the Chief of Staff's beside the host job's) sees the first's
 // starts or starts nothing. check and --dry-run read only and take no lock.
+// A start made outside a watchdog run (the host manager, this script) drops one kick: the run it starts
+// waits for the settle and gives the first-turn wake. A watchdog run does that wait itself.
+function afterRevive(root, r, { inRun = false } = {}) {
+  const came = [...Object.values(r.started || {}), ...Object.values(r.restarted || {})].some((x) => x && (x.pid || x.unit) && !x.failed);
+  if (came && !inRun) require('./lib/kick.js').kick(root, 'a role was started: its first-turn wake is due when it settles');
+  return r;
+}
+
 function revive(root, team, opts = {}) {
   if (!opts.start || opts.dryRun) return revivePass(root, team, opts);
   // the guard holds for every caller, a script loading this module included: a start from a role
@@ -251,7 +259,9 @@ function revive(root, team, opts = {}) {
     const a = { ...R.assess(gather(root, team, { env, ...deps })), go: false, locked: lock.held };
     return { a, started: {}, lines: [`Not started now: another start pass holds the start lock (pid ${lock.held.pid || 'unknown'}, ${path.relative(root, R.lockFile(root))}); it starts what is missing.`] };
   }
-  try { return revivePass(root, team, { ...opts, touchLock: () => lock.refresh() }); } finally { lock.release(); }
+  let r;
+  try { r = revivePass(root, team, { ...opts, touchLock: () => lock.refresh() }); } finally { lock.release(); }
+  return afterRevive(root, r, opts);
 }
 
 // A stale session is restarted only after a second read of the open sessions finds it still idle (the
@@ -545,7 +555,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, ...deps } = {}) {
   return { code: 0, out: r.lines.join('\n') };
 }
 
-module.exports = { spawnRemote, startOwnUnit, unitOps, unitSettleOf, tellTwice, main, revive, gather, startEnv, refusal, callerRefusal, serverAlive, serverOf, stopServer, systemdRunOf, settleStarts, exited, systemdRunRefused };
+module.exports = { afterRevive, spawnRemote, startOwnUnit, unitOps, unitSettleOf, tellTwice, main, revive, gather, startEnv, refusal, callerRefusal, serverAlive, serverOf, stopServer, systemdRunOf, settleStarts, exited, systemdRunRefused };
 
 if (require.main === module) {
   let r;

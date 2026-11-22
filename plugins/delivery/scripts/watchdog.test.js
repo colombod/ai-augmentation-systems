@@ -2493,3 +2493,126 @@ test('5q3 rv-224: a sender is told when a message over the inbox bound was kept 
   assert.match(big.context, new RegExp(`Only its first ${IB.MAX_TEXT} of ${IB.MAX_TEXT + 10} characters were kept`));
   assert.doesNotMatch(send('short').context, /Only its first/, 'a message within the bound says nothing of the kind');
 });
+
+// A first-turn wake is due two minutes after a restart. A pass just before that used to leave it to the next
+// timer pass, up to 15 minutes on, over the ten minutes a restarted role has for its first turn.
+const settleDeps = (h, live, sent, waits) => ({ spawn: spawner(), bd: memStore(h), live, env: fakeEnv(h, { XDG_RUNTIME_DIR: '/r' }), revive: () => [], sweep: () => ({ removed: [], failed: [] }), update: { configDir: fs.mkdtempSync(path.join(os.tmpdir(), 'no-install-')) },
+  deliver: (socket, m) => { sent.push(socket); return { ok: true, msgId: 'm' }; }, settleWait: (ms) => waits.push(ms) });
+const started = (h, instance, atIso, type = 'restart') => (fs.mkdirSync(path.join(h.root, WD.REL), { recursive: true }), fs.appendFileSync)(path.join(h.root, WD.REL, 'revive.ndjson'), `${JSON.stringify({ type, at: atIso, instance, pid: 1 })}\n`);
+const liveOf = (h, ...names) => names.map((n, i) => ({ sessionId: `sess-${n}`, cwd: h.roleDir(n), status: 'idle', pid: 900 + i }));
+
+test('settleEnd: only a newest start still settling with no turn counts, and it is never more than one settle away', () => {
+  const t = Date.parse('2026-11-22T10:00:00Z');
+  const s = (instance, lastTurn = -Infinity) => ({ instance, lastTurn });
+  const row = (instance, ago, type = 'restart') => ({ type, instance, at: iso(t - ago) });
+  const end = (rows, list) => WD.settleEnd(rows, list, t);
+  assert.equal(end([row('a', 30e3)], [s('a')]), t - 30e3 + 120e3 + WD.SETTLE_GRACE_MS);
+  assert.equal(end([row('a', 30e3), row('b', 90e3)], [s('a'), s('b')]), t - 30e3 + 120e3 + WD.SETTLE_GRACE_MS, 'the latest of many');
+  assert.equal(end([row('a', 120e3)], [s('a')]), null, 'its settle is over: this pass already wakes it');
+  assert.equal(end([{ type: 'restart', instance: 'a', at: iso(t + 60e3) }], [s('a')]), null, 'a time in the future is no settle');
+  assert.equal(end([row('a', 30e3)], [s('a', t - 10e3)]), null, 'it has taken a turn');
+  assert.equal(end([row('a', 30e3)], []), null, 'no session on the roster to wake');
+  assert.equal(end([row('a', 30e3, 'failed')], [s('a')]), null, 'not a start');
+  assert.equal(end([row('a', 200e3), row('a', 30e3)], [s('a', t - 100e3)]), t - 30e3 + 120e3 + WD.SETTLE_GRACE_MS, 'the newest start of a role decides');
+});
+
+test('a run with a role settling waits once and wakes it inside the run; the next run does not wake it again', () => {
+  const t0 = '2026-11-22T10:00:00Z';
+  const h = harness({});
+  session(h, 'builder-1', { seen: iso(Date.parse(t0) - 3 * H) });
+  started(h, 'builder-1', iso(Date.parse(t0) - 84e3)); // a pass 1.4 minutes after the restart: not due yet
+  const sent = [];
+  const waits = [];
+  const r = at(h, t0, ['run'], settleDeps(h, liveOf(h, 'builder-1'), sent, waits));
+  assert.equal(waits.reduce((a, b) => a + b, 0), 36e3 + WD.SETTLE_GRACE_MS, 'to the end of the settle');
+  assert.ok(waits.every((x) => x <= 5000), 'in short steps');
+  assert.equal(sent.length, 1, r.out);
+  assert.match(r.out, /Woke builder-1 \(message/);
+  const rows = WD.logRows(h.root).filter((x) => x.type === 'wake' && (x.keys || []).some((k) => k.startsWith('started:builder-1:')));
+  assert.equal(rows.length, 1);
+  const again = [];
+  at(h, iso(Date.parse(t0) + 60e3), ['run'], settleDeps(h, liveOf(h, 'builder-1'), sent, again));
+  assert.equal(sent.length, 1, 'one wake per start');
+  assert.deepEqual(again, [], 'nothing left to wait for');
+});
+
+test('many roles restarted together cost one wait and one more pass, each role one wake', () => {
+  const t0 = '2026-11-22T10:00:00Z';
+  const h = harness({});
+  const names = ['builder-1', 'builder-2', 'builder-3'];
+  names.forEach((n, i) => { session(h, n, { seen: iso(Date.parse(t0) - 3 * H) }); started(h, n, iso(Date.parse(t0) - 100e3 + i * 5e3)); });
+  const sent = [];
+  const waits = [];
+  const r = at(h, t0, ['run'], settleDeps(h, liveOf(h, ...names), sent, waits));
+  assert.equal(waits.reduce((a, b) => a + b, 0), 30e3 + WD.SETTLE_GRACE_MS, 'one wait, to the latest settle');
+  assert.equal(sent.length, 3, r.out);
+  assert.equal((r.out.match(/ watchdog$/gm) || []).length, 2, 'the run and one more pass, however many roles');
+});
+
+test('no wait: nothing settling, a role that has already had its turn, or a sealed run with no wait given', () => {
+  const t0 = '2026-11-22T10:00:00Z';
+  const none = harness({});
+  session(none, 'builder-1', { seen: iso(Date.parse(t0) - 3 * H) });
+  const w1 = [];
+  at(none, t0, ['run'], settleDeps(none, liveOf(none, 'builder-1'), [], w1));
+  assert.deepEqual(w1, []);
+  const turned = harness({});
+  session(turned, 'builder-1', { seen: t0, rows: [{ type: 'assistant', timestamp: iso(Date.parse(t0) - 10e3), message: { role: 'assistant', content: [{ type: 'text', text: 'on it' }] } }] });
+  started(turned, 'builder-1', iso(Date.parse(t0) - 30e3));
+  const w2 = [];
+  at(turned, t0, ['run'], settleDeps(turned, liveOf(turned, 'builder-1'), [], w2));
+  assert.deepEqual(w2, []);
+  // only the host job's run waits: a wake asked for by hand returns at once
+  const byHand = harness({});
+  session(byHand, 'builder-1', { seen: iso(Date.parse(t0) - 3 * H) });
+  started(byHand, 'builder-1', iso(Date.parse(t0) - 30e3));
+  const w3 = [];
+  at(byHand, t0, ['wake'], settleDeps(byHand, liveOf(byHand, 'builder-1'), [], w3));
+  assert.deepEqual(w3, []);
+  // the real wait is for a real run: a sealed one never sleeps two minutes
+  const sealed = harness({});
+  session(sealed, 'builder-1', { seen: iso(Date.parse(t0) - 3 * H) });
+  started(sealed, 'builder-1', iso(Date.parse(t0) - 30e3));
+  const { settleWait, ...deps } = settleDeps(sealed, liveOf(sealed, 'builder-1'), [], []);
+  const began = Date.now();
+  at(sealed, t0, ['run'], { ...deps, env: { ...fakeEnv(sealed), DELIVERY_SEALED_RUN: 'x' } });
+  assert.ok(Date.now() - began < 30e3);
+});
+
+test('a kick while the run waits is served at once, and the waiting is bounded', () => {
+  const t0 = '2026-11-22T10:00:00Z';
+  const KICK = require('./lib/kick.js');
+  const h = harness({});
+  session(h, 'builder-1', { seen: iso(Date.parse(t0) - 3 * H) });
+  started(h, 'builder-1', iso(Date.parse(t0) - 60e3));
+  const waits = [];
+  const deps = settleDeps(h, liveOf(h, 'builder-1'), [], waits);
+  deps.settleWait = (ms) => { waits.push(ms); KICK.kick(h.root, 'a message'); };
+  const r = at(h, t0, ['run'], deps);
+  assert.equal(waits.reduce((a, b) => a + b, 0), 60e3 + WD.SETTLE_GRACE_MS, 'the kicks do not lengthen it');
+  assert.match(r.out, /Kicked: 1/);
+  // the first pass, two kicked passes (the bound), and the one pass after the settle, though a kick landed at every step
+  assert.equal((r.out.match(/ watchdog$/gm) || []).length, 4, r.out);
+});
+
+test('a start made outside a watchdog run drops one kick so a run gives the wake; one inside a run, or one that failed, drops none', () => {
+  const KICK = require('./lib/kick.js');
+  const TR = require('./team-revive.js');
+  const h = harness({});
+  const team = JSON.parse(fs.readFileSync(path.join(h.root, '.delivery', 'team', 'team.json'), 'utf8'));
+  const pass = (result, extra = {}) => {
+    KICK.take(h.root);
+    return TR.afterRevive(h.root, result, extra);
+  };
+  assert.ok(team);
+  pass({ restarted: { 'builder-1': { pid: 42 } } });
+  assert.equal(KICK.waiting(h.root), 1);
+  pass({ started: { 'builder-1': { unit: 'delivery-role-x.service' } } });
+  assert.equal(KICK.waiting(h.root), 1);
+  pass({ restarted: { 'builder-1': { pid: 42 } } }, { inRun: true });
+  assert.equal(KICK.waiting(h.root), 0);
+  pass({ started: { 'builder-1': { pid: 42, failed: 'exited' } }, restarted: { 'builder-2': { why: 'busy' } } });
+  assert.equal(KICK.waiting(h.root), 0);
+  pass({});
+  assert.equal(KICK.waiting(h.root), 0);
+});

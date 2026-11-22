@@ -701,7 +701,7 @@ function defaultRevive(root, { team, env, now, dryRun, bd, live, exec, sleep, re
   const TR = require('./team-revive.js');
   const ops = TR.unitOps(root, { exec: runner(exec), now, sdFetch: deps.sdFetch });
   // and settled as a spawned start is: a unit down after SETTLE_MS is a failed start, retried next pass
-  return TR.revive(root, team, { ...deps, start: true, cwd: root, dryRun, env, now, bd, relist, ...ops, unitSettle: TR.unitSettleOf(runner(exec), sleep), ...(live !== undefined ? { live } : {}) }).lines;
+  return TR.revive(root, team, { ...deps, inRun: true, start: true, cwd: root, dryRun, env, now, bd, relist, ...ops, unitSettle: TR.unitSettleOf(runner(exec), sleep), ...(live !== undefined ? { live } : {}) }).lines;
 }
 
 // The plugin's units in the owner's service directory (dec-chief-of-staff-000485), each pass: a unit file
@@ -749,7 +749,7 @@ function directoryPass(root, { home = os.homedir(), exec, sdFetch, env } = {}) {
   return parts.length ? `service directory: ${parts.join('; ')}` : null;
 }
 
-function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, live, spawn, deliver, platform = process.platform, home = os.homedir(), exec, has, sweep, lockWaitMs, update = {}, userGuard, revive, hostUnit, sleep, stopWake, kill: killFn } = {}) {
+function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, live, spawn, deliver, platform = process.platform, home = os.homedir(), exec, has, sweep, lockWaitMs, update = {}, userGuard, revive, hostUnit, sleep, stopWake, kill: killFn, settleWait } = {}) {
   let o;
   try { o = parse(argv); } catch (err) { return { code: 2, out: `watchdog.js: ${err.message}\n${USAGE}` }; }
   const [cmd] = o._;
@@ -764,7 +764,9 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
   if (cmd === 'install') return install(who.root, o, { platform, home, env, exec, has, sdFetch: (hostUnit || {}).sdFetch, ...(live !== undefined ? { live } : {}) });
   if (cmd === 'uninstall') return uninstall(who.root, { platform, home, env, exec, has });
   const state = { installed: false };
-  const go = ({ first = true } = {}) => {
+  const runNow = now;
+  const go = ({ first = true, at: passAt } = {}) => {
+    const now = passAt !== undefined ? passAt : runNow; // eslint-disable-line no-shadow
     // one directory for this pass (the wakes' scopes, the host manager's start, the directory pass): after
     // a request that cannot reach it, the rest of the pass does not wait again
     const passSd = require('./lib/service-directory.js').passFetch((hostUnit || {}).sdFetch);
@@ -870,6 +872,27 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
     const outs = [go()];
     // after an install this process still holds the old plugin: the kick it left starts a new one
     for (let i = 0; i < KICK_PASSES - 1 && !state.installed && KICK.waiting(who.root); i++) outs.push(go({ first: false }));
+    // a role started by this pass or just before it has its first-turn wake due when its settle ends: this
+    // run waits for that and makes one more pass, rather than leave it to the next timer pass. No unit and no
+    // timer is added, however many roles started: one wait, to the latest settle, and one pass after it.
+    // That pass starts nobody, so it cannot make another wait. A kick is still served while it waits.
+    const wait = settleWait !== undefined ? settleWait : (env.DELIVERY_SEAL_ACTIVE || env.DELIVERY_SEALED_RUN ? null : (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms));
+    if (cmd === 'run' && wait && !state.installed && !state.held) {
+      const from = now ? Date.parse(now) : Date.now();
+      const end = WD.settleEnd(WD.reviveStarts(who.root), WD.sessions(who.root, { team: who.team, ...(rows ? { rows } : {}) }), from);
+      if (end !== null) {
+        const passTime = (elapsed) => (now ? new Date(from + elapsed).toISOString() : undefined);
+        let elapsed = 0;
+        let kicked = 0;
+        while (elapsed < end - from) {
+          const step = Math.min(5000, end - from - elapsed);
+          wait(step);
+          elapsed += step;
+          if (elapsed < end - from && kicked < KICK_PASSES - 1 && KICK.waiting(who.root)) { kicked += 1; outs.push(go({ first: false, at: passTime(elapsed) })); }
+        }
+        outs.push(go({ first: false, at: passTime(elapsed) }));
+      }
+    }
     return { code: 0, out: outs.map((x) => x.out).join('\n') };
   };
   const r = withRunLock(who.root, drain, { waitMs: KICK.waiting(who.root) ? (lockWaitMs !== undefined ? lockWaitMs : KICK_LOCK_WAIT_MS) : 0 });

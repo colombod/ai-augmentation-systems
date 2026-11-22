@@ -1641,7 +1641,9 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   minutes to six hours old, whose session has taken no turn since (no reply in its transcript after the
   start; its own SessionStart hook moving `last_seen` or touching the transcript does not count), wakes
   that session once (keyed on the start) with the first turn, not held by the hourly stall gate
-  (hjx.1.6.12, hjx.1.6.12.2).
+  (hjx.1.6.12, hjx.1.6.12.2). So that wake does not wait for the next timer pass, a run with a role still
+  in its two-minute settle and with no turn waits for the latest settle to end and makes one more pass; a
+  start made outside a run drops one kick so that a run does this. It adds no unit and no timer.
   The host job runs `start` at each `run`, after the wakes and never while a plugin install is held or
   under way; the sealed test runner starts none. In a role session only the Chief of Staff may run
   `start` (lane group `team-revive`), and its brief runs `check` each turn; the host manager may too
