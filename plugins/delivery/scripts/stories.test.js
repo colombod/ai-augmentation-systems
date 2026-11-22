@@ -145,6 +145,40 @@ test('team-runtime-11 c5: prose sections are free text; a template or existing h
   assert.equal(w2.text(), t0, 'rewriting Goal with its own body is byte-identical');
 });
 
+// rv-225 finding 3: headingLines skips a `## x` inside a code fence, so replacing the section above such a
+// block replaces the whole section (the fenced ## is body text), not splitting it at the fence. A story
+// whose Goal body holds a fenced ## is rewritten; if the fence were ignored, next() would stop at the
+// fenced ## and leave the block orphaned.
+test('rv-225 finding 3: a fenced ## in the story is body text, so the section above it is replaced whole, not split at the fence', () => {
+  const w = created();
+  assert.equal(w.run('section', FILE, '--heading', 'Goal', '--body', 'intro\n```\n## not a heading\n```\ntail').code, 0);
+  assert.ok(w.text().includes('## not a heading'), 'the fenced ## is now in the story');
+  assert.equal(w.text().match(/^## Goal$/gm).length, 1);
+  assert.equal(w.run('section', FILE, '--heading', 'Goal', '--body', 'clean goal').code, 0);
+  assert.ok(w.text().includes('clean goal'), 'the new body is written');
+  assert.ok(!w.text().includes('## not a heading'), 'the old fenced block is replaced whole, not left orphaned at the fence');
+  assert.ok(!w.text().includes('intro') && !w.text().includes('tail'), 'no remnant of the old Goal body');
+  assert.equal(w.text().match(/^## Goal$/gm).length, 1, 'still exactly one Goal heading');
+});
+
+// rv-225 finding 8: change() writes through a temp file and an atomic rename, so a crash between the write
+// and the rename never leaves a half-written story. A rename that throws must leave the original bytes
+// untouched (a direct write would have changed them) and clean up the temp file.
+test('rv-225 finding 8: a failed rename leaves the story byte-identical and no temp behind', () => {
+  const w = created();
+  const before = w.text();
+  const dir = path.join(w.root, '.delivery', 'stories');
+  const realRename = fs.renameSync;
+  fs.renameSync = () => { throw new Error('rename boom'); };
+  try {
+    assert.throws(() => S.change(w.root, FILE, (text) => ({ text: `${text}\nappended line\n` })), /rename boom/);
+  } finally {
+    fs.renameSync = realRename;
+  }
+  assert.equal(w.text(), before, 'a failed rename leaves the story byte-identical (a direct write would have changed it)');
+  assert.deepEqual(fs.readdirSync(dir).filter((n) => /\.tmp$/.test(n)), [], 'the temp file is cleaned up');
+});
+
 test('ADR-004: no story index is generated on a new story or a status change', () => {
   const w = created();
   assert.equal(fs.existsSync(path.join(w.root, '.delivery', 'stories', 'README.md')), false, 'new writes no index');
