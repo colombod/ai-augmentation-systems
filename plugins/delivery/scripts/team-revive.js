@@ -307,7 +307,7 @@ function lastScope(root, instance) {
   return row && row.unit && row.via !== 'unit' ? row.unit : null;
 }
 
-function restartStale(root, f, a, { env, bin, spawn, stop, relist, systemdRun = null, restartUnit = null, unitSettle = null, touchLock = null, sdFetch: givenFetch }) {
+function restartStale(root, f, a, { env, bin, spawn, stop, relist, systemdRun = null, restartUnit = null, unitSettle = null, touchLock = null, sdFetch: givenFetch, stamp = () => f.now }) {
   const out = {};
   const SD = require('./lib/service-directory.js');
   const sdFetch = SD.passFetch(givenFetch);
@@ -322,7 +322,10 @@ function restartStale(root, f, a, { env, bin, spawn, stop, relist, systemdRun = 
     // live session of the instance means the new one would be a second
     const others = (OS.liveOf(i.instance, { roleDir: i.roleDir, live: now, prefix: f.team && f.team.prefix }) || []).filter((x) => x.sessionId !== st.session);
     if (others.length) { out[i.instance] = { why: `another session of it is live (${OS.described(others)}); a restart would leave two` }; continue; }
-    const at = f.now;
+    // the row's time is when this session is stopped, not when the pass began: restarts run one after
+    // another with a settle between, and a reply the old session gives before its own stop must not read
+    // as a turn since the restart, or it never gets its first-turn wake (lib/watchdog.js, hjx.1.6.12.2)
+    let at = stamp();
     const forced = st.forced ? { forced: true } : {};
     if (st.unit) {
       if (!restartUnit) { out[i.instance] = { why: `it is served by the user unit ${st.unit}, and this pass has no way to restart a unit` }; continue; }
@@ -352,6 +355,7 @@ function restartStale(root, f, a, { env, bin, spawn, stop, relist, systemdRun = 
       out[i.instance] = { why: `its session was not restarted: ${g.why}` };
       continue;
     }
+    at = stamp();
     if (!stop(st.server, st.pid)) {
       R.record(root, { type: 'restart-failed', at, instance: i.instance, server: st.server, from: st.version, to: st.installed, ...forced });
       out[i.instance] = { why: `its Remote Control server (pid ${st.server}) did not stop` };
@@ -407,6 +411,11 @@ function revivePass(root, team, { start = false, dryRun = false, env = process.e
   const f = gather(root, team, { env, ...deps });
   if (force) f.force = force;
   const a = R.assess(f);
+  // the pass's own time plus what has passed since it began; a caller that fixes the time and gives no
+  // clock has stopped time, so its rows stay on the time it gave
+  const tick = clock || Date.now;
+  const began = tick();
+  const stamp = deps.now && !clock ? () => f.now : () => new Date(Date.parse(f.now) + (tick() - began)).toISOString();
   const bin = env.DELIVERY_CLAUDE_BIN || 'claude';
   const started = {};
   const sdRun = systemdRun !== undefined ? systemdRun : systemdRunOf(env);
@@ -483,7 +492,7 @@ function revivePass(root, team, { start = false, dryRun = false, env = process.e
   if (start && !dryRun) { try { tellTwice(root, team, a, { now: f.now }); } catch (err) { /* the next pass tells it */ } }
   let restarted = {};
   if (start && !dryRun && a.restart && a.stale.length) {
-    restarted = restartStale(root, f, a, { env, bin, spawn, stop, relist: again, systemdRun: sdRun, restartUnit, unitSettle, touchLock, sdFetch: deps.sdFetch });
+    restarted = restartStale(root, f, a, { env, bin, spawn, stop, relist: again, systemdRun: sdRun, restartUnit, unitSettle, touchLock, sdFetch: deps.sdFetch, stamp });
   }
   return { a, started, restarted, lines: R.lines(a, { bin, started, restarted, dryRun: start && dryRun }) };
 }
