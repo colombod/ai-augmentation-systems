@@ -25,7 +25,7 @@ The failures come from the 2026-11-22 post-mortem and the analyses of the Chief 
 | 300k to 960k-token contexts reloaded on each wake | SP 8 |
 | 97.6% of tokens on the top model tier; 324 of 327 delivery-lead subagents on it | SP 6 |
 | Budget only warned; no token or money cap; no bound on a round as a whole | SP 1, 2 |
-| A host-wide subagent model override (`CLAUDE_CODE_SUBAGENT_MODEL=opus`) is set in the owner's settings and shell, so it may have forced the top tier over per-role choices; whether it did on the team's hosts is unverified | SP 6 |
+| `CLAUDE_CODE_SUBAGENT_MODEL=opus` is set in the owner's settings and shell. By the docs it is only a default, ranking below a per-call or per-definition model, unless `CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1` is set or Claude Code is older than v2.1.251. Whether the team's hosts met either condition is unverified | SP 6 |
 | 304 PR reviews of 109 PRs; PR 178 reviewed nine times; rebase-only send-backs | RH 4, 6; SP 7 |
 | Delivery-lead filed 87% of all beads, and owner-driven items fell from about 8% to about 2% of new beads | RH 4; IN 5 |
 | Watchdog and host manager restarted each other; the restart ignored the pause | SP 9; OA 3 |
