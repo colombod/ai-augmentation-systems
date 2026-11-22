@@ -20,7 +20,7 @@ For the owner, the Chief of Staff and every role. The promise: the owner can sto
 
 7. **Decision requests carry what is needed to decide.** A request states the unresolved choice, the evidence, the options, a recommendation and the cost of waiting. Related questions are grouped, and unaffected work continues meanwhile. A direct question gets its answer first, before any request for a decision.
 
-8. **One report per sprint.** The sprint report states what was promised, what shipped, what it cost in usage and in attention, what was left out, and what needs the owner. It leads with what shipped, and separates work activity from verified progress. Between reports, nothing is sent unless it needs the owner's judgment or the owner asks.
+8. **One report per sprint.** The sprint report states what was promised, what shipped, what it cost in usage (per role and per model) and in attention, what was left out, and what needs the owner. It leads with what shipped, and separates work activity from verified progress. Between reports, nothing is sent unless it needs the owner's judgment or the owner asks.
 
 9. **Authority is explicit and not extended.** The owner's standing authority, the decisions reserved to the owner and the limits are written down. Approval of one thing is not approval of another. An inferred answer is labelled as inference, carries no authority, and waits for ratification. Silence is not consent.
 
