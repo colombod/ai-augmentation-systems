@@ -39,7 +39,7 @@ The failures come from the 2026-11-22 post-mortem and the analyses of the Chief 
 
 ## Decisions only the owner can make
 
-1. **Standing team or per-sprint team.** The contracts assume roles run only while a declared sprint needs them. The earlier design kept 13 long-lived sessions. This is the largest change. If per-sprint, the plan proposes a thin runner over `claude -p` as Sprint 3's engine (see [PLAN.md](PLAN.md)). Attractor is not chosen, because it has no run-level time or spend cap, no stop and no resume. The owner decides whether to build the runner at all.
+1. **Retire the standing team.** The contracts assume no standing sessions. The plan retires the runtime in Sprint 0 and runs a sprint with Claude Code's own `/goal` and `claude -p` caps, with no custom runner (see [PLAN.md](PLAN.md)). The earlier design kept 13 long-lived sessions. This is the largest change. It needs the owner's approval, including the exact list of files in the Sprint 0 declaration.
 2. **Sprint length.** The contracts require a bound on time, spend and review rounds for each sprint and do not choose them.
 3. **Attention budget size.** The limit on decision requests and messages per sprint, and what happens at the limit.
 4. **The usage budget.** Its unit, its size, and whether it is per week, per sprint, or both. The contracts require it to be hard.
@@ -48,7 +48,7 @@ The failures come from the 2026-11-22 post-mortem and the analyses of the Chief 
 7. **The feature map's storage.** The owner said the store and server were needed only if a story shows the need. This draft keeps that, but you may want it decided.
 8. **Where this lives.** It can be the plugin's `AGENTS.md` doctrine, its `.delivery/` record, or a separate repository, which Converge itself favours for focused parts.
 9. **Whether the Codex port, feature transfer and docs role remain in the first sprint.** The contracts do not prioritise them.
-10. **Repairing team tooling mid-sprint.** The rules say infrastructure needs its necessity declared before work starts, and that the Delivery Manager creates no work from its own failures. A broken existing tool that blocks a declared deliverable is the hard case. Roles and handoffs 4 allows a bounded repair that restores only what the deliverable needs. The stricter reading, which is to report the deliverable blocked and fix nothing until the next sprint, is also consistent with the rules. The owner should pick.
+10. **Repairing team tooling mid-sprint** (moot if the runtime is retired, as in decision 1). The rules say infrastructure needs its necessity declared before work starts, and that the Delivery Manager creates no work from its own failures. A broken existing tool that blocks a declared deliverable is the hard case. Roles and handoffs 4 allows a bounded repair that restores only what the deliverable needs. The stricter reading, which is to report the deliverable blocked and fix nothing until the next sprint, is also consistent with the rules. The owner should pick.
 
 ## What I did not verify
 
