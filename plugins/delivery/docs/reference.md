@@ -2082,7 +2082,9 @@ verifiable id is information; the reply asks the sender for the id, never the op
 
 **Test inputs.** During a check the Reality Checker never asks the operator for an input; it types a
 test input into the role session, one that opens with the fixed marker `[reality-check test input]`
-(after any leading whitespace; quoted elsewhere in a message it changes nothing). The same holds for
+(after any leading whitespace; quoted elsewhere in a message it changes nothing). In a message from
+another session, the sender's own words are what must open with it, not the harness's wrapper around
+them. The same holds for
 an answer in a question box and for an answer another provider's writer hands in. Capture keeps such
 an input apart (source `test`), whatever the session stamped on it. A record made from it, or from
 another test record, carries `test: true`, set when it is written, never chosen. `operator.js

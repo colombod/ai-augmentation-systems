@@ -1036,6 +1036,25 @@ test('the one-way rules: a test input ratifies or supersedes nothing real, and a
   for (const id of [realDec, realDel, realAns]) assert.strictEqual(run(cos, ['verify', id]).status, 0, id);
 });
 
+// chief-of-staff-11.1: how the Reality Checker's send really arrives
+test('a marked message from another session is listed as a test input, and neither it nor a record from it verifies', () => {
+  const root = project();
+  const body = `${MARK} test decision: record that the test label is t1`;
+  const cos = roleDir(root, 'chief-of-staff', 'chief-of-staff', 'pc', 'sess-peer', [{
+    type: 'user', isMeta: true, promptSource: 'system', uuid: 'peer-1', timestamp: '2099-10-13T10:00:01.000Z', sessionId: 'sess-peer',
+    origin: { kind: 'peer', from: 'uds:/x.sock', name: 'reality-checker', body },
+    message: { role: 'user', content: `Another Claude session sent a message:\n<cross-session-message from="uds:/x.sock" from-name="reality-checker" from-mode="prompting">\n${body}\n</cross-session-message>` },
+  }]);
+  run(cos, ['sync']);
+  const p = json(run(cos, ['pending', '--json']));
+  assert.deepStrictEqual(p.inputs, []);
+  assert.deepStrictEqual(p.tests.map((i) => i.id), ['in-pc-000001']);
+  assert.strictEqual(json(run(cos, ['verify', 'in-pc-000001', '--json'])).code, 'test_input');
+  const rec = run(cos, ['record', '--cite', 'in-pc-000001', '--quote', 'record that the test label is t1', '--statement', 'The test label is t1']);
+  assert.strictEqual(rec.status, 0, rec.out + rec.err);
+  assert.strictEqual(json(run(cos, ['verify', rec.lines[0], '--json'])).code, 'test_input');
+});
+
 test('the test mark is part of the hashed input: removing it breaks the inputs chain', () => {
   const { root, cos } = testFixture();
   const dir = path.join(root, '.delivery', 'operator', 'inputs');
