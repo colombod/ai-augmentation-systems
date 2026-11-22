@@ -4,7 +4,7 @@ Draft vision and contracts for the Delivery plugin, written in the form of [Ampl
 
 Status: draft for the owner's review. Nothing here is approved or built. The Check scenarios were walked by reading only; none has been run against a real team, and the contracts have not been tabletop reviewed.
 
-Start with [VISION.md](VISION.md). The contracts are in [contracts/](contracts/). Abbreviations below: CV customer value, IN intent to increment, SP spend and idle, OA owner authority, RH roles and handoffs, VE verification, FM feature map.
+Start with [VISION.md](VISION.md). The contracts are in [contracts/](contracts/). The sprint-by-sprint [PLAN.md](PLAN.md) applies them to the plugin itself, including how to stop it compromising a user's Claude setup. Abbreviations below: CV customer value, IN intent to increment, SP spend and idle, OA owner authority, RH roles and handoffs, VE verification, FM feature map.
 
 ## How each failure maps to a clause
 
