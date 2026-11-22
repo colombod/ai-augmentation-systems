@@ -298,6 +298,14 @@ To change a model: edit roles[].model in .delivery/team/team.json, rerun prepare
 No drift.
 ```
 
+**Optional: the host manager.** If the machine runs more than one team, one `host-manager` session (in no preset, opened from the Claude app) serves them all. It does no product work. To see which sessions are down, run `node <plugin-root>/scripts/host-manager.js status`; each team prints one line of this shape (the shape is from `lib/host-manager.js`; this page has not yet run it on the real install):
+
+```
+<team>: <n> of <m> sessions running; down: <instances or none>; holding work: <instances or none>
+```
+
+followed by one `<unit>: running` or `<unit>: stopped since <time>` line per host job. `host-manager.js restart --down-only` starts what is down and stops nothing that runs; a bare `restart` is the owner's own request. See [the host manager](reference.md#the-watchdog-stalls-and-the-wake).
+
 To give the team work, plan with the pipeline skills (the Product Manager writes `.delivery/initiatives/<initiative>/`, the Delivery Manager writes stories), then the Delivery Manager runs `/delivery:materialise <initiative>` to turn the roadmap, stories and spikes into beads.
 
 ## 6. Your first conversation
