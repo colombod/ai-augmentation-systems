@@ -9,7 +9,7 @@
 // watchdog's sealed-run check read them.
 const { cleanEnv } = require('./run-tests.js');
 
-const SEAL_VARS = ['DELIVERY_SEAL_ACTIVE', 'DELIVERY_SEALED_RUN', 'DELIVERY_TMP_REGISTRY'];
+const SEAL_VARS = ['DELIVERY_SEAL_ACTIVE', 'DELIVERY_SEALED_RUN', 'DELIVERY_TMP_REGISTRY', 'DELIVERY_UNSEALED_TEST_RUN'];
 
 // The Claude configuration becomes a fresh empty directory too (hjx.1.1.4). Run from the installed
 // plugin, as a reality check runs it, this plugin sits under the host's <config>/plugins/cache, and every
