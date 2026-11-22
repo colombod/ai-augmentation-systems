@@ -158,14 +158,17 @@ function bwrapPath(env) {
   }
   return null;
 }
-// the bwrap argv that seals a run: the host as it is, a private capped /tmp, gone with the parent.
+// the bwrap argv that seals a run: the host as it is, a private capped /tmp, gone with the parent, and a
+// network of its own holding only a loopback (bubblewrap brings it up, for the tests' own fake servers):
+// no test can reach a service on the host, whatever environment its process was started with. A host
+// that cannot create that namespace fails the run with bubblewrap's error; it never runs unsealed.
 // `keep` are host directories under /tmp bound back over the fresh tmpfs (after it, so they show
 // through): the run's own checkout and this runner, when they live there (Copilot on #117). With
 // `tokenFromStdin`, bubblewrap writes what it reads on stdin to /tmp/.delivery-seal in the fresh tmpfs.
 function sealArgs(bwrap, cap, argv, keep = [], tokenFromStdin = false) {
   const binds = keep.flatMap((p) => ['--bind', p, p]);
   const token = tokenFromStdin ? ['--file', '0', `/tmp/${SEAL_FILE}`] : [];
-  return [bwrap, ['--dev-bind', '/', '/', '--size', String(cap.bytes), '--tmpfs', '/tmp', ...binds, ...token, '--proc', '/proc', '--die-with-parent', '--unshare-pid', '--', ...argv]];
+  return [bwrap, ['--dev-bind', '/', '/', '--size', String(cap.bytes), '--tmpfs', '/tmp', ...binds, ...token, '--proc', '/proc', '--die-with-parent', '--unshare-pid', '--unshare-net', '--', ...argv]];
 }
 // the directories a sealed run needs that the private /tmp would hide: the directory it runs in and
 // the plugin it runs from, each when it lies under /tmp (never /tmp itself, which is the seal)

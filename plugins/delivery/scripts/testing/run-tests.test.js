@@ -180,7 +180,7 @@ test('run-tests: the seal is a private /tmp tmpfs, capped, gone with its parent,
   assert.equal(cmd, '/usr/bin/bwrap');
   assert.deepEqual(args.slice(0, 5), ['--dev-bind', '/', '/', '--size', '1024']);
   assert.deepEqual(args.slice(5, 7), ['--tmpfs', '/tmp']);
-  for (const f of ['--die-with-parent', '--unshare-pid']) assert.ok(args.includes(f), f);
+  for (const f of ['--die-with-parent', '--unshare-pid', '--unshare-net']) assert.ok(args.includes(f), f);
   assert.equal(args[args.indexOf('--proc') + 1], '/proc', 'its own /proc, so process lookups see the run\'s own pid namespace');
   assert.deepEqual(args.slice(-3), ['--', 'node', 'x.js']);
   // the token comes in on stdin and lands in the fresh tmpfs, so it follows --tmpfs /tmp

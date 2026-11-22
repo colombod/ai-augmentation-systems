@@ -11,7 +11,8 @@
 // sealed tmpfs's own counters (statfs). Last, a run started inside a seal made the way delivery 0.43.18
 // and earlier make it (DELIVERY_SEAL_ACTIVE=1, no token), as an installed plugin's review-run.js does with
 // a pull request's own runner, must run, and a run nested in it must still be held to a token. Exit 0 when all hold; 1 with what failed; 2 when it cannot run
-// here (no bwrap, or already inside a seal).
+// here (no bwrap, or already inside a seal). It also proves a sealed process cannot reach the host's loopback
+// and that a seal that cannot be created runs nothing.
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -127,6 +128,64 @@ async function olderSealCheck() {
   return null;
 }
 
+// A sealed run has a network of its own: a process in it, even one started with an empty environment (which
+// loses the seal's mark), cannot reach a listener on the host's loopback, and its own loopback works for a
+// test's fake server. The same probe run outside the seal reaches the listener, so the refusal means something.
+async function networkCheck() {
+  const net = require('net');
+  const dir = fs.mkdtempSync(path.join(__dirname, '.seal-check-'));
+  const probe = path.join(dir, 'probe.js');
+  fs.writeFileSync(probe, `const net = require('net');
+const port = Number(process.argv[2]);
+const own = process.argv[3] === 'own';
+const go = (done) => { const c = net.connect(port, '127.0.0.1'); c.on('connect', () => { console.log('reached'); c.destroy(); done(); }); c.on('error', (e) => { console.log('refused ' + e.code); done(); }); };
+if (own) { const s = net.createServer((x) => x.destroy()); s.on('error', (e) => { console.log('no loopback ' + e.code); }); s.listen(port, '127.0.0.1', () => go(() => s.close())); } else go(() => {});
+`);
+  const host = net.createServer((c) => c.destroy());
+  await new Promise((resolve) => host.listen(0, '127.0.0.1', resolve));
+  const { port } = host.address();
+  try {
+    const env = { ...process.env };
+    delete env.DELIVERY_SEAL_ACTIVE;
+    const outside = await new Promise((resolve) => { const p = spawn(process.execPath, [probe, String(port)], { env }); let o = ''; p.stdout.on('data', (d) => { o += d; }); p.on('close', () => resolve(o.trim())); });
+    if (outside !== 'reached') return `the probe outside a seal did not reach the host listener (${outside})`;
+    const sealed = (mode) => new Promise((resolve) => {
+      const p = spawn(process.execPath, [path.join(__dirname, 'run-tests.js'), '--', `env -i ${process.execPath} ${probe} ${port}${mode}`], { cwd: dir, env });
+      let o = '';
+      p.stdout.on('data', (d) => { o += d; });
+      p.on('close', (status) => resolve({ status, out: o.trim() }));
+    });
+    const reach = await sealed('');
+    if (!/^refused /m.test(reach.out)) return `a process with an empty environment inside a seal was not refused the host's loopback (${reach.out || `exit ${reach.status}`})`;
+    const own = await sealed(' own');
+    if (!/^reached$/m.test(own.out)) return `a test server on the seal's own loopback could not be reached (${own.out || `exit ${own.status}`})`;
+  } finally {
+    host.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  console.log('seal-check: a process with an empty environment in a seal cannot reach the host loopback, and its own loopback works');
+  return null;
+}
+
+// Where the seal cannot be created (a host that refuses the namespaces), the run fails with bubblewrap's
+// error: the command is never run unsealed, where it could reach a service on the host.
+function noSealCheck() {
+  const dir = fs.mkdtempSync(path.join(__dirname, '.seal-check-'));
+  try {
+    const fake = path.join(dir, 'bwrap');
+    fs.writeFileSync(fake, '#!/bin/sh\necho "bwrap: No permissions to create a new namespace" >&2\nexit 1\n', { mode: 0o755 });
+    const env = { ...process.env, PATH: `${dir}${path.delimiter}${process.env.PATH}` };
+    delete env.DELIVERY_SEAL_ACTIVE;
+    const r = spawnSync(process.execPath, [path.join(__dirname, 'run-tests.js'), '--', 'echo ran-without-a-seal'], { cwd: dir, env, encoding: 'utf8', timeout: 30000 });
+    if (r.status === 0 || /ran-without-a-seal/.test(String(r.stdout))) return `a run whose seal could not be created went ahead (exit ${r.status}: ${String(r.stdout).trim().slice(0, 100)})`;
+    if (!/No permissions to create a new namespace/.test(String(r.stderr))) return `a run whose seal could not be created did not say why (${String(r.stderr).trim().slice(0, 120)})`;
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  console.log('seal-check: a run whose seal cannot be created fails with the reason and runs nothing');
+  return null;
+}
+
 async function main() {
   if (process.env.DELIVERY_SEAL_ACTIVE && process.env.DELIVERY_SEAL_ACTIVE !== '0') { console.error('seal-check: run it outside a sealed run'); return 2; }
   if (!R.bwrapPath(process.env)) { console.error('seal-check: bubblewrap (bwrap) not found: a run cannot be sealed on this host'); return 2; }
@@ -134,7 +193,7 @@ async function main() {
   if (killed !== 0) return killed;
   const visible = checkoutVisible();
   if (visible !== 0) return visible;
-  for (const check of [sizeCapCheck, inodeCapCheck, olderSealCheck]) {
+  for (const check of [sizeCapCheck, inodeCapCheck, olderSealCheck, networkCheck, noSealCheck]) {
     const problem = await check();
     if (problem) { console.error(`seal-check: FAILED, ${problem}`); return 1; }
   }

@@ -44,6 +44,9 @@ function claudeConfig({ installed = true, enabled = true, version = '99.0.0' } =
 function start(args, { path: binDir = bin(), config = claudeConfig(), cwd, env: extra = {} } = {}) {
   const env = {
     ...extra,
+    // this environment is built from nothing, so the seal's mark is carried over by hand: without it a
+    // --keep-alive here would register its scratch units with a real service directory
+    ...(process.env.DELIVERY_SEAL_ACTIVE ? { DELIVERY_SEAL_ACTIVE: process.env.DELIVERY_SEAL_ACTIVE } : {}),
     PATH: `${binDir}${path.delimiter}/bin`, HOME: extra.HOME || os.tmpdir(), CLAUDE_CONFIG_DIR: config, BD_FAKE_STORE: extra.BD_FAKE_STORE || path.join(mk('start-bd-'), 'store.json'),
     GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0',
     GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.test', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.test',
@@ -1007,7 +1010,18 @@ test('--launch starts no role a user unit serves; --keep-alive installs the Chie
   const team = path.join(path.dirname(project), 'acme-team');
   assert.equal(start(['--project', project, '--host', 'laptop']).status, 0);
   fs.writeFileSync(path.join(unitsIn(home), 'mine-builder.service'), handUnit(path.join(team, 'builder')));
-  const r = start(['--project', project, '--host', 'laptop', '--launch', '--keep-alive'], { env: { DELIVERY_CLAUDE_BIN: rec.bin, HOME: home, SYSTEMCTL_LOG: log, DELIVERY_HOST: 'laptop' } });
+  // the second guard, apart from the seal's network: a stand-in on the directory's port, on the seal's own
+  // loopback, hears nothing from this run, because its environment keeps the seal's mark
+  const heard = path.join(mk('start-directory-'), 'requests');
+  const standIn = cp.spawn(process.execPath, ['-e', `const fs = require('fs');
+const s = require('http').createServer((q, a) => { fs.appendFileSync(process.argv[1], q.method + ' ' + q.url + '\\n'); q.resume(); q.on('end', () => { a.setHeader('content-type', 'application/json'); a.end('[]'); }); });
+s.on('error', () => { fs.writeFileSync(process.argv[1] + '.state', 'busy'); process.exit(0); });
+s.listen(8085, '127.0.0.1', () => fs.writeFileSync(process.argv[1] + '.state', 'up'));`, heard], { stdio: 'ignore' });
+  for (let i = 0; i < 100 && !fs.existsSync(`${heard}.state`); i++) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+  let r;
+  try { r = start(['--project', project, '--host', 'laptop', '--launch', '--keep-alive'], { env: { DELIVERY_CLAUDE_BIN: rec.bin, HOME: home, SYSTEMCTL_LOG: log, DELIVERY_HOST: 'laptop' } }); } finally { standIn.kill(); }
+  // busy: a seal made by an older runner shares the host's network, so the port is not this test's to bind
+  if (fs.readFileSync(`${heard}.state`, 'utf8') === 'up') assert.equal(fs.existsSync(heard) ? fs.readFileSync(heard, 'utf8') : '', '', 'a sealed run reaches no service directory');
   assert.match(r.out, /builder: not started: it is served by the user unit mine-builder\.service, its start path/, r.out);
   const own = fs.readdirSync(unitsIn(home)).find((f) => /^delivery-role-chief-of-staff-[0-9a-f]{8}\.service$/.test(f));
   assert.ok(own, `the Chief of Staff's unit is written: ${r.out}`);
