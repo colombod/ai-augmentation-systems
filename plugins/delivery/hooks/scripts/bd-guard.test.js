@@ -507,6 +507,28 @@ test('1a authority: state and story labels, gate fields in any shape, set-labels
   // the Delivery Manager may set it
   assert.equal(run('bd update mine --add-label outage-drill:wintermute', 'delivery-lead'), null);
   assert.equal(run('bd create --parent mine --title t --labels outage-drill:wintermute', 'delivery-lead'), null);
+  // hjx.1.6.6.4 B2: the attached short form -l<value> parses as one token, so it slipped past the gate; it
+  // is now recovered on create, q and new (the exact-record form outage-drill:host:record too), and a bulk
+  // --file or --graph import, whose labels the guard cannot read, fails closed for a non-Delivery-Manager.
+  for (const roleId of ['builder', 'spike-researcher']) {
+    const refusedB2 = [
+      'bd create --parent mine --title t -loutage-drill:wintermute',
+      'bd q --parent mine --title t -loutage-drill:pc:dec-chief-of-staff-91',
+      'bd new --parent mine --title t -loutage-drill:box',
+      'bd create --parent mine --title t -lstate-verified',
+      'bd create --parent mine --title t --file beads.json',
+      'bd create --parent mine --title t --graph g.dot',
+    ];
+    for (const command of refusedB2) {
+      const r = run(command, roleId);
+      assert.ok(r && /message the Delivery Manager/i.test(r.reason), `${roleId}: ${command}: ${r && r.reason}`);
+    }
+    // an attached -l with an ordinary label is still allowed
+    assert.equal(run('bd create --parent mine --title t -lblocked', roleId), null, `${roleId}: -lblocked`);
+  }
+  // the Delivery Manager may bulk-import and set the exact-record label
+  assert.equal(run('bd create --parent mine --title t -loutage-drill:wintermute:dec-chief-of-staff-91', 'delivery-lead'), null);
+  assert.equal(run('bd create --parent mine --title t --file beads.json', 'delivery-lead'), null);
 });
 
 test('1a authority, round 2: bd batch, writing sql, vc and federation writes, $VAR values and create-time labels are the Delivery Manager\'s', () => {
