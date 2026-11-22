@@ -9,10 +9,10 @@
 //       is running. Starts, schedules and writes nothing.
 //   outage-drill.js run --record <id> --cut-minutes <n> --restart [--bead <id>]
 //       the Reality Checker's only (the lane refuses it to every other role, and the script checks both
-//       the role it is given and its own process's role session). The consent is scoped either by the
-//       record's own outage-drill:<host> label, or by --bead naming a bead that itself carries that label
-//       (read from bd, never trusted from the caller) with the record scoped to that bead or its direct
-//       story. It claims the record by an exclusive
+//       the role it is given and its own process's role session). The consent is authorised by --bead
+//       naming a bead that carries outage-drill:<host>:<record id> (read from bd, never trusted from the
+//       caller), the Delivery Manager's label naming the exact record this drill may spend, with the record
+//       scoped to that bead or its direct story. It claims the record by an exclusive
 //       create, and, since the cut drops the session that runs it, makes two transient system timers
 //       before the cut (systemd-run, owned by PID 1, outliving the session): the network restore at n
 //       minutes and the restart a fixed minute after it. Then it writes the drill's row to the watchdog
@@ -33,7 +33,7 @@ function hostMismatch(env, hostname) {
   return env.DELIVERY_HOST && here && env.DELIVERY_HOST !== here ? `DELIVERY_HOST is ${env.DELIVERY_HOST}, but this machine is ${here}` : null;
 }
 
-const USAGE = 'usage: outage-drill.js plan [--cut-minutes <n>] [--record <id>] [--bead <id>] | outage-drill.js run --record <id> --cut-minutes <n> --restart [--bead <id>] | outage-drill.js stop --record <id>   (each takes --project <root>)\n  --bead names the drill bead, so a consent record scoped to that bead or its story counts, as the label outage-drill:<host> does';
+const USAGE = 'usage: outage-drill.js plan [--cut-minutes <n>] [--record <id>] [--bead <id>] | outage-drill.js run --record <id> --cut-minutes <n> --restart [--bead <id>] | outage-drill.js stop --record <id>   (each takes --project <root>)\n  --bead names the drill bead; its label outage-drill:<host>:<record id> is what authorises the run, and the record must be scoped to that bead or its story';
 const ROLE = 'reality-checker';
 const VALUED = { '--cut-minutes': 'cut', '--record': 'record', '--project': 'project', '--bead': 'bead' };
 
@@ -56,14 +56,17 @@ const failText = (r) => String((r && (r.stderr || r.error)) || `exit ${r ? r.sta
 // The consent: the owner's own record, read as operator.js verify reads it (no ledger write), and for this
 // drill only. Any verified owner record (a budget, an approval of a pull request) would otherwise cut the
 // network and restart the machine, so, as prepare-role scopes an approved permission rule:
-//   - the record's scope carries the label outage-drill:<this host>. The recording agent writes the
-//     scope, so the label alone is not enough:
-//   - the owner's own words name the network cut and the restart, with no negation. Those words are the
-//     verified quote, or, when the owner answered a confirmation, the question they were shown and the
-//     answer they picked, captured with their input (the answer must be the input itself); neither the
-//     answer nor the question may carry a negation. The scope and the statement the agent wrote never
-//     count as the owner's words.
-const DRILL_LABEL = (host) => `outage-drill:${host}`;
+//   - the drill bead (--bead) carries the label outage-drill:<this host>:<this record>, which the Delivery
+//     Manager sets after reading the owner's words; it names the exact record the run may spend, so it is
+//     the authority. The record's own scope must also name that bead or its direct story.
+//   - the owner's own words name the network cut and the restart, with no negation (a second filter, not the
+//     authority: rv-229 B1). Those words are the verified quote, or, when the owner answered a confirmation,
+//     the question they were shown and the answer they picked, captured with their input (the answer must be
+//     the input itself); neither the answer nor the question may carry a negation. The scope and the
+//     statement the agent wrote never count as the owner's words.
+// The Delivery Manager, who reads the owner's words, puts this label on the drill bead: it names the host
+// AND the exact consent record, so the run accepts only that record on that host (rv-229 B1).
+const DRILL_LABEL = (host, id) => `outage-drill:${host}:${id}`;
 // A scope bead names this drill when it is the named bead (--bead) or its direct story, the bead one
 // dotted level up (hjx.1.6.6's story is hjx.1.6). Only those two: a broader ancestor (hjx.1, hjx) would
 // widen what can authorise a network cut and a host restart.
@@ -98,24 +101,24 @@ function consent(root, id, verifyRecord, host, bead, beadLabels) {
   // its notes (it still verifies), so the drill refuses a record noted as revoked or superseded (rv-229 F3)
   const withdrawn = notes.find((n) => new RegExp(`^${String(id).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} was (revoked|superseded)\\b`).test(String(n)));
   if (withdrawn) return { ok: false, why: `${withdrawn.replace(/ \(after.*$/, '')}, so it is no longer the owner's consent` };
-  const want = DRILL_LABEL(host);
+  const want = DRILL_LABEL(host, id);
   const scope = (v.head && v.head.scope) || {};
-  const labels = Array.isArray(scope.labels) ? scope.labels : [];
   const beads = Array.isArray(scope.beads) ? scope.beads : [];
-  // Two ways the consent is scoped to THIS drill on THIS host; both need the owner's words (below).
-  //  A) the record's own scope carries the label outage-drill:<host> (the recording agent set the scope).
-  //  B) --bead names a bead that itself carries outage-drill:<host>, read from bd and never trusted from
-  //     the caller (rv-229: a caller could otherwise point --bead at any bead it liked), and the record's
-  //     scope names that bead or its direct story. The label on the bead ties the consent to the drill
-  //     and to the host, so a record scoped to an unrelated bead, or the same consent on another host,
-  //     is refused. A bead that cannot be read, or lacks the label, fails closed.
-  let scoped = !!host && labels.includes(want);
-  if (!scoped && host && bead) {
-    const bl = (beadLabels || ((b) => readBeadLabels(root, b)))(bead);
-    if (bl && bl.error) return { ok: false, why: `the drill bead ${bead} could not be read (${bl.error}); its label ${want} is what authorises the drill, so nothing runs` };
-    if (bl && Array.isArray(bl.labels) && bl.labels.includes(want) && beadNamesDrill(beads, bead)) scoped = true;
-  }
-  if (!scoped) return { ok: false, why: `${id} is not consent to this drill on ${host}: its scope needs the label ${want}, or --bead a bead that carries ${want} with ${id} scoped to that bead or its direct story` };
+  // The owner's consent to THIS drill is established by a protected label the Delivery Manager puts on the
+  // drill bead after reading the owner's own words: outage-drill:<host>:<record id>. The label names the
+  // exact record, so the run accepts only the record it names, and only on this host. The bead is given by
+  // --bead and its labels are read from bd, never trusted from the caller (rv-229: a caller could otherwise
+  // point --bead at any bead it liked); the record's own scope must also name that bead or its direct story.
+  // The wording check below (a cut and a restart, no negation) is only a second filter, never the authority:
+  // rv-229 B1 showed it passing sentences that merely reported an outage, so it may narrow what the label
+  // admits but can never stand in for it. A missing host, a missing --bead, a bead that cannot be read, a
+  // bead lacking the exact-record label, or a record not scoped to that bead, all fail closed.
+  if (!host) return { ok: false, why: `this drill names no host, so no label can authorise ${id}` };
+  if (!bead) return { ok: false, why: `${id} needs --bead naming the drill bead whose label ${want} authorises it; without it nothing runs` };
+  const bl = (beadLabels || ((b) => readBeadLabels(root, b)))(bead);
+  if (bl && bl.error) return { ok: false, why: `the drill bead ${bead} could not be read (${bl.error}); its label ${want} is what authorises the drill, so nothing runs` };
+  if (!(bl && Array.isArray(bl.labels) && bl.labels.includes(want))) return { ok: false, why: `the drill bead ${bead} does not carry ${want}, the label by which the Delivery Manager names ${id} as the owner's consent to this drill on ${host}; nothing runs` };
+  if (!beadNamesDrill(beads, bead)) return { ok: false, why: `${id} is not scoped to ${bead} or its direct story, so it is not the consent that ${want} names` };
   const asked = chain.filter((h) => h && h.kind === 'input' && h.source === 'human' && h.asked && h.asked.contract === 'delivery.confirmation/1'
     && h.asked.multi_select !== true && String(h.asked.answer || '').trim() === String(h.text || '').trim());
   const answers = [v.quote, ...asked.map((h) => h.asked.answer)];

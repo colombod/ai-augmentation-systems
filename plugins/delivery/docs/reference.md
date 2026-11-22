@@ -1675,18 +1675,17 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   nothing is scheduled or cut. `DELIVERY_HOST`, when set, must name this machine (its short hostname), and `plan` says so when
   it does not. It refuses a record that is not the owner's
   verified word, a cut outside 1 to 30 minutes, a run without `--restart`, and a second drill on the same
-  record. The record must be consent to this drill, scoped one of two ways: its scope carries the label
-  `outage-drill:<host>` for the host the drill would cut, or, when the run is given `--bead <id>`, that
-  bead itself carries `outage-drill:<host>` and the record's scope names that bead or its direct story
-  (the bead one dotted level up, not a broader ancestor). The second way is for the owner's consent
-  recorded against the drill's bead rather than the label: the owner answers a question scoped to the bead
-  (`bead:<id>`), which `operator.js` will not re-scope to the label. The bead's label is read from `bd`,
-  never trusted from the caller's `--bead`: a bead that cannot be read, or that does not carry
-  `outage-drill:<this host>`, fails closed, so a `--bead` pointed at an unrelated bead, or the same consent
-  run on another host, is refused. That one label on the bead ties the consent to the drill and to the
-  host. Either way the owner's own words name the
+  record. The run accepts a record only when `--bead <id>` names a bead that carries the label
+  `outage-drill:<this host>:<this record id>` and the record's scope names that bead or its direct story
+  (the bead one dotted level up, not a broader ancestor). The Delivery Manager, who reads the owner's
+  words, sets that label after the consent is recorded against the drill's bead: the owner answers a
+  question scoped to the bead (`bead:<id>`), which `operator.js` will not re-scope. The label names the
+  exact record, so the run accepts only the record it names, on this host; it is read from `bd`, never
+  trusted from the caller's `--bead`, so a bead that cannot be read, one that carries a label for another
+  record or another host, or a record not scoped to the bead, all fail closed. The owner's own words must
+  still name the
   network cut and the restart
-  with no negation. Those words are the verified quote, or, for an answer to a confirmation, the
+  with no negation (a second filter the label does not replace). Those words are the verified quote, or, for an answer to a confirmation, the
   question the owner was shown and the answer they picked, captured with their input; a question that
   negates the cut or the restart ("but do not restart", "without cutting") is refused as negated owner
   words are; the scope and the
