@@ -25,6 +25,7 @@ The failures come from the 2026-11-22 post-mortem and the analyses of the Chief 
 | 300k to 960k-token contexts reloaded on each wake | SP 8 |
 | 97.6% of tokens on the top model tier; 324 of 327 delivery-lead subagents on it | SP 6 |
 | Budget only warned; no token or money cap; no bound on a round as a whole | SP 1, 2 |
+| A host-wide subagent model override (`CLAUDE_CODE_SUBAGENT_MODEL=opus`) is set in the owner's settings and shell, so it may have forced the top tier over per-role choices; whether it did on the team's hosts is unverified | SP 6 |
 | 304 PR reviews of 109 PRs; PR 178 reviewed nine times; rebase-only send-backs | RH 4, 6; SP 7 |
 | Delivery-lead filed 87% of all beads, and owner-driven items fell from about 8% to about 2% of new beads | RH 4; IN 5 |
 | Watchdog and host manager restarted each other; the restart ignored the pause | SP 9; OA 3 |
@@ -42,7 +43,7 @@ The failures come from the 2026-11-22 post-mortem and the analyses of the Chief 
 2. **Sprint length.** The contracts require a bound on time, spend and review rounds for each sprint and do not choose them.
 3. **Attention budget size.** The limit on decision requests and messages per sprint, and what happens at the limit.
 4. **The usage budget.** Its unit, its size, and whether it is per week, per sprint, or both. The contracts require it to be hard.
-5. **Model defaults.** Which tier is the default, and when the top tier is allowed.
+5. **Default tier, and when the top tier is allowed without a reason.** The contract says the smallest tier that can do the job, and the top tier only for hard work with a recorded reason. The owner may want a different default, or a list of work for which the top tier needs no reason.
 6. **One Chief of Staff for several products or one per product.** The contracts work either way.
 7. **The feature map's storage.** The owner said the store and server were needed only if a story shows the need. This draft keeps that, but you may want it decided.
 8. **Where this lives.** It can be the plugin's `AGENTS.md` doctrine, its `.delivery/` record, or a separate repository, which Converge itself favours for focused parts.

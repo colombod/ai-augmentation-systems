@@ -29,18 +29,18 @@ Status: draft for the owner's review. Written against the [vision](VISION.md) an
 
 ## 3. Sprints
 
-Bounds are left for the owner to set (time, spend, review rounds, attention). Every deliverable has a customer-visible done-when. Infrastructure is named with its necessity. Nothing is added to a sprint once it starts; anything new is queued for the next.
+Bounds are left for the owner to set (time, spend, review rounds, attention). Every deliverable has a customer-visible done-when and a proposed model tier with a one-line reason, as [Spend and idle](contracts/spend-and-idle.md) requires. Infrastructure is named with its necessity. Nothing is added to a sprint once it starts; anything new is queued for the next.
 
 ### Sprint 0: stop compromising the user's Claude setup
 
 Customer: the person who installs the plugin and expects their own sessions to be left alone.
 
-| Deliverable | Done when |
-| --- | --- |
-| D0.1 One uninstall command | On a machine with the current guard, launcher, units and timers installed, running it with its dry run lists them and running it for real leaves `settings.json` without delivery entries, other keys unchanged, and a Claude session able to run `kill` and `/plugin uninstall`. |
-| D0.2 No user-level writes, no hooks in ordinary sessions | No code path writes under `~/.claude` except into the plugin's own directory. The watchdog no longer calls the guard installer. A test shows every hook returning no output within a stated time in a directory with no role marker. |
-| D0.3 The stop path ungated and fail-open | Tests show that `kill`, `systemctl --user stop`, plugin disable and settings edits are not denied by any hook in a non-role session, and that a hook error or `DELIVERY_HOOKS=off` allows the call. |
-| D0.4 An owner stop that bypasses Claude | One command run in a plain shell stops every role session and every unit the plugin installed, and reports how long until quiet. |
+| Deliverable | Done when | Model tier and reason (proposed) |
+| --- | --- | --- |
+| D0.1 One uninstall command | On a machine with the current guard, launcher, units and timers installed, running it with its dry run lists them and running it for real leaves `settings.json` without delivery entries, other keys unchanged, and a Claude session able to run `kill` and `/plugin uninstall`. | Middle. Ordinary build; tested on copies of the settings. |
+| D0.2 No user-level writes, no hooks in ordinary sessions | No code path writes under `~/.claude` except into the plugin's own directory. The watchdog no longer calls the guard installer. A test shows every hook returning no output within a stated time in a directory with no role marker. | Middle to build; top for the one independent review. Hooks gate every session, which is security-sensitive. |
+| D0.3 The stop path ungated and fail-open | Tests show that `kill`, `systemctl --user stop`, plugin disable and settings edits are not denied by any hook in a non-role session, and that a hook error or `DELIVERY_HOOKS=off` allows the call. | Middle to build; top for the one independent review. This is the stop path. |
+| D0.4 An owner stop that bypasses Claude | One command run in a plain shell stops every role session and every unit the plugin installed, and reports how long until quiet. | Middle to build; top for the one independent review. This is the stop path. |
 
 Necessity statements: D0.1 is needed because the guard is installed on the user's machine and refuses its own removal. D0.2 and D0.3 are the fix. D0.4 is needed because the stop contract requires a stop that no role or hook can block, and nothing exists today that does.
 
@@ -50,11 +50,11 @@ Out of scope: any change to what roles do, the watchdog's behaviour, the beads, 
 
 Customer: someone who installs the plugin, states an intent, and wants a brief, a PRD, an architecture, a roadmap and stories.
 
-| Deliverable | Done when |
-| --- | --- |
-| D1.1 One real run | The pipeline runs from `/delivery:brief` to stories for one small real intent in a clean project, with no team, beads server or systemd. Every defect that stops it is fixed. Anything else is logged for later. |
-| D1.2 A README for that path | A person following only the README reaches stories without help. Someone who did not write it tries it. The team is described as optional. |
-| D1.3 Sprints as contracts say | `/delivery:sprint` produces a declaration (deliverables with done-when, bounds, necessity statements, out of scope) and `/delivery:sprint-review` produces the five-part report. |
+| Deliverable | Done when | Model tier and reason (proposed) |
+| --- | --- | --- |
+| D1.1 One real run | The pipeline runs from `/delivery:brief` to stories for one small real intent in a clean project, with no team, beads server or systemd. Every defect that stops it is fixed. Anything else is logged for later. | Middle. Ordinary building; fixes are focused. |
+| D1.2 A README for that path | A person following only the README reaches stories without help. Someone who did not write it tries it. The team is described as optional. | Middle. Writing for a stranger; checked by a reader, not a model. |
+| D1.3 Sprints as contracts say | `/delivery:sprint` produces a declaration (deliverables with done-when, bounds, necessity statements, out of scope) and `/delivery:sprint-review` produces the five-part report. | Middle. Ordinary building on existing skills. |
 
 Necessity: none. This sprint adds no infrastructure.
 
@@ -62,11 +62,11 @@ Necessity: none. This sprint adds no infrastructure.
 
 Customer: the owner, who must maintain this plugin.
 
-| Deliverable | Done when |
-| --- | --- |
-| D2.1 The plugin mapped | The map lists the plugin's features, the files behind each, and its cost (code, tests, docs). Where use evidence is missing it says so. |
-| D2.2 A retirement proposal | A ranked list with evidence and what each removal frees. Starting candidates, from the design analysis and not yet confirmed: the user-level guard and `setup*.js`, `watchdog` timers and path units, `host-manager`, `self-update`, `team-revive`, the outage drill, andon and A3 automation, and the automatic reality-check beads. |
-| D2.3 The owner's retirements carried out | Each retirement the owner approves is removed with its tests and docs, and the map and size figures are updated. |
+| Deliverable | Done when | Model tier and reason (proposed) |
+| --- | --- | --- |
+| D2.1 The plugin mapped | The map lists the plugin's features, the files behind each, and its cost (code, tests, docs). Where use evidence is missing it says so. | Smallest. Mechanical counting from files and the map. |
+| D2.2 A retirement proposal | A ranked list with evidence and what each removal frees. Starting candidates, from the design analysis and not yet confirmed: the user-level guard and `setup*.js`, `watchdog` timers and path units, `host-manager`, `self-update`, `team-revive`, the outage drill, andon and A3 automation, and the automatic reality-check beads. | Middle. Judgement over evidence; no hard design. |
+| D2.3 The owner's retirements carried out | Each retirement the owner approves is removed with its tests and docs, and the map and size figures are updated. | Middle. Deletion with tests; smallest tier may do the mechanical removals. |
 
 Necessity: the map already exists (`map.js`, 74 features reported). This sprint extends it, and no store or server is built unless a story shows the need.
 
@@ -74,10 +74,10 @@ Necessity: the map already exists (`map.js`, 74 features reported). This sprint 
 
 Decision for the owner: **no standing team**, or a team formed for each declared sprint. The contracts assume the second. Recommendation: start without a team and add it only if sprints 1 and 2 show a customer need it would serve.
 
-| Deliverable | Done when |
-| --- | --- |
-| D3.1 One command runs a sprint | Given an approved declaration, it starts only the roles that sprint needs, honours the sprint bounds and the usage budget, stops at the first bound or when deliverables verify, and writes the report. |
-| D3.2 The stop drill | A drill stops a real running sprint and reports time to quiet. |
+| Deliverable | Done when | Model tier and reason (proposed) |
+| --- | --- | --- |
+| D3.1 One command runs a sprint | Given an approved declaration, it starts only the roles that sprint needs, honours the sprint bounds and the usage budget, stops at the first bound or when deliverables verify, and writes the report. | Middle to build; top only if the engine choice needs cross-cutting design, with the reason recorded. |
+| D3.2 The stop drill | A drill stops a real running sprint and reports time to quiet. | Smallest. A mechanical drill and a timing report. |
 
 Out of scope: a watchdog, host manager, self-update or revive. If D3.1 shows one is strictly necessary, it is declared in the next sprint, not added in this one.
 
@@ -116,4 +116,5 @@ It removes only the three setup-guard entries from `~/.claude/settings.json` and
 - **Whether the pipeline works today.** Not run. Sprint 1 is how we find out.
 - **Which retirement candidates have real users.** They come from the design analysis and commit history. Sprint 2 checks them against the map and the owner.
 - **Hook details.** The `defer` and `ask` decisions are described in the article and a summary of the hooks page. Confirm the exact fields and limits against the hooks reference before D0.3 depends on them.
+- **A host-wide model override.** `CLAUDE_CODE_SUBAGENT_MODEL=opus` is set in this owner's `~/.claude/settings.json` and in the shell environment. Whether and how it overrides a per-assignment choice depends on the precedence Claude Code applies, which the research note records. Until that is confirmed, assume it can silently defeat the tier chosen in a sprint declaration. It is a risk to flag in every declaration. It is the owner's file and this plan does not change it.
 - **The rules above are not reviewed.** The contracts' Check scenarios were read, not run, and this plan has had no reviewer.
