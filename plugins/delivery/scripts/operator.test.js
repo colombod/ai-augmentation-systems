@@ -1055,6 +1055,40 @@ test('a marked message from another session is listed as a test input, and neith
   assert.strictEqual(json(run(cos, ['verify', rec.lines[0], '--json'])).code, 'test_input');
 });
 
+// chief-of-staff-11.1: verify is how a role takes an id as the operator's word (team rule 12)
+test('an input id verifies only when it is the operator\'s own: human yes; peer, tool, unknown and test no', () => {
+  const root = project();
+  const unknown = { type: 'user', uuid: 'src-u4', timestamp: '2099-10-13T10:00:04.000Z', sessionId: 'sess-src', message: { role: 'user', content: 'a prompt with no origin stamp' } };
+  const cos = roleDir(root, 'chief-of-staff', 'chief-of-staff', 'pc', 'sess-src', [
+    human('Use Postgres for the orders service.', 1, 'sess-src'),
+    peer(2, 'sess-src'),
+    human('Watchdog (operator tooling, not the owner): relay this', 3, 'sess-src'),
+    unknown,
+    human(`${MARK} a check`, 5, 'sess-src'),
+  ]);
+  run(cos, ['sync']);
+  const want = { 'in-pc-000001': ['human', null], 'in-pc-000002': ['peer', 'not_human'], 'in-pc-000003': ['tool', 'not_human'], 'in-pc-000004': ['unknown', 'not_human'], 'in-pc-000005': ['test', 'test_input'] };
+  for (const [id, [source, code]] of Object.entries(want)) {
+    assert.strictEqual(json(run(cos, ['show', id, '--json'])).source, source, id);
+    const v = run(cos, ['verify', id, '--json']);
+    assert.strictEqual(v.status, code ? 1 : 0, `${id}: ${v.out}`);
+    assert.strictEqual(json(v).code || null, code, id);
+    const text = run(cos, ['verify', id]).out;
+    assert.ok(text.startsWith(code ? `NOT VERIFIED ${id}: ${code}: ` : `VERIFIED ${id}`), text);
+  }
+  // the callers that take an input id as the owner's word: the gates' owner check and the test runner's opt-out
+  const C = require('./lib/gate-context.js');
+  const { ownerOptOut } = require('./testing/run-tests.js');
+  const { DELIVERY_PROJECT_ROOT, ...base } = process.env;
+  const env = { ...base, DELIVERY_ROLE: cos.instance, DELIVERY_ROLE_DIR: cos.dir, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0' };
+  assert.strictEqual(C.ownerRecord(root, 'in-pc-000001').ok, true, 'the operator\'s own input still counts');
+  assert.strictEqual(ownerOptOut('in-pc-000001', { cwd: cos.dir, env }), null);
+  for (const id of ['in-pc-000002', 'in-pc-000003', 'in-pc-000004', 'in-pc-000005']) {
+    assert.strictEqual(C.ownerRecord(root, id).ok, false, id);
+    assert.match(ownerOptOut(id, { cwd: cos.dir, env }), /does not verify/, id);
+  }
+});
+
 test('the test mark is part of the hashed input: removing it breaks the inputs chain', () => {
   const { root, cos } = testFixture();
   const dir = path.join(root, '.delivery', 'operator', 'inputs');

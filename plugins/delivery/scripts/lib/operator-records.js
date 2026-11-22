@@ -1458,6 +1458,9 @@ function verifyRecord(projectRoot, id, opts = {}) {
     noteChain(`inputs/${e.host}`, v);
     result.chain.push(inputHop(e, null));
     if (e.source === 'test') fail('test_input', `${id} is a test input the Reality Checker typed during a check; it is never the operator's word`);
+    // verify is how a role takes an id as the operator's word (team rule 12): a message from another
+    // session, a tool's prompt or an input of unknown origin is captured too, and is none of that
+    else if (e.source !== 'human') fail('not_human', `${id} is a ${e.source} message, not the owner's own words`);
     return finish();
   }
 

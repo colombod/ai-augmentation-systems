@@ -2089,7 +2089,8 @@ an answer in a question box and for an answer another provider's writer hands in
 an input apart (source `test`), whatever the session stamped on it. A record made from it, or from
 another test record, carries `test: true`, set when it is written, never chosen. `operator.js
 verify` prints `NOT VERIFIED <id>: test_input: ...` and exits 1 for the test input and every record
-that reaches it. A test record may lean only on test records, so it never revokes, supersedes or
+that reaches it. An input id verifies only when it is the operator's own (source `human`); a message
+from another session, a tool's prompt or an input of unknown origin is refused with `not_human`. A test record may lean only on test records, so it never revokes, supersedes or
 answers an operator decision (`test_scope`); the operator's own later input can still revoke a test
 record. `operator.js pending` lists test inputs and test records (delegations, inferred answers) under
 their own headings, apart from the operator's, so the Stop hook never waits on them, the team status
