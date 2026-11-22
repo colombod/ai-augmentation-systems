@@ -1419,6 +1419,9 @@ function repairChain(o) {
 
 // ---- verification ----
 
+// the kinds that carry the operator's word; the validator holds each to a human input (humanInput)
+const WORD_KINDS = new Set(['decision', 'delegation', 'revocation', 'ratification', 'answer']);
+
 function verifyRecord(projectRoot, id, opts = {}) {
   const st = opts.store || makeStore(projectRoot, opts);
   const result = { ok: true, id, chain: [], notes: [], chains: [] };
@@ -1460,7 +1463,7 @@ function verifyRecord(projectRoot, id, opts = {}) {
     if (e.source === 'test') fail('test_input', `${id} is a test input the Reality Checker typed during a check; it is never the operator's word`);
     // verify is how a role takes an id as the operator's word (team rule 12): a message from another
     // session, a tool's prompt or an input of unknown origin is captured too, and is none of that
-    else if (e.source !== 'human') fail('not_human', `${id} is a ${e.source} message, not the owner's own words`);
+    else if (e.source !== 'human') fail('not_human', `${id} is ${e.source ? `a ${e.source} message` : 'an input with no recorded source'}, not the owner's own words`);
     return finish();
   }
 
@@ -1556,7 +1559,12 @@ function verifyRecord(projectRoot, id, opts = {}) {
   const cv = verifyRecordsFileCached(st, p.instance);
   if (!cv.ok) { fail(cv.code, cv.error, { at: cv.at }); return finish(); }
   if (IXV.byId.has(id)) {
-    if (IXV.byId.get(id).test === true) fail('test_input', `${id} is a test record, made from a Reality Checker test input; it is never the operator's word`);
+    const valid = IXV.byId.get(id);
+    if (valid.test === true) fail('test_input', `${id} is a test record, made from a Reality Checker test input; it is never the operator's word`, { valid: true });
+    // verify answers one question: is this the operator's word (team rule 12). An ack, a question, a
+    // withdrawal or a rehost is a valid record any role may write about itself, and says nothing the
+    // operator decided; valid: true keeps that apart from a record that fails (operator.js show)
+    else if (!WORD_KINDS.has(valid.kind)) fail('not_operator_word', `${id} is a valid ${valid.kind} record, which carries no decision of the operator's`, { valid: true });
     return finish();
   }
   const why = st.invalid.get(id);

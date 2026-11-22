@@ -184,13 +184,16 @@ const UNSEALED_MARK = { DELIVERY_UNSEALED_TEST_RUN: '1' };
 const runMark = ({ sealed, inSeal }) => (sealed || inSeal ? {} : UNSEALED_MARK);
 // a seal flag counts as set unless it is empty or 0
 const claimed = (v) => v !== undefined && v !== '' && v !== '0';
-// null when the owner's record id verifies (operator.js verify, run from here), else why not
+// null when the id verifies (operator.js verify, run from here) and is the owner's own record by the
+// gates' check (gate-context ownerRecord), else why not: a role's own valid record is no opt-out
 function ownerOptOut(id, { operatorJs = path.join(__dirname, '..', 'operator.js'), cwd = process.cwd(), env = process.env } = {}) {
   if (!id) return 'no owner record allows an unsealed run (DELIVERY_TEST_UNSEALED_RECORD=<record id>)';
   const r = spawnSync(process.execPath, [operatorJs, 'verify', String(id), '--json'], { cwd, env, encoding: 'utf8', timeout: 30000 });
   let v = null;
   try { v = JSON.parse(r.stdout); } catch (e) { /* not json */ }
-  return v && v.ok === true ? null : `the owner record ${id} does not verify (${(v && v.code) || (r.stderr || '').trim().split('\n')[0] || 'no answer'})`;
+  if (!v || v.ok !== true) return `the owner record ${id} does not verify (${(v && v.code) || (r.stderr || '').trim().split('\n')[0] || 'no answer'})`;
+  const owner = require('../lib/gate-context.js').ownerRecord(cwd, String(id), () => v);
+  return owner.ok ? null : `${id} is not the owner's record (${owner.why})`;
 }
 const caps = (env) => ({
   bytes: (Number(env.DELIVERY_TEST_TMP_MB) || 2048) * MB,
