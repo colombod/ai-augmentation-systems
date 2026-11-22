@@ -267,6 +267,8 @@ function depsOf(rec) {
 }
 
 function bad(code, message, extra) { return { code, message, ...(extra || {}) }; }
+// a kind or a source in a sentence: an ack, an unknown message, a peer message
+const aWord = (w) => `${/^[aeiou]/i.test(String(w)) ? 'an' : 'a'} ${w}`;
 
 // chief-of-staff-11: what a record reaches that is a test (an input the Reality Checker typed, source
 // 'test', or a record made from one, test: true). { inputs: [{ id, test }], records: [{ id, test, found }], any }
@@ -410,7 +412,7 @@ function validateCore(st, rec, view, mode) {
     const ip = log.parseId(cid);
     if (hd.seq && hv.count < hd.seq) return { err: bad('cited_entry_missing', `host ${input.host} chain has ${hv.count} entries but ${rec.id} cited entry ${hd.seq}`) };
     if (ip && hd.seq && ip.seq !== hd.seq) return { err: bad('history_rewritten', `${cid} does not match the sequence recorded by ${rec.id}`) };
-    if (input.source !== 'human' && !(input.source === 'test' && rec.test === true)) return { err: bad('not_human', `input ${cid} is a ${input.source} message, not the operator's own words; only human inputs can be cited (operator.js pending lists them)`) };
+    if (input.source !== 'human' && !(input.source === 'test' && rec.test === true)) return { err: bad('not_human', `input ${cid} is ${aWord(input.source)} message, not the operator's own words; only human inputs can be cited (operator.js pending lists them)`) };
     const qc = quoteCheck(input.text, rec.quote);
     if (!qc.ok) return { err: bad(qc.code, `${qc.message} (operator.js show ${cid} prints the operator's words)`) };
     if (!ownsInput(by, input)) return { err: bad('not_allowed', `only the chief of staff or the instance and session that captured ${cid} may record it; send the input id ${cid} to the chief of staff`) };
@@ -475,7 +477,7 @@ function validateCore(st, rec, view, mode) {
     const d = dep(rec.supersedes, 'superseded record');
     if (d.err) return W ? bad('not_found', `cannot supersede ${rec.supersedes}: no such valid record (operator.js find lists records)`) : d.err;
     const t = d.r;
-    if (!['decision', 'delegation', 'answer'].includes(t.kind)) return bad('supersede_not_allowed', `${t.id} is a ${t.kind}; only decisions, delegations and answers can be superseded`);
+    if (!['decision', 'delegation', 'answer'].includes(t.kind)) return bad('supersede_not_allowed', `${t.id} is ${aWord(t.kind)}; only decisions, delegations and answers can be superseded`);
     if (superseder === 'answer' && t.kind !== 'answer') return bad('supersede_not_allowed', `an answer cannot supersede the operator's ${t.kind} ${t.id}; record the operator's override with operator.js record --supersedes ${t.id}`);
     if (tooEarly(view.supersededBy.get(t.id)).length) return bad('already_superseded', `${t.id} is already superseded; supersede the current record (operator.js find shows it)`);
     return null;
@@ -494,7 +496,7 @@ function validateCore(st, rec, view, mode) {
         const d = dep(rec.under, 'delegation');
         if (d.err) return W ? bad('not_found', `delegation ${rec.under} was not found (operator.js find lists delegations)`) : d.err;
         const del = d.r;
-        if (del.kind !== 'delegation') return bad('not_delegation', `${rec.under} is a ${del.kind}, not a delegation; decide --under takes a del- id`);
+        if (del.kind !== 'delegation') return bad('not_delegation', `${rec.under} is ${aWord(del.kind)}, not a delegation; decide --under takes a del- id`);
         const hc = hashCheck(del.id, del.hash);
         if (hc) return hc;
         if (by.role !== 'chief-of-staff' && by.instance !== (del.by && del.by.instance)) {
@@ -545,7 +547,7 @@ function validateCore(st, rec, view, mode) {
       const hc = hashCheck(t.id, t.hash);
       if (hc) return hc;
       if (rec.kind === 'revocation') {
-        if (!['delegation', 'decision'].includes(t.kind)) return bad('invalid_target', `${t.id} is a ${t.kind}; only delegations and decisions can be revoked`);
+        if (!['delegation', 'decision'].includes(t.kind)) return bad('invalid_target', `${t.id} is ${aWord(t.kind)}; only delegations and decisions can be revoked`);
         if (tooEarly(view.revokedBy.get(t.id)).length) return bad('already_revoked', `${t.id} is already revoked`);
       } else {
         if (!((t.kind === 'answer' && t.confidence === 'inferred') || t.kind === 'delegation')) {
@@ -700,10 +702,10 @@ function shapeError(rec) {
   for (const k of Object.keys(rec)) {
     if (allowed.has(k)) continue;
     if (!ALL_FIELDS.has(k)) return bad('unknown_field', `${rec.id} carries the field "${k}", which no record kind has`);
-    return bad('misplaced_field', `${rec.id} is a ${rec.kind} and may not carry "${k}"`);
+    return bad('misplaced_field', `${rec.id} is ${aWord(rec.kind)} and may not carry "${k}"`);
   }
   if (rec.supersedes !== null && rec.supersedes !== undefined) {
-    if (!((rec.kind === 'decision' && !rec.under) || rec.kind === 'answer')) return bad('misplaced_field', `${rec.id} is a ${rec.kind}${rec.under ? ' under a delegation' : ''} and may not supersede anything`);
+    if (!((rec.kind === 'decision' && !rec.under) || rec.kind === 'answer')) return bad('misplaced_field', `${rec.id} is ${aWord(rec.kind)}${rec.under ? ' under a delegation' : ''} and may not supersede anything`);
   }
   // a quote is the operator's words only where the validator checks it against a cited input: a
   // decision under a delegation cites the delegation, so it carries no quote of its own
@@ -1463,7 +1465,7 @@ function verifyRecord(projectRoot, id, opts = {}) {
     if (e.source === 'test') fail('test_input', `${id} is a test input the Reality Checker typed during a check; it is never the operator's word`);
     // verify is how a role takes an id as the operator's word (team rule 12): a message from another
     // session, a tool's prompt or an input of unknown origin is captured too, and is none of that
-    else if (e.source !== 'human') fail('not_human', `${id} is ${e.source ? `a ${e.source} message` : 'an input with no recorded source'}, not the owner's own words`);
+    else if (e.source !== 'human') fail('not_human', `${id} is ${e.source ? `${aWord(e.source)} message` : 'an input with no recorded source'}, not the owner's own words`);
     return finish();
   }
 
@@ -1560,7 +1562,7 @@ function verifyRecord(projectRoot, id, opts = {}) {
   if (!cv.ok) { fail(cv.code, cv.error, { at: cv.at }); return finish(); }
   if (IXV.byId.has(id)) {
     const valid = IXV.byId.get(id);
-    if (valid.test === true) fail('test_input', `${id} is a test record, made from a Reality Checker test input; it is never the operator's word`, { valid: true });
+    if (valid.test === true) fail('test_input', `${id} is a test record, made from a Reality Checker test input; it is never the operator's word`);
     // verify answers one question: is this the operator's word (team rule 12). An ack, a question, a
     // withdrawal or a rehost is a valid record any role may write about itself, and says nothing the
     // operator decided; valid: true keeps that apart from a record that fails (operator.js show)

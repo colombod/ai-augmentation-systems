@@ -1148,6 +1148,40 @@ test('a hand-written decision citing another session\'s message is refused as no
   assert.deepStrictEqual([v.ok, v.code], [false, 'not_human'], JSON.stringify(v));
 });
 
+// rv-233 round 2: show is what the check reads, and a test record's words are never the operator's there
+test('show never calls a test record valid or its quote the operator\'s, in text or --json', () => {
+  const { cos } = testFixture();
+  const t1 = run(cos, ['record', '--cite', 'in-pc-000002', '--quote', 'record that the test label is t1', '--statement', 'The test label is t1']).lines[0];
+  const text = run(cos, ['show', t1]).out;
+  assert.match(text, /\[test\]/);
+  assert.match(text, /^validity: invalid \(test_input\): /m);
+  assert.match(text, /^quote: withheld/m);
+  assert.ok(!/operator quote/.test(text), text);
+  const j = json(run(cos, ['show', t1, '--json']));
+  assert.strictEqual(j.validity.ok, false);
+  assert.strictEqual(j.validity.code, 'test_input');
+  // the other direction: a real decision keeps its validity and the operator's quote
+  const real = run(cos, ['record', '--cite', 'in-pc-000001', '--quote', 'use postgres for the orders', '--statement', 'Orders use Postgres']).lines[0];
+  const rt = run(cos, ['show', real]).out;
+  assert.match(rt, /^validity: valid$/m);
+  assert.match(rt, /^operator quote: /m);
+  assert.strictEqual(json(run(cos, ['show', real, '--json'])).validity.ok, true);
+});
+
+test('a refusal reads as a sentence: an ack, an unknown message', () => {
+  const root = project();
+  const unknown = { type: 'user', uuid: 'gr-u2', timestamp: '2099-10-13T10:00:02.000Z', sessionId: 'sess-gr', message: { role: 'user', content: 'a prompt with no origin stamp' } };
+  const cos = roleDir(root, 'chief-of-staff', 'chief-of-staff', 'pc', 'sess-gr', [human('thanks', 1, 'sess-gr'), unknown, peer(3, 'sess-gr')]);
+  run(cos, ['sync']);
+  assert.match(json(run(cos, ['verify', 'in-pc-000002', '--json'])).error, /is an unknown message, not/);
+  assert.match(json(run(cos, ['verify', 'in-pc-000003', '--json'])).error, /is a peer message, not/);
+  const cited = json(run(cos, ['record', '--cite', 'in-pc-000002', '--quote', 'a prompt with no origin', '--statement', 'x', '--json']));
+  assert.match(cited.error, /is an unknown message, not/);
+  const ack = run(cos, ['ack', '--input', 'in-pc-000001', '--reason', 'conversational']).lines[0];
+  const under = json(run(cos, ['decide', '--under', ack, '--statement', 'x', '--scope', 'bead:ex-1', '--json']));
+  assert.match(under.error, /is an ack, not a delegation/);
+});
+
 test('an input stored with no source does not verify, and the refusal names it plainly', () => {
   const { root, cos } = testFixture();
   const dir = path.join(root, '.delivery', 'operator', 'inputs');
