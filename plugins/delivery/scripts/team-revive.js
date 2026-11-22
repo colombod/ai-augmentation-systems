@@ -197,7 +197,7 @@ function startEnv(env, instance) {
 function spawnRemote(bin, args, { cwd, env, logPath }) {
   fs.mkdirSync(path.dirname(logPath), { recursive: true });
   const fd = fs.openSync(logPath, 'a');
-  const child = require('child_process').spawn(bin, args, { cwd, env, detached: true, stdio: ['ignore', fd, fd] });
+  const child = require('child_process').spawn(bin, args, { cwd, env: require('./lib/fresh-session-env.js').withoutTestRunMark(env), detached: true, stdio: ['ignore', fd, fd] });
   child.on('error', (err) => { try { fs.appendFileSync(logPath, `team-revive: could not start ${bin}: ${err.message}\n`); } catch (e) { /* the log is best effort */ } });
   child.unref();
   fs.closeSync(fd);
@@ -533,7 +533,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, ...deps } = {}) {
   return { code: 0, out: r.lines.join('\n') };
 }
 
-module.exports = { startOwnUnit, unitOps, unitSettleOf, tellTwice, main, revive, gather, startEnv, refusal, callerRefusal, serverAlive, serverOf, stopServer, systemdRunOf, settleStarts, exited, systemdRunRefused };
+module.exports = { spawnRemote, startOwnUnit, unitOps, unitSettleOf, tellTwice, main, revive, gather, startEnv, refusal, callerRefusal, serverAlive, serverOf, stopServer, systemdRunOf, settleStarts, exited, systemdRunRefused };
 
 if (require.main === module) {
   let r;

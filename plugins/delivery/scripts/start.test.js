@@ -1044,3 +1044,31 @@ s.listen(8085, '127.0.0.1', () => fs.writeFileSync(process.argv[1] + '.state', '
   const named = (fs.existsSync(log2) ? fs.readFileSync(log2, 'utf8') : '').split('\n').filter((l) => /claude-rc-chief-of-staff|delivery-role-/.test(l));
   assert.deepEqual(named.filter((l) => !/^--user is-(enabled|active) claude-rc-chief-of-staff\.service$/.test(l)), [], 'only reads of its state name either unit');
 });
+
+test('a run the owner recorded as unsealed: its mark alone reaches the child start.js builds, which posts nothing to the directory', (t) => {
+  const project = path.join(mk('start-mark-'), 'acme');
+  const rec = recordingClaude();
+  const home = mk('start-home-');
+  const log = path.join(mk('start-sd-'), 'calls.log');
+  assert.equal(start(['--project', project, '--host', 'laptop']).status, 0);
+  const heard = path.join(mk('start-directory-'), 'requests');
+  const standIn = cp.spawn(process.execPath, ['-e', `const fs = require('fs');
+const s = require('http').createServer((q, a) => { fs.appendFileSync(process.argv[1], q.method + ' ' + q.url + '\\n'); q.resume(); q.on('end', () => { a.setHeader('content-type', 'application/json'); a.end('[]'); }); });
+s.on('error', () => { fs.writeFileSync(process.argv[1] + '.state', 'busy'); process.exit(0); });
+s.listen(8085, '127.0.0.1', () => fs.writeFileSync(process.argv[1] + '.state', 'up'));`, heard], { stdio: 'ignore' });
+  const saved = process.env.DELIVERY_SEAL_ACTIVE;
+  try {
+    for (let i = 0; i < 100 && !fs.existsSync(`${heard}.state`); i++) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+    // busy: this seal shares the host's network, so without the seal's mark the run must not go ahead
+    if (fs.readFileSync(`${heard}.state`, 'utf8') !== 'up') { t.skip('the directory port is not this test\'s to bind'); return; }
+    delete process.env.DELIVERY_SEAL_ACTIVE;
+    process.env.DELIVERY_UNSEALED_TEST_RUN = '1';
+    const r = start(['--project', project, '--host', 'laptop', '--launch', '--keep-alive'], { env: { DELIVERY_CLAUDE_BIN: rec.bin, HOME: home, SYSTEMCTL_LOG: log, DELIVERY_HOST: 'laptop' } });
+    assert.match(r.out, /role unit: Installed/, r.out);
+    assert.equal(fs.existsSync(heard) ? fs.readFileSync(heard, 'utf8') : '', '', 'the mark keeps the run off the directory');
+  } finally {
+    standIn.kill();
+    delete process.env.DELIVERY_UNSEALED_TEST_RUN;
+    if (saved !== undefined) process.env.DELIVERY_SEAL_ACTIVE = saved;
+  }
+});

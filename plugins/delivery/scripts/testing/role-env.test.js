@@ -11,16 +11,16 @@ test('hjx.1.1.2: a role session\'s DELIVERY_ and BEADS_ variables are cleared; t
   const env = {
     DELIVERY_ROLE: 'reality-checker', DELIVERY_ROLE_ID: 'reality-checker', DELIVERY_PROJECT_ROOT: '/live/project', DELIVERY_WAKE: 'resume',
     BEADS_ACTOR: 'dev@pc/reality-checker', BEADS_DIR: '/live/project/.beads', BD_ACTOR: 'dev@pc/reality-checker',
-    DELIVERY_SEAL_ACTIVE: 'tok', DELIVERY_SEALED_RUN: 'host-tmp:x:y', DELIVERY_TMP_REGISTRY: '/tmp/reg',
+    DELIVERY_SEAL_ACTIVE: 'tok', DELIVERY_SEALED_RUN: 'host-tmp:x:y', DELIVERY_TMP_REGISTRY: '/tmp/reg', DELIVERY_UNSEALED_TEST_RUN: '1',
     PATH: '/usr/bin', TZ: 'UTC',
   };
   const out = clearRoleEnv(env);
   assert.equal(out, env, 'clears in place, so process.env itself is changed');
-  assert.deepEqual(Object.keys(env).sort(), ['CLAUDE_CONFIG_DIR', 'DELIVERY_SEALED_RUN', 'DELIVERY_SEAL_ACTIVE', 'DELIVERY_TMP_REGISTRY', 'PATH', 'TZ'], 'and a Claude configuration of its own (hjx.1.1.4)');
+  assert.deepEqual(Object.keys(env).sort(), ['CLAUDE_CONFIG_DIR', 'DELIVERY_SEALED_RUN', 'DELIVERY_SEAL_ACTIVE', 'DELIVERY_TMP_REGISTRY', 'DELIVERY_UNSEALED_TEST_RUN', 'PATH', 'TZ'], 'and a Claude configuration of its own (hjx.1.1.4)');
 });
 
 test('hjx.1.1.2: it clears exactly what the sealed runner clears, apart from the seal\'s own variables', () => {
-  const env = { DELIVERY_X: '1', DELIVERY_SEAL_ACTIVE: 't', BEADS_Y: '2', BD_ACTOR: 'a', BD_OTHER: 'b', HOME: '/h' };
+  const env = { DELIVERY_X: '1', DELIVERY_SEAL_ACTIVE: 't', DELIVERY_UNSEALED_TEST_RUN: '1', BEADS_Y: '2', BD_ACTOR: 'a', BD_OTHER: 'b', HOME: '/h' };
   const runner = Object.keys(cleanEnv(env));
   const here = Object.keys(clearRoleEnv({ ...env })).filter((k) => !SEAL_VARS.includes(k) && k !== 'CLAUDE_CONFIG_DIR');
   assert.deepEqual(here.sort(), runner.sort());

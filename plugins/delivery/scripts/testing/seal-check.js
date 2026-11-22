@@ -248,6 +248,28 @@ async function keepNetworkCheck() {
   return null;
 }
 
+// The run the owner recorded as unsealed, end to end with a stand-in for the record's check: a process in it
+// has the mark, and still has it after clearRoleEnv, the first statement of every test file.
+function unsealedMarkCheck() {
+  const dir = fs.mkdtempSync(path.join(__dirname, '.seal-check-'));
+  try {
+    const scripts = path.join(dir, 'scripts');
+    fs.mkdirSync(path.join(scripts, 'testing'), { recursive: true });
+    for (const f of ['run-tests.js', 'sweep.js', 'role-env.js']) fs.copyFileSync(path.join(__dirname, f), path.join(scripts, 'testing', f));
+    fs.writeFileSync(path.join(scripts, 'operator.js'), "console.log(JSON.stringify({ ok: true }));\n");
+    const show = path.join(dir, 'show.js');
+    fs.writeFileSync(show, `console.log('before=' + process.env.DELIVERY_UNSEALED_TEST_RUN);\nrequire(${JSON.stringify(path.join(scripts, 'testing', 'role-env.js'))}).clearRoleEnv();\nconsole.log('after=' + process.env.DELIVERY_UNSEALED_TEST_RUN);\n`);
+    const env = { ...process.env, DELIVERY_TEST_UNSEALED: '1', DELIVERY_TEST_UNSEALED_RECORD: 'dec-seal-check-1' };
+    delete env.DELIVERY_SEAL_ACTIVE;
+    const r = spawnSync(process.execPath, [path.join(scripts, 'testing', 'run-tests.js'), '--', `${process.execPath} ${show}`], { cwd: dir, env, encoding: 'utf8', timeout: 30000 });
+    if (r.status !== 0 || !/^before=1$/m.test(r.stdout) || !/^after=1$/m.test(r.stdout)) return `the owner-recorded unsealed run lost its mark (exit ${r.status}: ${String(r.stdout).trim().replace(/\n/g, ' ')} ${String(r.stderr).trim().slice(0, 120)})`;
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  console.log('seal-check: a run the owner recorded as unsealed carries its mark, and clearRoleEnv keeps it');
+  return null;
+}
+
 async function main() {
   if (process.env.DELIVERY_SEAL_ACTIVE && process.env.DELIVERY_SEAL_ACTIVE !== '0') { console.error('seal-check: run it outside a sealed run'); return 2; }
   if (!R.bwrapPath(process.env)) { console.error('seal-check: bubblewrap (bwrap) not found: a run cannot be sealed on this host'); return 2; }
@@ -255,7 +277,7 @@ async function main() {
   if (killed !== 0) return killed;
   const visible = checkoutVisible();
   if (visible !== 0) return visible;
-  for (const check of [sizeCapCheck, inodeCapCheck, olderSealCheck, networkCheck, noSealCheck, keepNetworkCheck]) {
+  for (const check of [sizeCapCheck, inodeCapCheck, olderSealCheck, networkCheck, noSealCheck, keepNetworkCheck, unsealedMarkCheck]) {
     const problem = await check();
     if (problem) { console.error(`seal-check: FAILED, ${problem}`); return 1; }
   }

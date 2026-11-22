@@ -59,9 +59,12 @@ function entryFor(unit, description) {
 
 // The default request: one node child, bounded, so the synchronous plugin code can wait for it. In the
 // sealed test run it does nothing: no test may reach a service on the machine it runs on.
+// A test run reaches no service directory: a seal's mark, or the mark of a run the owner recorded as
+// unsealed, which counts only as the exact value the runner sets.
+const isTestRun = (env) => Boolean(env.DELIVERY_SEAL_ACTIVE || env.DELIVERY_SEALED_RUN || env.DELIVERY_UNSEALED_TEST_RUN === '1');
 function defaultFetch(env = process.env) {
   return (method, p, body) => {
-    if (env.DELIVERY_SEAL_ACTIVE || env.DELIVERY_SEALED_RUN || env.DELIVERY_UNSEALED_TEST_RUN) return { error: 'the sealed test run reaches no service directory' };
+    if (isTestRun(env)) return { error: 'the sealed test run reaches no service directory' };
     const r = require('child_process').spawnSync(process.execPath, [__filename, method, p], { input: body === undefined ? '' : JSON.stringify(body), encoding: 'utf8', timeout: TIMEOUT_MS + 2000, stdio: ['pipe', 'pipe', 'pipe'] });
     if (r.error || r.status !== 0) return { error: String((r.error && r.error.message) || r.stderr || `exit ${r.status}`).trim().split('\n')[0].slice(0, 200) };
     try { return JSON.parse(r.stdout); } catch (err) { return { error: 'no answer from the request' }; }
@@ -83,7 +86,7 @@ const why = (r) => (r.error ? `the service directory at ${BASE} could not be rea
 function namesFile({ names, fetch, env = process.env, home } = {}) {
   if (names) return names;
   if (fetch && fetch.namesFile) return fetch.namesFile;
-  if (!home && (env.DELIVERY_SEAL_ACTIVE || env.DELIVERY_SEALED_RUN || env.DELIVERY_UNSEALED_TEST_RUN)) return path.join(os.tmpdir(), `delivery-directory-names-${process.pid}.json`);
+  if (!home && isTestRun(env)) return path.join(os.tmpdir(), `delivery-directory-names-${process.pid}.json`);
   return path.join(require('./host-manager.js').stateDir(env, home || os.homedir()), 'directory-names.json');
 }
 // the file as written: the names, and LOST_KEY, the time a read found the directory had lost every entry
@@ -271,7 +274,7 @@ function unreachableRecorder(root, { now, raisedBy = 'host job' } = {}) {
   };
 }
 
-module.exports = { BASE, OWNER, CATEGORY, TAGS, TTL, HM_UNITS, WATCHDOG_UNIT, isPluginUnit, scopeName, entryFor, describe, defaultFetch, passFetch, namesFile, registeredNames, remember, forget, removedByOther, directoryReset, register, remove, heartbeat, local, health, beforeChange, beforeReplace, unreachableRecorder };
+module.exports = { isTestRun, BASE, OWNER, CATEGORY, TAGS, TTL, HM_UNITS, WATCHDOG_UNIT, isPluginUnit, scopeName, entryFor, describe, defaultFetch, passFetch, namesFile, registeredNames, remember, forget, removedByOther, directoryReset, register, remove, heartbeat, local, health, beforeChange, beforeReplace, unreachableRecorder };
 
 // The child the default fetch runs: one request, its status and JSON body on stdout.
 if (require.main === module) {

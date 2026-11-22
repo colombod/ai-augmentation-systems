@@ -53,7 +53,7 @@ function startRole(bin, args, { instance, env = process.env, cwd, logPath, syste
   fs.mkdirSync(path.dirname(logPath), { recursive: true });
   const run = (b, a) => {
     const fd = fs.openSync(logPath, 'a');
-    const child = spawn(b, a, { cwd, env, detached: true, stdio: ['ignore', fd, fd] });
+    const child = spawn(b, a, { cwd, env: require('./fresh-session-env.js').withoutTestRunMark(env), detached: true, stdio: ['ignore', fd, fd] });
     if (child && typeof child.on === 'function') child.on('error', (err) => { try { fs.appendFileSync(logPath, `could not start ${b}: ${err.message}\n`); } catch (e) { /* the log is best effort */ } });
     if (child && typeof child.unref === 'function') child.unref();
     fs.closeSync(fd);
