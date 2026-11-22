@@ -496,6 +496,17 @@ test('1a authority: state and story labels, gate fields in any shape, set-labels
   for (const command of refused.slice(0, 12)) assert.equal(run(command, 'delivery-lead'), null, command);
   assert.equal(run('bd update mine --add-label blocked'), null);
   assert.equal(run(`bd create --parent mine --title t --metadata '{"criterion":2}'`), null);
+  // hjx.1.6.6.4: outage-drill:<host> authorises the outage drill, so it is the Delivery Manager's to set;
+  // a builder or spike-researcher adding it is refused, in create or update, under any host suffix
+  for (const roleId of ['builder', 'spike-researcher']) {
+    for (const command of ['bd update mine --add-label outage-drill:wintermute', 'bd label add mine outage-drill:pc', 'bd create --parent mine --title t --labels outage-drill:wintermute', 'bd create --parent mine --title t -l outage-drill:box']) {
+      const r = run(command, roleId);
+      assert.ok(r && /message the Delivery Manager/i.test(r.reason), `${roleId}: ${command}: ${r && r.reason}`);
+    }
+  }
+  // the Delivery Manager may set it
+  assert.equal(run('bd update mine --add-label outage-drill:wintermute', 'delivery-lead'), null);
+  assert.equal(run('bd create --parent mine --title t --labels outage-drill:wintermute', 'delivery-lead'), null);
 });
 
 test('1a authority, round 2: bd batch, writing sql, vc and federation writes, $VAR values and create-time labels are the Delivery Manager\'s', () => {

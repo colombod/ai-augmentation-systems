@@ -181,8 +181,11 @@ function structural(p, actor, bd) {
 // A write of a state label, the story label or a gate field, which only the gate scripts and
 // materialise set. Metadata is judged on its parsed keys, and only literal values are accepted.
 const GATE_FIELDS = new Set(['ready_hash', 'ready_at', 'ready_record', 'deployed_sha', 'deployed_at', 'deployed_version', 'evidence_head', 'merged_pr', 'merged_at', 'authors', 'story', 'story_file', 'surface', 'area', 'roadmap_ref', 'materialised_by', 'materialise_deps', 'materialise_mapped', 'doc_id', 'wave', 'selection', 'assumption', 'decision_owner', 'ready_assumptions']);
-// wave labels come from the story file through materialise: a relabel would move a story out of its wave
-const PROTECTED_LABEL = /^(state-.*|story|wave-\d+)$/;
+// wave labels come from the story file through materialise: a relabel would move a story out of its wave.
+// outage-drill:<host> authorises the outage drill to cut a host's network and restart it, so it is the
+// Delivery Manager's alone to set (hjx.1.6.6.4): a builder or spike-researcher adding it to a bead would
+// let that bead authorise the drill.
+const PROTECTED_LABEL = /^(state-.*|story|wave-\d+|outage-drill:.+)$/;
 const EXPANSION = /\$\(|\$\{|\$[A-Za-z_]|`/;
 const values = (p, f) => (p.all.get(f) || []).filter((v) => typeof v === 'string');
 // what makes a bead a tier-1 fix (R-41): set by the Delivery Manager or the Product Manager only, so a

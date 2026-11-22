@@ -608,3 +608,84 @@ test('a DELIVERY_HOST that is not this machine is refused by run and named by pl
   assert.match(p.out, /DELIVERY_HOST is pc, but this machine is other-box/);
   assert.equal(t.run(RUN, { hostname: 'pc.example.lan' }).code, 0, 'the short name is compared');
 });
+
+// rv-229 F5/F4: readBeadLabels reads the named bead through the real bd (a bd on PATH), so a mutant that
+// ignores the read and always returns the label is caught (no label refuses, the label plus a bead-scoped
+// record passes), and a bd that returns a different id than --bead fails closed.
+test('rv-229 F5: the drill reads the --bead bead through the real bd; no label refuses, the label plus a bead-scoped record passes, a wrong id fails closed', () => {
+  const BEAD = 'delivery-plugin-planning-hjx.1.6.6';
+  const onPath = (id, labels) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'drill-bd-'));
+    fs.writeFileSync(path.join(dir, 'bd'), `#!/bin/sh\ncat <<'JSON'\n${JSON.stringify({ id, labels })}\nJSON\n`, { mode: 0o755 });
+    return { DELIVERY_HOST: 'pc', PATH: `${dir}${path.delimiter}${process.env.PATH}` };
+  };
+  const rec = (beads) => drillRecord({ labels: [], beads });
+  assert.equal(setup().run([...RUN, '--bead', BEAD], { verifyRecord: rec([BEAD]), env: onPath(BEAD, []), hostname: 'pc' }).code, 1, 'no label on the bead is refused');
+  const yes = setup().run([...RUN, '--bead', BEAD], { verifyRecord: rec([BEAD]), env: onPath(BEAD, ['outage-drill:pc']), hostname: 'pc' });
+  assert.equal(yes.code, 0, `the real bd shows the label: ${yes.out}`);
+  const wrong = setup().run([...RUN, '--bead', BEAD], { verifyRecord: rec([BEAD]), env: onPath('delivery-plugin-planning-other.1', ['outage-drill:pc']), hostname: 'pc' });
+  assert.equal(wrong.code, 1, 'a bd that returns another bead than --bead fails closed');
+  assert.match(wrong.out, /not the bead named/);
+});
+
+// rv-229 F7: the record's scope may name the drill bead or its direct story in short or full id form.
+test('rv-229 F7: a scope naming the drill bead or its story in short or full form is consent', () => {
+  const BEAD = 'delivery-plugin-planning-hjx.1.6.6';
+  const labels = (b) => ({ labels: b === BEAD ? ['outage-drill:pc'] : [] });
+  for (const scopeBead of ['delivery-plugin-planning-hjx.1.6.6', 'hjx.1.6.6', 'delivery-plugin-planning-hjx.1.6', 'hjx.1.6']) {
+    const r = setup().run([...RUN, '--bead', BEAD], { verifyRecord: drillRecord({ labels: [], beads: [scopeBead] }), beadLabels: labels });
+    assert.equal(r.code, 0, `scope ${scopeBead} names the bead: ${r.out}`);
+  }
+});
+
+// rv-229 F2: a record carrying the bead label but whose words only say the network WAS down (the billing
+// sentence) does not consent to a cut; the real dec-299 confirmation question does.
+test('rv-229 F2: "the network was down" is not consent to a cut; the real "cut its network ..." is', () => {
+  const BEAD = 'delivery-plugin-planning-hjx.1.6.6';
+  const labels = () => ({ labels: ['outage-drill:pc'] });
+  const billing = setup().run([...RUN, '--bead', BEAD], { verifyRecord: drillRecord({ labels: [], beads: [BEAD], quote: 'Yes, the network was down so restart the billing job' }), beadLabels: labels });
+  assert.equal(billing.code, 1);
+  assert.match(billing.out, /do not name the network cut/);
+  const real = 'May the team test outage recovery on wintermute once: cut its network for 30 minutes and restart the machine once, to prove the teams come back by themselves?';
+  const asked = { contract: 'delivery.confirmation/1', question: real, choices: ['Yes, once (Recommended)', 'No'], multi_select: false, answer: 'Yes, once (Recommended)' };
+  const ok = setup().run([...RUN, '--bead', BEAD], { verifyRecord: drillRecord({ labels: [], beads: [BEAD], quote: 'Yes, once (Recommended)', asked }), beadLabels: labels });
+  assert.equal(ok.code, 0, `the real consent words pass: ${ok.out}`);
+});
+
+// rv-229 F3: on a real operator store, a consent that was revoked or superseded no longer passes.
+// verifyRecord still verifies such a record (it reports the revocation/supersession only in its notes),
+// so the drill must read those notes and refuse. plan reflects the consent read-only, so it does not
+// spend the record. The store is built the way operator-records.test.js builds one.
+test('rv-229 F3: a revoked or a superseded consent is refused, on a real operator store', () => {
+  const R = require('./lib/operator-records.js');
+  const log = require('./lib/operator-log.js');
+  const CUTWORDS = 'Yes, cut the network on pc for 30 minutes and restart the machine once';
+  const COS = { instance: 'chief-of-staff', role: 'chief-of-staff', session_id: 'cos', host: 'pc' };
+  const SCOPE = { beads: ['delivery-plugin-planning-hjx.1.6.6'], labels: ['outage-drill:pc'], initiatives: [] };
+  const genv = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0' };
+  const build = (extraInputs) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'drill-store-'));
+    fs.mkdirSync(path.join(root, '.delivery', 'team'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.delivery', 'team', 'team.json'), JSON.stringify({ project: 'x', prefix: 'x', bd_host: 'pc', roles: [{ id: 'chief-of-staff', brief: 'delivery/chief-of-staff', host: 'pc', model: 'opus' }, { id: 'builder', brief: 'delivery/builder', host: 'pc', model: 'sonnet' }] }));
+    fs.writeFileSync(path.join(root, '.delivery', 'team', 'hosts.json'), JSON.stringify({ hosts: { pc: { kind: 'pc' } } }));
+    const SID = 'sess-1';
+    const human = (text, n) => ({ type: 'user', origin: { kind: 'human' }, promptId: `p${n}`, uuid: `u${n}`, timestamp: `2099-10-13T10:00:0${n}.000Z`, sessionId: SID, message: { role: 'user', content: text } });
+    const tr = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'drill-tr-')), 't.jsonl');
+    fs.writeFileSync(tr, [human(CUTWORDS, 1), ...extraInputs.map((t, i) => human(t, i + 2))].map((r) => JSON.stringify(r)).join('\n') + '\n');
+    log.syncTranscript({ projectRoot: root, transcriptPath: tr, sessionId: SID, instance: 'chief-of-staff', role: 'chief-of-staff', host: 'pc', now: new Date('2026-11-07T12:00:00Z'), env: genv });
+    return root;
+  };
+  const planOut = (root, id) => D.main(['plan', '--record', id], { cwd: root, env: { ...genv, DELIVERY_HOST: 'pc' }, hostname: 'pc', now: NOW, ps: () => '', who: { root, roleId: 'reality-checker', actor: 'dev@pc/rc' } }).out;
+  // revoked
+  const r1 = build(['Revoke the drill consent.']);
+  const dec1 = R.recordDecision({ projectRoot: r1, cite: 'in-pc-000001', quote: CUTWORDS, statement: 'one drill on pc', scope: SCOPE, by: COS });
+  assert.match(planOut(r1, dec1.id), /verifies as the owner's word/, 'as recorded it is consent');
+  R.revoke({ projectRoot: r1, cite: 'in-pc-000002', quote: 'Revoke the drill consent.', target: dec1.id, by: COS });
+  assert.match(planOut(r1, dec1.id), /refused: .*was revoked/, 'a revoked consent is refused');
+  // superseded
+  const r2 = build(['The drill consent is replaced: cut the network on pc for 30 minutes and restart the machine once.']);
+  const decA = R.recordDecision({ projectRoot: r2, cite: 'in-pc-000001', quote: CUTWORDS, statement: 'one drill on pc', scope: SCOPE, by: COS });
+  assert.match(planOut(r2, decA.id), /verifies as the owner's word/);
+  R.recordDecision({ projectRoot: r2, cite: 'in-pc-000002', quote: 'cut the network on pc for 30 minutes and restart the machine once', statement: 'one drill on pc (replacement)', scope: SCOPE, by: COS, supersedes: decA.id });
+  assert.match(planOut(r2, decA.id), /refused: .*was superseded/, 'a superseded consent is refused');
+});
