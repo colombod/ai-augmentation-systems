@@ -1677,17 +1677,18 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   nothing is scheduled or cut. `DELIVERY_HOST`, when set, must name this machine (its short hostname), and `plan` says so when
   it does not. It refuses a record that is not the owner's
   verified word, a cut outside 1 to 30 minutes, a run without `--restart`, and a second drill on the same
-  record. The run accepts a record only when `--bead <id>` names a bead that carries the label
-  `outage-drill:<this host>:<this record id>` and the record's scope names that bead or its direct story
-  (the bead one dotted level up, not a broader ancestor). The Delivery Manager, who reads the owner's
-  words, sets that label after the consent is recorded against the drill's bead: the owner answers a
-  question scoped to the bead (`bead:<id>`), which `operator.js` will not re-scope. The label names the
-  exact record, so the run accepts only the record it names, on this host; it is read from `bd`, never
-  trusted from the caller's `--bead`, so a bead that cannot be read, one that carries a label for another
-  record or another host, or a record not scoped to the bead, all fail closed. The owner's own words must
-  still name the
+  record. The authority is the `drill-consent.json` file on the planning repository's default branch,
+  which names the host, the record and the bead. The run reads it from the fetched default branch
+  (`git fetch` then the blob at `FETCH_HEAD`), never the working tree, and fails closed if it cannot be
+  read; it then accepts the record only when the file names this host, names this record, and the record's
+  own scope names the file's bead or its direct story (the bead one dotted level up, not a broader
+  ancestor). The Delivery Manager, who alone can land a commit on the default branch, commits the file
+  after reading the owner's words; a bd label was dropped because such a label is writable through too many
+  forms (`bd create -ql`, `-vl`, `-lfoo=bar,<label>`, `-f file`) and the bd guard is a discipline aid, not
+  a boundary. The record must also be a decision or an answer resting on the owner's captured input, not an
+  ack, a delegation or a revocation that merely cites one. The owner's own words must still name the
   network cut and the restart
-  with no negation (a second filter the label does not replace). Those words are the verified quote, or, for an answer to a confirmation, the
+  with no negation (a second filter the file does not replace). Those words are the verified quote, or, for an answer to a confirmation, the
   question the owner was shown and the answer they picked, captured with their input; a question that
   negates the cut or the restart ("but do not restart", "without cutting") is refused as negated owner
   words are; the scope and the

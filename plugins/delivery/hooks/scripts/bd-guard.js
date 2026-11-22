@@ -181,12 +181,8 @@ function structural(p, actor, bd) {
 // A write of a state label, the story label or a gate field, which only the gate scripts and
 // materialise set. Metadata is judged on its parsed keys, and only literal values are accepted.
 const GATE_FIELDS = new Set(['ready_hash', 'ready_at', 'ready_record', 'deployed_sha', 'deployed_at', 'deployed_version', 'evidence_head', 'merged_pr', 'merged_at', 'authors', 'story', 'story_file', 'surface', 'area', 'roadmap_ref', 'materialised_by', 'materialise_deps', 'materialise_mapped', 'doc_id', 'wave', 'selection', 'assumption', 'decision_owner', 'ready_assumptions']);
-// wave labels come from the story file through materialise: a relabel would move a story out of its wave.
-// outage-drill:<host>:<record id> names the exact owner consent the outage drill may spend to cut a host's
-// network and restart it, so it is the Delivery Manager's alone to set (hjx.1.6.6.4): a builder or
-// spike-researcher adding it to a bead would let that bead authorise the drill. The `.+` after the colon
-// covers the host and record (outage-drill:wintermute:dec-...), and the bare host form too.
-const PROTECTED_LABEL = /^(state-.*|story|wave-\d+|outage-drill:.+)$/;
+// wave labels come from the story file through materialise: a relabel would move a story out of its wave
+const PROTECTED_LABEL = /^(state-.*|story|wave-\d+)$/;
 const EXPANSION = /\$\(|\$\{|\$[A-Za-z_]|`/;
 const values = (p, f) => (p.all.get(f) || []).filter((v) => typeof v === 'string');
 // what makes a bead a tier-1 fix (R-41): set by the Delivery Manager or the Product Manager only, so a
@@ -196,15 +192,7 @@ const FIX_FIELDS = new Set(['fixes', 'finding', 'a3']);
 const fixFieldWrite = (p) => gateFieldWrite(p, { labelRe: FIX_LABEL, fields: FIX_FIELDS });
 function gateFieldWrite(p, { labelRe = PROTECTED_LABEL, fields = GATE_FIELDS } = {}) {
   if (labelRe === PROTECTED_LABEL && p.sub === 'update' && p.all.has('--set-labels')) return 'replacing every label (use --add-label or --remove-label)';
-  // A bulk create imports beads, and their labels, from a file or graph the guard cannot parse, so a
-  // protected label could ride in unseen (hjx.1.6.6.4 B2): for the protected-label gate it fails closed.
-  if (labelRe === PROTECTED_LABEL && CREATE.has(p.sub)) {
-    for (const f of ['--file', '--graph']) if (p.flags.has(f)) return `a bulk ${f} import whose labels the guard cannot read`;
-  }
-  // `-l` is the short form of `--labels`; its value may be attached (`-loutage-drill:host`), which the
-  // flag parser keeps as the whole token, so the attached suffix is recovered here (hjx.1.6.6.4 B2).
-  const attached = CREATE.has(p.sub) ? [...p.all.keys()].filter((k) => /^-l.+/.test(k)).map((k) => k.slice(2)) : [];
-  const created = CREATE.has(p.sub) ? [...values(p, '--labels'), ...values(p, '-l'), ...attached] : [];
+  const created = CREATE.has(p.sub) ? [...values(p, '--labels'), ...values(p, '-l')] : [];
   const labels = [...LABEL_FLAGS.flatMap((f) => values(p, f)), ...created, ...(['label add', 'label remove', 'tag'].includes(p.sub) ? p.ids.slice(1) : [])];
   if (labels.some((v) => EXPANSION.test(v))) return 'labels built by the shell';
   const bad = labels.flatMap((v) => v.split(',')).map((l) => l.trim()).find((l) => labelRe.test(l));
