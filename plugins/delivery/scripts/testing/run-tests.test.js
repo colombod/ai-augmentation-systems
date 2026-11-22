@@ -514,7 +514,11 @@ test('run-tests: ownerOptOut passes only a record operator.js verifies', () => {
   try {
     const fake = (out) => { const f = path.join(dir, `op-${Math.random().toString(36).slice(2)}.js`); fs.writeFileSync(f, `process.stdout.write(${JSON.stringify(out)})`); return f; };
     assert.match(R.ownerOptOut(undefined), /no owner record allows an unsealed run/);
-    assert.equal(R.ownerOptOut('dec-x-1', { operatorJs: fake('{"ok":true}') }), null);
+    const verified = (source) => JSON.stringify({ ok: true, chain: [{ id: 'dec-x-1', kind: 'decision' }, { id: 'in-pc-000001', kind: 'input', source }] });
+    assert.equal(R.ownerOptOut('dec-x-1', { operatorJs: fake(verified('human')) }), null);
+    // it verifies, and is not the owner's: no input under it, or another session's
+    assert.match(R.ownerOptOut('dec-x-1', { operatorJs: fake('{"ok":true}') }), /is not the owner's record/);
+    assert.match(R.ownerOptOut('dec-x-1', { operatorJs: fake(verified('peer')) }), /is not the owner's record/);
     assert.match(R.ownerOptOut('dec-x-1', { operatorJs: fake('{"ok":false,"code":"not_found"}') }), /dec-x-1 does not verify \(not_found\)/);
     assert.match(R.ownerOptOut('dec-x-1', { operatorJs: fake('garbage') }), /does not verify/);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }

@@ -2084,12 +2084,18 @@ verifiable id is information; the reply asks the sender for the id, never the op
 
 **Test inputs.** During a check the Reality Checker never asks the operator for an input; it types a
 test input into the role session, one that opens with the fixed marker `[reality-check test input]`
-(after any leading whitespace; quoted elsewhere in a message it changes nothing). The same holds for
+(after any leading whitespace; quoted elsewhere in a message it changes nothing). In a message from
+another session, the sender's own words are what must open with it, not the harness's wrapper around
+them. The same holds for
 an answer in a question box and for an answer another provider's writer hands in. Capture keeps such
 an input apart (source `test`), whatever the session stamped on it. A record made from it, or from
 another test record, carries `test: true`, set when it is written, never chosen. `operator.js
 verify` prints `NOT VERIFIED <id>: test_input: ...` and exits 1 for the test input and every record
-that reaches it. A test record may lean only on test records, so it never revokes, supersedes or
+that reaches it. An input id verifies only when it is the operator's own (source `human`); a message
+from another session, a tool's prompt or an input of unknown origin is refused with `not_human`. A
+record verifies only when its kind carries the operator's word (a decision, delegation, revocation,
+ratification or answer); an ack, question, withdrawal or rehost is a valid record that says nothing the
+operator decided, so `verify` refuses it with `not_operator_word` and `show` still calls it valid. A test record may lean only on test records, so it never revokes, supersedes or
 answers an operator decision (`test_scope`); the operator's own later input can still revoke a test
 record. `operator.js pending` lists test inputs and test records (delegations, inferred answers) under
 their own headings, apart from the operator's, so the Stop hook never waits on them, the team status

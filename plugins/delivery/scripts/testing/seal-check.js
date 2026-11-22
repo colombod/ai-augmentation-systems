@@ -256,17 +256,25 @@ function unsealedMarkCheck() {
     const scripts = path.join(dir, 'scripts');
     fs.mkdirSync(path.join(scripts, 'testing'), { recursive: true });
     for (const f of ['run-tests.js', 'sweep.js', 'role-env.js']) fs.copyFileSync(path.join(__dirname, f), path.join(scripts, 'testing', f));
-    fs.writeFileSync(path.join(scripts, 'operator.js'), "console.log(JSON.stringify({ ok: true }));\n");
+    // the opt-out reads the verified chain through the gates' owner check, so the copy carries lib/ and
+    // the stand-in answers as verify does for a decision resting on the owner's own input
+    fs.cpSync(path.join(__dirname, '..', 'lib'), path.join(scripts, 'lib'), { recursive: true });
+    const standIn = (source) => `console.log(JSON.stringify({ ok: true, chain: [{ id: 'dec-seal-check-1', kind: 'decision' }, { id: 'in-seal-000001', kind: 'input', source: '${source}' }] }));\n`;
+    fs.writeFileSync(path.join(scripts, 'operator.js'), standIn('human'));
     const show = path.join(dir, 'show.js');
     fs.writeFileSync(show, `console.log('before=' + process.env.DELIVERY_UNSEALED_TEST_RUN);\nrequire(${JSON.stringify(path.join(scripts, 'testing', 'role-env.js'))}).clearRoleEnv();\nconsole.log('after=' + process.env.DELIVERY_UNSEALED_TEST_RUN);\n`);
     const env = { ...process.env, DELIVERY_TEST_UNSEALED: '1', DELIVERY_TEST_UNSEALED_RECORD: 'dec-seal-check-1' };
     delete env.DELIVERY_SEAL_ACTIVE;
     const r = spawnSync(process.execPath, [path.join(scripts, 'testing', 'run-tests.js'), '--', `${process.execPath} ${show}`], { cwd: dir, env, encoding: 'utf8', timeout: 30000 });
+    // a record that verifies and rests on another session's message is no opt-out: nothing runs
+    fs.writeFileSync(path.join(scripts, 'operator.js'), standIn('peer'));
+    const refused = spawnSync(process.execPath, [path.join(scripts, 'testing', 'run-tests.js'), '--', `${process.execPath} ${show}`], { cwd: dir, env, encoding: 'utf8', timeout: 30000 });
+    if (refused.status === 0 || /^before=/m.test(refused.stdout)) return `a run on a record that is not the owner's was not refused (exit ${refused.status})`;
     if (r.status !== 0 || !/^before=1$/m.test(r.stdout) || !/^after=1$/m.test(r.stdout)) return `the owner-recorded unsealed run lost its mark (exit ${r.status}: ${String(r.stdout).trim().replace(/\n/g, ' ')} ${String(r.stderr).trim().slice(0, 120)})`;
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
-  console.log('seal-check: a run the owner recorded as unsealed carries its mark, and clearRoleEnv keeps it');
+  console.log('seal-check: a run the owner recorded as unsealed carries its mark, and clearRoleEnv keeps it; a record that is not the owner\'s runs nothing');
   return null;
 }
 
