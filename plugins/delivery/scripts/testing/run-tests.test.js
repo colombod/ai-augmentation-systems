@@ -639,7 +639,7 @@ test('the network is kept only by the word on the command line, from review-run.
   // anyone else, or nobody known: refused
   for (const parent of [null, '/usr/bin/make', path.join(__dirname, 'seal-check.js'), `${reviewRun}.copy`]) assert.match(R.keepNetworkProblem(['npm test'], { parent }), /review-run\.js's alone/, String(parent));
   // this plugin's runner stays isolated, even from review-run
-  for (const c of [['node plugins/delivery/scripts/testing/run-tests.js'], ['sh', '-c', 'node run-tests.js']]) assert.match(R.keepNetworkProblem(c, { parent: reviewRun }), /stays off the network/);
+  for (const c of [['node tools/scripts/testing/run-tests.js'], ['sh', '-c', 'node run-tests.js']]) assert.match(R.keepNetworkProblem(c, { parent: reviewRun }), /stays off the network/);
   // no setting reaches it: the seal's argv is private unless the caller passes the option
   for (const v of ['DELIVERY_TEST_KEEP_NETWORK', 'DELIVERY_KEEP_NETWORK', 'KEEP_NETWORK']) {
     process.env[v] = '1';

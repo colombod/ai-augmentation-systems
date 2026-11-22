@@ -105,9 +105,18 @@ function checkout(pr, head, { roleDir, team, env, spawn, out, err }) {
   return 0;
 }
 
+// A clone that holds this plugin's test runner, at its root or up to three directories down: searched for,
+// because a plugin does not know the layout of the repository it ships from.
+function holdsRunner(dir, depth = 3) {
+  if (fs.existsSync(path.join(dir, 'scripts', 'testing', 'run-tests.js'))) return true;
+  if (!depth) return false;
+  let subs = [];
+  try { subs = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return false; }
+  return subs.some((e) => e.isDirectory() && e.name !== '.git' && e.name !== 'node_modules' && holdsRunner(path.join(dir, e.name), depth - 1));
+}
 // Another product's test command may install its dependencies, so its seal keeps the network. This
 // plugin's own suite never does, whatever command runs it: named in the line, or a clone that holds the runner.
-const keepsNetwork = (dir, command) => !/run-tests\.js/.test(command) && !fs.existsSync(path.join(dir, 'plugins', 'delivery', 'scripts', 'testing', 'run-tests.js'));
+const keepsNetwork = (dir, command) => !/run-tests\.js/.test(command) && !holdsRunner(dir);
 
 function test(pr, { roleDir, team, env, spawn, out, err, platform }) {
   const c = cloneDir(roleDir, pr, { mustExist: true });

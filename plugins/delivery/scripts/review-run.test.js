@@ -195,9 +195,10 @@ test('review-run keeps the network only for another product: a command or a clon
   const { keepsNetwork } = require('./review-run.js');
   const other = repo({ 'package.json': '{}' });
   assert.equal(keepsNetwork(other, 'npm ci && npm test'), true);
-  assert.equal(keepsNetwork(other, 'node plugins/delivery/scripts/testing/run-tests.js'), false);
-  const own = repo({ 'plugins/delivery/scripts/testing/run-tests.js': '//' });
-  assert.equal(keepsNetwork(own, 'make test'), false, 'this plugin\'s repository, whatever the command');
+  assert.equal(keepsNetwork(other, 'node tools/scripts/testing/run-tests.js'), false);
+  for (const at of ['scripts', 'a/scripts', 'a/b/scripts', 'a/b/c/scripts']) assert.equal(keepsNetwork(repo({ [`${at}/testing/run-tests.js`]: '//' }), 'make test'), false, `the runner under ${at}, whatever the command`);
+  assert.equal(keepsNetwork(repo({ 'a/b/c/d/scripts/testing/run-tests.js': '//' }), 'make test'), true, 'past the search depth');
+  assert.equal(keepsNetwork(repo({ 'node_modules/x/scripts/testing/run-tests.js': '//' }), 'npm test'), true, 'a dependency is not this repository');
   // what review-run starts: the word sits before the --, from review-run and not from the product's line
   const { roleDir, team, first } = setup();
   main(['checkout', '7', first], { env: process.env, cwd: roleDir, roleDir, team, ...capture() });
