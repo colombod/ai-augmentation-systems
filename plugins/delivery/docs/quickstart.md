@@ -159,7 +159,7 @@ Then:
   3. /delivery:team shows who is live; ask the Chief of Staff for the question ledger to see every decision.
 ```
 
-The dry run prints the same plan with "would" in front of each write, and writes nothing. Running it again is safe: an existing manifest is kept as it is (and `--preset`, `--models`, `--host`, `--prefix` and `--runner` are not applied to it; if it is uncommitted, for example after a refused run, just those two files are committed), beads is set up as [Setting up beads](#setting-up-beads) describes (an existing database is never re-created), and only roles without a prepared directory are prepared (plus, once `.beads` exists, any prepared role still missing `BEADS_DIR`, which is re-prepared):
+The dry run prints the same plan with "would" in front of each write, and writes nothing, not even the project directory. Its header says nothing is written, it adds a line saying the two manifest files would be committed and a line naming the permission mode it would record, it says `product tests: not known` when the product checkout has no test setup (see below), its builder line ends with `product worktree on team/builder`, and its closing block begins `After a real run, start each session ...`. Running the real command again is safe, and prints the block that follows (this one is not dry-run output): an existing manifest is kept as it is (and `--preset`, `--models`, `--host`, `--prefix` and `--runner` are not applied to it; if it is uncommitted, for example after a refused run, just those two files are committed), beads is set up as [Setting up beads](#setting-up-beads) describes (an existing database is never re-created), and only roles without a prepared directory are prepared (plus, once `.beads` exists, any prepared role still missing `BEADS_DIR`, which is re-prepared):
 
 ```
 delivery start: <project-root>
@@ -182,7 +182,7 @@ When `bd` is missing, `start.js` still prepares the roles and says how to finish
 
 ## 1. Write the team manifest
 
-Create `.delivery/team/team.json` and `.delivery/team/hosts.json` in `<project-root>`. The templates `<plugin-root>/templates/team.json` and `<plugin-root>/templates/hosts.json` are this minimal single-host team; `docs/team-example.md` shows every field of a larger one:
+Create `.delivery/team/team.json` and `.delivery/team/hosts.json` in `<project-root>`. The templates `<plugin-root>/templates/team.json` and `<plugin-root>/templates/hosts.json` have the same shape but different values (project `example`, prefix `ex`, host `pc`, and a builder without `large_model`), so copy the JSON below for the `acme` team of this page, or edit the template's values; `docs/team-example.md` shows every field of a larger one:
 
 `<project-root>/.delivery/team/team.json`
 
