@@ -180,7 +180,7 @@ test('run-tests: the seal is a private /tmp tmpfs, capped, gone with its parent,
   assert.equal(cmd, '/usr/bin/bwrap');
   assert.deepEqual(args.slice(0, 5), ['--dev-bind', '/', '/', '--size', '1024']);
   assert.deepEqual(args.slice(5, 7), ['--tmpfs', '/tmp']);
-  for (const f of ['--die-with-parent', '--unshare-pid']) assert.ok(args.includes(f), f);
+  for (const f of ['--die-with-parent', '--unshare-pid', '--unshare-net']) assert.ok(args.includes(f), f);
   assert.equal(args[args.indexOf('--proc') + 1], '/proc', 'its own /proc, so process lookups see the run\'s own pid namespace');
   assert.deepEqual(args.slice(-3), ['--', 'node', 'x.js']);
   // the token comes in on stdin and lands in the fresh tmpfs, so it follows --tmpfs /tmp
@@ -623,4 +623,53 @@ test('run-tests: a failing run ends with the name and file:line of every failing
     assert.equal(ok.status, 0, ok.stderr.slice(-300));
     assert.doesNotMatch(ok.stdout, /# failing tests/);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('the network is kept only by the word on the command line, from review-run.js, for a command that is not this runner', () => {
+  const R = require('./run-tests.js');
+  const fs = require('fs');
+  const reviewRun = fs.realpathSync(path.join(__dirname, '..', 'review-run.js'));
+  // the word goes before the --; after it, it is only the command's own word
+  assert.equal(R.splitArgs([R.KEEP_NETWORK, '--', 'npm', 'test']).keepNetwork, true);
+  assert.equal(R.splitArgs(['--', R.KEEP_NETWORK, 'npm', 'test']).keepNetwork, undefined);
+  assert.equal(R.splitArgs(['--', `npm test ${R.KEEP_NETWORK}`]).keepNetwork, undefined);
+  assert.throws(() => R.splitArgs([R.KEEP_NETWORK]), /goes with -- <command>/);
+  // review-run asking for another product's command: allowed
+  assert.equal(R.keepNetworkProblem(['npm ci && npm test'], { parent: reviewRun }), null);
+  // anyone else, or nobody known: refused
+  for (const parent of [null, '/usr/bin/make', path.join(__dirname, 'seal-check.js'), `${reviewRun}.copy`]) assert.match(R.keepNetworkProblem(['npm test'], { parent }), /review-run\.js's alone/, String(parent));
+  // this plugin's runner stays isolated, even from review-run
+  for (const c of [['node tools/scripts/testing/run-tests.js'], ['sh', '-c', 'node run-tests.js']]) assert.match(R.keepNetworkProblem(c, { parent: reviewRun }), /stays off the network/);
+  // no setting reaches it: the seal's argv is private unless the caller passes the option
+  for (const v of ['DELIVERY_TEST_KEEP_NETWORK', 'DELIVERY_KEEP_NETWORK', 'KEEP_NETWORK']) {
+    process.env[v] = '1';
+    try { assert.ok(R.sealArgs('/usr/bin/bwrap', { bytes: 1024, inodes: 10 }, ['node'])[1].includes('--unshare-net'), v); } finally { delete process.env[v]; }
+  }
+  assert.ok(!R.sealArgs('/usr/bin/bwrap', { bytes: 1024, inodes: 10 }, ['node'], [], false, { keepNetwork: true })[1].includes('--unshare-net'));
+});
+
+test('the suite runs only in a private network: the namespace on record decides, and an older seal needs a lone loopback', () => {
+  const R = require('./run-tests.js');
+  const dev = (...names) => `Inter-|   Receive\n face |bytes\n${names.map((n) => `  ${n}: 0 0`).join('\n')}\n`;
+  assert.deepEqual(R.netInterfaces(dev('lo', 'eth0')), ['lo', 'eth0']);
+  assert.equal(R.networkProblem({ own: 'net:[2]', host: 'net:[1]', dev: dev('lo', 'eth0') }), null, 'a namespace of its own');
+  assert.match(R.networkProblem({ own: 'net:[1]', host: 'net:[1]', dev: dev('lo') }), /shares the host/, 'a lone loopback does not excuse the host\'s own namespace');
+  assert.match(R.networkProblem({ own: null, host: 'net:[1]', dev: dev('lo') }), /shares the host/, 'unreadable is not private');
+  assert.equal(R.networkProblem({ own: 'net:[2]', host: null, dev: dev('lo') }), null);
+  assert.match(R.networkProblem({ own: 'net:[2]', host: null, dev: dev('lo', 'eth0') }), /lo, eth0, not a lone loopback/);
+  assert.match(R.networkProblem({ own: 'net:[2]', host: null, dev: '' }), /no readable interfaces/);
+  // the run the owner recorded as unsealed carries the mark the directory client reads; a sealed one does not need it
+  assert.deepEqual(R.runMark({ sealed: false, inSeal: false }), { DELIVERY_UNSEALED_TEST_RUN: '1' });
+  assert.deepEqual(R.runMark({ sealed: true, inSeal: false }), {});
+  assert.deepEqual(R.runMark({ sealed: false, inSeal: true }), {});
+  const SD = require('../lib/service-directory.js');
+  let asked = 0;
+  const cp = require('child_process');
+  const real = cp.spawnSync;
+  cp.spawnSync = (...a) => { asked += 1; return real(...a); };
+  try {
+    const r = SD.defaultFetch({ DELIVERY_UNSEALED_TEST_RUN: '1' })('GET', '/api/services/local');
+    assert.match(r.error, /reaches no service directory/);
+    assert.equal(asked, 0, 'no request is started');
+  } finally { cp.spawnSync = real; }
 });

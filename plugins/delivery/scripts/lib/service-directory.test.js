@@ -281,3 +281,11 @@ test('the default request goes only to 127.0.0.1:8085, and in the sealed test ru
   assert.deepEqual([...src.matchAll(/https?:\/\/[^\s'"`]+/g)].map((m) => m[0]), ['http://127.0.0.1:8085'], 'no other address is named');
   assert.match(src, /await fetch\(`\$\{BASE\}\$\{p\}`/, 'the child asks BASE only');
 });
+
+test('only the exact value 1 marks an unsealed test run; the seal marks count as before', () => {
+  assert.equal(SD.isTestRun({ DELIVERY_UNSEALED_TEST_RUN: '1' }), true);
+  for (const v of ['', '0', 'true', '11', ' 1', 'yes']) assert.equal(SD.isTestRun({ DELIVERY_UNSEALED_TEST_RUN: v }), false, JSON.stringify(v));
+  assert.equal(SD.isTestRun({}), false);
+  assert.equal(SD.isTestRun({ DELIVERY_SEAL_ACTIVE: 'tok' }), true);
+  assert.equal(SD.isTestRun({ DELIVERY_SEALED_RUN: 'host-tmp:x:y' }), true);
+});
