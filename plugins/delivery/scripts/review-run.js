@@ -105,6 +105,10 @@ function checkout(pr, head, { roleDir, team, env, spawn, out, err }) {
   return 0;
 }
 
+// Another product's test command may install its dependencies, so its seal keeps the network. This
+// plugin's own suite never does, whatever command runs it: named in the line, or a clone that holds the runner.
+const keepsNetwork = (dir, command) => !/run-tests\.js/.test(command) && !fs.existsSync(path.join(dir, 'plugins', 'delivery', 'scripts', 'testing', 'run-tests.js'));
+
 function test(pr, { roleDir, team, env, spawn, out, err, platform }) {
   const c = cloneDir(roleDir, pr, { mustExist: true });
   if (c.problem) { err(`review-run: refused: ${c.problem}.`); return 2; }
@@ -121,7 +125,7 @@ function test(pr, { roleDir, team, env, spawn, out, err, platform }) {
   // elsewhere through the sealed runner: the product's suite gets a capped private /tmp the OS destroys,
   // as every test run does (Copilot on #117); the runner keeps this directory and runs the line in sh
   const shell = win ? { cmd: env.ComSpec || 'cmd.exe', args: ['/d', '/s', '/c', `"${t.command}"`] }
-    : { cmd: process.execPath, args: [path.join(__dirname, 'testing', 'run-tests.js'), '--', t.command] };
+    : { cmd: process.execPath, args: [path.join(__dirname, 'testing', 'run-tests.js'), ...(keepsNetwork(c.dir, t.command) ? ['--keep-network-for-review'] : []), '--', t.command] };
   // windowsVerbatimArguments: cmd.exe does not read Node's \" escaping (node's own shell: true sets it)
   const r = spawn(shell.cmd, shell.args, { cwd: c.dir, env: cleanEnv(env), stdio: 'inherit', timeout: minutes * 60e3, windowsVerbatimArguments: win });
   const secs = Math.round((Date.now() - started) / 1000);
@@ -141,5 +145,5 @@ function main(argv, { env = process.env, cwd = process.cwd(), team, roleDir, spa
   return cmd === 'checkout' ? checkout(pr, head, ctx) : test(pr, ctx);
 }
 
-module.exports = { main, cleanEnv, ROLE_VARS, productUrl, GIT_PINS: ['-c', 'safe.bareRepository=explicit', '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false'] };
+module.exports = { main, keepsNetwork, cleanEnv, ROLE_VARS, productUrl, GIT_PINS: ['-c', 'safe.bareRepository=explicit', '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false'] };
 if (require.main === module) process.exit(main(process.argv.slice(2)));

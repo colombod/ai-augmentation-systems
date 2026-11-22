@@ -624,3 +624,26 @@ test('run-tests: a failing run ends with the name and file:line of every failing
     assert.doesNotMatch(ok.stdout, /# failing tests/);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('the network is kept only by the word on the command line, from review-run.js, for a command that is not this runner', () => {
+  const R = require('./run-tests.js');
+  const fs = require('fs');
+  const reviewRun = fs.realpathSync(path.join(__dirname, '..', 'review-run.js'));
+  // the word goes before the --; after it, it is only the command's own word
+  assert.equal(R.splitArgs([R.KEEP_NETWORK, '--', 'npm', 'test']).keepNetwork, true);
+  assert.equal(R.splitArgs(['--', R.KEEP_NETWORK, 'npm', 'test']).keepNetwork, undefined);
+  assert.equal(R.splitArgs(['--', `npm test ${R.KEEP_NETWORK}`]).keepNetwork, undefined);
+  assert.throws(() => R.splitArgs([R.KEEP_NETWORK]), /goes with -- <command>/);
+  // review-run asking for another product's command: allowed
+  assert.equal(R.keepNetworkProblem(['npm ci && npm test'], { parent: reviewRun }), null);
+  // anyone else, or nobody known: refused
+  for (const parent of [null, '/usr/bin/make', path.join(__dirname, 'seal-check.js'), `${reviewRun}.copy`]) assert.match(R.keepNetworkProblem(['npm test'], { parent }), /review-run\.js's alone/, String(parent));
+  // this plugin's runner stays isolated, even from review-run
+  for (const c of [['node plugins/delivery/scripts/testing/run-tests.js'], ['sh', '-c', 'node run-tests.js']]) assert.match(R.keepNetworkProblem(c, { parent: reviewRun }), /stays off the network/);
+  // no setting reaches it: the seal's argv is private unless the caller passes the option
+  for (const v of ['DELIVERY_TEST_KEEP_NETWORK', 'DELIVERY_KEEP_NETWORK', 'KEEP_NETWORK']) {
+    process.env[v] = '1';
+    try { assert.ok(R.sealArgs('/usr/bin/bwrap', { bytes: 1024, inodes: 10 }, ['node'])[1].includes('--unshare-net'), v); } finally { delete process.env[v]; }
+  }
+  assert.ok(!R.sealArgs('/usr/bin/bwrap', { bytes: 1024, inodes: 10 }, ['node'], [], false, { keepNetwork: true })[1].includes('--unshare-net'));
+});

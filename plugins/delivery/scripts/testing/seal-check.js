@@ -186,6 +186,45 @@ function noSealCheck() {
   return null;
 }
 
+// The one way to keep the network, end to end: a copy of the runner beside a review-run.js of its own reaches
+// the host listener and says so; the same word from any other parent is refused and runs nothing.
+async function keepNetworkCheck() {
+  const net = require('net');
+  const dir = fs.mkdtempSync(path.join(__dirname, '.seal-check-'));
+  const host = net.createServer((c) => c.destroy());
+  await new Promise((resolve) => host.listen(0, '127.0.0.1', resolve));
+  const { port } = host.address();
+  try {
+    const scripts = path.join(dir, 'scripts');
+    fs.mkdirSync(path.join(scripts, 'testing'), { recursive: true });
+    for (const f of ['run-tests.js', 'sweep.js']) fs.copyFileSync(path.join(__dirname, f), path.join(scripts, 'testing', f));
+    const probe = path.join(dir, 'probe.js');
+    fs.writeFileSync(probe, `const c = require('net').connect(${port}, '127.0.0.1'); c.on('connect', () => { console.log('reached'); c.destroy(); }); c.on('error', (e) => console.log('refused ' + e.code));\n`);
+    const line = `${process.execPath} ${probe}`;
+    fs.writeFileSync(path.join(scripts, 'review-run.js'), `const r = require('child_process').spawn(process.execPath, [${JSON.stringify(path.join(scripts, 'testing', 'run-tests.js'))}, '--keep-network-for-review', '--', ${JSON.stringify(line)}], { stdio: 'inherit' });\nr.on('close', (c) => process.exit(c === null ? 1 : c));\n`);
+    const env = { ...process.env };
+    delete env.DELIVERY_SEAL_ACTIVE;
+    const run = (args) => new Promise((resolve) => {
+      const p = spawn(process.execPath, args, { cwd: dir, env });
+      let out = '';
+      let err = '';
+      p.stdout.on('data', (d) => { out += d; });
+      p.stderr.on('data', (d) => { err += d; });
+      p.on('close', (status) => resolve({ status, out, err }));
+    });
+    const kept = await run([path.join(scripts, 'review-run.js')]);
+    if (kept.status !== 0 || !/^reached$/m.test(kept.out)) return `review-run's run did not keep the network (exit ${kept.status}: ${kept.out.trim()} ${kept.err.trim().slice(0, 160)})`;
+    if (!/the network is KEPT/.test(kept.err)) return 'a run that kept the network did not say so';
+    const other = await run([path.join(scripts, 'testing', 'run-tests.js'), '--keep-network-for-review', '--', line]);
+    if (other.status !== 2 || /reached/.test(other.out) || !/review-run\.js's alone/.test(other.err)) return `the word from another parent was not refused (exit ${other.status}: ${other.out.trim()})`;
+  } finally {
+    host.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  console.log('seal-check: only review-run.js keeps the network, and the run says so; the same word from another parent runs nothing');
+  return null;
+}
+
 async function main() {
   if (process.env.DELIVERY_SEAL_ACTIVE && process.env.DELIVERY_SEAL_ACTIVE !== '0') { console.error('seal-check: run it outside a sealed run'); return 2; }
   if (!R.bwrapPath(process.env)) { console.error('seal-check: bubblewrap (bwrap) not found: a run cannot be sealed on this host'); return 2; }
@@ -193,7 +232,7 @@ async function main() {
   if (killed !== 0) return killed;
   const visible = checkoutVisible();
   if (visible !== 0) return visible;
-  for (const check of [sizeCapCheck, inodeCapCheck, olderSealCheck, networkCheck, noSealCheck]) {
+  for (const check of [sizeCapCheck, inodeCapCheck, olderSealCheck, networkCheck, noSealCheck, keepNetworkCheck]) {
     const problem = await check();
     if (problem) { console.error(`seal-check: FAILED, ${problem}`); return 1; }
   }

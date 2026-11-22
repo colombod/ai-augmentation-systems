@@ -39,20 +39,45 @@ function testFiles(root) {
 }
 
 // --clock <iso> is the runner's own; the rest pass through to `node --test`, or after -- are a command
+// review-run.js alone may ask for this, for another product's test command whose install step needs the
+// network. It is a word on this runner's own command line, before the --: no environment variable and no
+// product setting can turn it on, and a command after the -- that holds it is only that command's word.
+const KEEP_NETWORK = '--keep-network-for-review';
 function splitArgs(argv) {
   const rest = [];
   let clock = null;
   let command = null;
+  let keepNetwork = false;
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--') { command = argv.slice(i + 1); break; }
-    if (argv[i] === '--clock') clock = argv[++i];
+    if (argv[i] === KEEP_NETWORK) keepNetwork = true;
+    else if (argv[i] === '--clock') clock = argv[++i];
     else if (argv[i].startsWith('--clock=')) clock = argv[i].slice('--clock='.length);
     else rest.push(argv[i]);
   }
   if (clock !== null && !Number.isFinite(Date.parse(clock))) throw new Error(`--clock needs a date, got ${JSON.stringify(clock)}`);
   if (command !== null && !command.length) throw new Error('-- needs the command to run after it');
   if (command !== null && rest.length) throw new Error(`only --clock goes before -- <command>; ${rest.join(' ')} is for node --test`);
-  return command === null ? { clock, rest } : { clock, rest, command };
+  if (keepNetwork && command === null) throw new Error(`${KEEP_NETWORK} goes with -- <command>`);
+  const kept = keepNetwork ? { keepNetwork: true } : {};
+  return command === null ? { clock, rest } : { clock, rest, command, ...kept };
+}
+
+// the script the process that started this one is running (argv[1] of its command line), or null
+function parentScript(ppid = process.ppid) {
+  try {
+    const a = fs.readFileSync(`/proc/${ppid}/cmdline`, 'utf8').split('\0');
+    return a[1] ? fs.realpathSync(a[1]) : null;
+  } catch (e) { return null; }
+}
+// null when this run may keep the host's network, else why not: its parent is this plugin's own
+// review-run.js, and the command is not this plugin's runner, whose suite always stays isolated
+function keepNetworkProblem(command, { parent = parentScript(), reviewRun = path.join(__dirname, '..', 'review-run.js') } = {}) {
+  let own = null;
+  try { own = fs.realpathSync(reviewRun); } catch (e) { own = null; }
+  if (!own || parent !== own) return `${KEEP_NETWORK} is review-run.js's alone`;
+  if (/run-tests\.js/.test(shellLine(command))) return `${KEEP_NETWORK} is refused for this plugin's own test runner, whose suite stays off the network`;
+  return null;
 }
 
 // the shell line a command runs as: one word as written, several quoted one by one
@@ -165,10 +190,10 @@ function bwrapPath(env) {
 // `keep` are host directories under /tmp bound back over the fresh tmpfs (after it, so they show
 // through): the run's own checkout and this runner, when they live there (Copilot on #117). With
 // `tokenFromStdin`, bubblewrap writes what it reads on stdin to /tmp/.delivery-seal in the fresh tmpfs.
-function sealArgs(bwrap, cap, argv, keep = [], tokenFromStdin = false) {
+function sealArgs(bwrap, cap, argv, keep = [], tokenFromStdin = false, { keepNetwork = false } = {}) {
   const binds = keep.flatMap((p) => ['--bind', p, p]);
   const token = tokenFromStdin ? ['--file', '0', `/tmp/${SEAL_FILE}`] : [];
-  return [bwrap, ['--dev-bind', '/', '/', '--size', String(cap.bytes), '--tmpfs', '/tmp', ...binds, ...token, '--proc', '/proc', '--die-with-parent', '--unshare-pid', '--unshare-net', '--', ...argv]];
+  return [bwrap, ['--dev-bind', '/', '/', '--size', String(cap.bytes), '--tmpfs', '/tmp', ...binds, ...token, '--proc', '/proc', '--die-with-parent', '--unshare-pid', ...(keepNetwork ? [] : ['--unshare-net']), '--', ...argv]];
 }
 // the directories a sealed run needs that the private /tmp would hide: the directory it runs in and
 // the plugin it runs from, each when it lies under /tmp (never /tmp itself, which is the seal)
@@ -207,6 +232,9 @@ function guardCount(dir, sealed, limit) {
 }
 module.exports.guardCount = guardCount;
 module.exports.sealArgs = sealArgs;
+module.exports.KEEP_NETWORK = KEEP_NETWORK;
+module.exports.parentScript = parentScript;
+module.exports.keepNetworkProblem = keepNetworkProblem;
 module.exports.keepPaths = keepPaths;
 module.exports.caps = caps;
 module.exports.bwrapPath = bwrapPath;
@@ -245,7 +273,7 @@ if (require.main === module) {
   // repositories in them each run, which filled a 39 GB disk over a day of runs. The suite gets a
   // temporary directory of its own, removed when it ends.
   const os = require('os');
-  const { clock, rest, command } = splitArgs(process.argv.slice(2));
+  const { clock, rest, command, keepNetwork } = splitArgs(process.argv.slice(2));
   const cap = caps(process.env);
   const files = command ? [] : process.env.DELIVERY_TEST_FILES ? process.env.DELIVERY_TEST_FILES.split(path.delimiter) : testFiles(root);
   // already inside a seal (the suite's own tests run this runner): no nested sandbox, which the host
@@ -274,7 +302,16 @@ if (require.main === module) {
       // run reads no terminal
       const host = mountAt('/tmp');
       const nonce = require('crypto').randomBytes(16).toString('hex');
-      const [cmd, args] = sealArgs(bwrap, cap, [process.execPath, __filename, ...process.argv.slice(2)], keepPaths([process.cwd(), root]), true);
+      if (keepNetwork) {
+        const no = keepNetworkProblem(command);
+        if (no) refuse(no);
+        process.stderr.write('run-tests: the network is KEPT for this run: review-run.js asked for it, for a product test command that is not this plugin\'s runner\n');
+      }
+      // the sealed child is not review-run's child: the word stays out of its command line
+      const own = process.argv.slice(2);
+      const at = own.indexOf(KEEP_NETWORK);
+      if (keepNetwork) own.splice(at, 1);
+      const [cmd, args] = sealArgs(bwrap, cap, [process.execPath, __filename, ...own], keepPaths([process.cwd(), root]), true, { keepNetwork: Boolean(keepNetwork) });
       const childEnv = { ...process.env, DELIVERY_SEALED_RUN: `host-tmp:${host ? host.id : 'none'}:${nonce}` };
       delete childEnv.DELIVERY_SEAL_ACTIVE;
       const r = spawnSync(cmd, args, { env: childEnv, input: nonce, stdio: ['pipe', 'inherit', 'inherit'] });

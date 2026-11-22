@@ -190,3 +190,21 @@ test('review-run cleanEnv clears every DELIVERY_, BEADS_ and BD_ variable, keeps
   const out = cleanEnv({ PATH: '/bin', DELIVERY_ROLE: 'x', BEADS_ACTOR: 'a', BD_ACTOR: 'a', BD_NON_INTERACTIVE: '1', BD_ANY_NEW: 'z', DELIVERY_SEAL_ACTIVE: 't', BDX: 'kept', GIT_DIR: '/r' });
   assert.deepEqual(Object.keys(out).sort(), ['BDX', 'DELIVERY_SEAL_ACTIVE', 'PATH']);
 });
+
+test('review-run keeps the network only for another product: a command or a clone holding this plugin\'s runner stays isolated, and team.json cannot ask for it', () => {
+  const { keepsNetwork } = require('./review-run.js');
+  const other = repo({ 'package.json': '{}' });
+  assert.equal(keepsNetwork(other, 'npm ci && npm test'), true);
+  assert.equal(keepsNetwork(other, 'node plugins/delivery/scripts/testing/run-tests.js'), false);
+  const own = repo({ 'plugins/delivery/scripts/testing/run-tests.js': '//' });
+  assert.equal(keepsNetwork(own, 'make test'), false, 'this plugin\'s repository, whatever the command');
+  // what review-run starts: the word sits before the --, from review-run and not from the product's line
+  const { roleDir, team, first } = setup();
+  main(['checkout', '7', first], { env: process.env, cwd: roleDir, roleDir, team, ...capture() });
+  const runs = [];
+  const spawn = (cmd, args, o) => (cmd === 'git' ? require('child_process').spawnSync(cmd, args, o) : (runs.push(args), { status: 0 }));
+  assert.equal(main(['test', '7'], { env: process.env, cwd: roleDir, roleDir, team: { ...team, test_command: 'npm test' }, spawn, ...capture(), platform: 'linux' }), 0);
+  assert.deepEqual(runs[0].slice(1), ['--keep-network-for-review', '--', 'npm test']);
+  assert.equal(main(['test', '7'], { env: { ...process.env, DELIVERY_TEST_KEEP_NETWORK: '1' }, cwd: roleDir, roleDir, team: { ...team, keep_network: true, test_command: 'node x/run-tests.js' }, spawn, ...capture(), platform: 'linux' }), 0);
+  assert.deepEqual(runs[1].slice(1), ['--', 'node x/run-tests.js']);
+});
