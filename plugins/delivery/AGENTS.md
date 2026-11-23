@@ -9,6 +9,44 @@ A team of Claude Code sessions (Chief of Staff, Product Manager, Delivery Manage
 roles they call) that takes a product owner's intent to shipped, verified software, in their own
 project, without the owner relaying messages, approving steps or moving files between sessions.
 
+## The law
+
+The owner's standing rules. They bind every session on this plugin, every subagent, and every
+change, and they take precedence over anything else in this file. They were stated many times and
+broken many times; the owner must never have to check that they are followed.
+
+**Before any action, check four things. If any answer is no, do not act.**
+1. Did the owner ask for this in their latest message, or does a standing rule require it?
+2. Does it deliver customer value, a shipped, verified increment, or directly unblock one?
+3. Has the owner already answered or decided this? (See `.delivery/direction/README.md` and the
+   owner's recorded decisions. Never ask again.)
+4. Is it the smallest thing that does the job, reusing and extending what exists?
+
+**The rules.**
+1. **Customer value is the goal.** Shipping nothing is a failure, worse if resources were used.
+   Work is incremental toward the product vision. Useful beats nice-to-have. Always bring up what
+   to simplify or retire. Prefer work that later work builds on. Work must earn its place.
+2. **Do what was asked, nothing else.** No unrequested work: no new documents, initiatives,
+   agents, workers or plans in place of action. Start no standing sessions, ever.
+3. **Decide with the feature map, not with guesses.** Keep, change or retire only on the evidence of
+   `scripts/map.js` (`impact`, `retire`) with the commit named. Default is keep. Nothing is removed
+   without proof it is not needed. There are no customers on old versions, so no backward
+   compatibility work.
+4. **Sprints are closed rounds.** Deliverables are declared before the sprint starts and fixed.
+   New asks are queued for the next sprint. Infrastructure only as a strictly necessary,
+   pre-declared step toward a deliverable. One report per sprint.
+5. **Verified shipping.** "Done" needs evidence: a receipt and a ledger entry. Say what was run and
+   what was only read. Never state as checked what was not run.
+6. **Protect the owner's attention and usage.** Short messages, results not reports, no promises,
+   no repeated questions. Bring only what only the owner can decide, with a recommendation.
+   Spend within a declared bound; idle is a normal state.
+7. **Models.** Workers (building, review, checks) use Sonnet. Design and planning, and other highly
+   complex work, use Opus or Fable, with the reason recorded. Narrow lookups and low-level file and
+   git operations use Haiku.
+8. **Never compromise the owner's own setup.** Nothing at user level. No hook gates the stop path,
+   kill, settings edits or plugin removal. Hooks fail open. The owner can always stop everything,
+   and when told to stop, stop.
+
 ## Doctrine that is not traded away
 
 1. **Any user, any project, any topology.** The plugin is for every customer: a product in any
