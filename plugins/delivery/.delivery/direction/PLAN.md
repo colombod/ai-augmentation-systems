@@ -69,7 +69,7 @@ Customer: the owner, who must maintain this plugin.
 | Deliverable | Done when | Model tier and reason (proposed) |
 | --- | --- | --- |
 | D2.1 The plugin mapped | The map lists the plugin's features, the files behind each, and its cost (code, tests, docs). Where use evidence is missing it says so. | Smallest. Mechanical counting from files and the map. |
-| D2.2 A retirement proposal | A ranked list, from the map, of what remains after Sprint 0 and has no use evidence, with what each removal frees. | Middle. Judgement over evidence; no hard design. |
+| D2.2 A retirement proposal | A ranked list, from the map, of what remains after Sprint 0 and has no use evidence, with what each removal frees. | Top. Planning: ranking what to remove against evidence is judgement, not mechanical work. |
 | D2.3 The owner's retirements carried out | Each retirement the owner approves is removed with its tests and docs, and the map and size figures are updated. | Middle. Deletion with tests; the smallest tier may do the mechanical removals. |
 
 Necessity: the map already exists (`map.js`, 74 features reported). This sprint extends it, and no store or server is built unless a story shows the need.

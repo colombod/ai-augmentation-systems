@@ -43,7 +43,7 @@ The failures come from the 2026-11-22 post-mortem and the analyses of the Chief 
 2. **Sprint length.** The contracts require a bound on time, spend and review rounds for each sprint and do not choose them.
 3. **Attention budget size.** The limit on decision requests and messages per sprint, and what happens at the limit.
 4. **The usage budget.** Its unit, its size, and whether it is per week, per sprint, or both. The contracts require it to be hard.
-5. **Default tier, and when the top tier is allowed without a reason.** The contract says the smallest tier that can do the job, and the top tier only for hard work with a recorded reason. The owner may want a different default, or a list of work for which the top tier needs no reason.
+5. **Default tier, and when the top tier is allowed.** Decided by the owner on 2026-11-23: workers use Sonnet; design and planning, and other highly complex work, use Opus or Fable; narrow lookups and low-level file and git operations use the smallest tier (Haiku). The top tier needs a recorded reason for anything else. This is in `spend-and-idle.md` 6 and the plugin's `AGENTS.md`.
 6. **One Chief of Staff for several products or one per product.** The contracts work either way.
 7. **The feature map's storage.** The owner said the store and server were needed only if a story shows the need. This draft keeps that, but you may want it decided.
 8. **Where this lives.** It can be the plugin's `AGENTS.md` doctrine, its `.delivery/` record, or a separate repository, which Converge itself favours for focused parts.
