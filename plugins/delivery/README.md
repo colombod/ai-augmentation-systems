@@ -1,215 +1,68 @@
 # delivery
 
-## Start here
+Delivery takes an idea to a shipped, verified product in small, closed steps. You state an intent; it turns it into a brief, a PRD, an architecture, a roadmap and stories; work is done in sprints whose deliverables are fixed up front; and "done" has to be backed by evidence, not by an agent's say-so.
 
-delivery gives you a team of Claude Code sessions, one per role, that plan and ship a product while you talk mainly to one of them, the **Chief of Staff** (and to the Product Manager about product vision). You decide once: your exact words are recorded with proof that every session can check, so nobody asks you to repeat or pass anything on. **You are never the messenger.** Sessions carry every message, file and result between themselves; when one cannot reach another, it commits the result to the project repo and the other reads it there. You are asked only for what no agent can do (a sign-in, a consent, a payment, a secret, a product decision), once, through the Chief of Staff. Every role's brief carries this as team rule 0, and every role's Stop hook blocks a turn that asks you to relay something. Without a team, the same plugin is a planning pipeline that turns your intent into a brief, a PRD, an architecture, a roadmap and stories.
-
-### Prerequisites
-
-- Claude Code v2.1.224 or later, on macOS or Linux; on Windows, inside WSL2 (the sessions message each other).
-- Node 18 or later, and git.
-- beads: `bd` on the PATH. **Beads** are the team's work items; `/delivery:start` sets them up on every machine, synced through the project repo ([Setting up beads](docs/quickstart.md#setting-up-beads)).
-- A private **project repo** (the plan, the team manifest, your decisions) and, for an existing product, its **product repo** (code only).
-- This plugin installed: `/plugin install delivery@ai-augmentation-systems`.
-
-`/delivery:start` checks all of these for you and names the fix for anything missing.
-
-### Start a new project in 3 steps
-
-1. **Install the plugin:** `/plugin install delivery@ai-augmentation-systems` (the repository README has the marketplace step).
-2. **Run `/delivery:start`** in an ordinary Claude Code session, outside any role directory. It asks for the project repo, the product repo, the host name, the preset, the model profile and the permission mode, shows a dry run, then writes the team manifest, creates the beads database, prepares one directory per role and prints the command that starts each session.
-3. **Talk to the Chief of Staff.** `/delivery:start` starts every role session itself (`start.js --launch --keep-alive`), in auto mode, and each joins the team; it prints the one command that opens the Chief of Staff.
-
-**If you are an agent** setting this up for a person, follow [the agent brief](docs/quickstart.md#quick-start-for-an-agent): it names the files to read, the commands to run and how to tell that each step worked.
-
-### Using the team
-
-- **Talk to the Chief of Staff** for decisions and logistics; talk with the Product Manager about product vision. Both record what you decide. Other sessions send their questions to the Chief of Staff; it answers from what you already decided and asks you the rest once, in one ranked briefing.
-- **See progress** with `/delivery:team` in any session (who is live, stale or missing), or ask the Chief of Staff for a briefing.
-- **Decisions are recorded and verified.** `operator.js ledger` lists every question the team asked you and its answer; a session runs `operator.js verify <record id>` to see your exact words before it acts.
-- **When something blocks,** the refusal names the way out. See [Troubleshooting](docs/quickstart.md#troubleshooting).
-
-### Use the planning pipeline without a team
-
-Run the pipeline skills yourself, from `/delivery:brief` on: see [Using the planning pipeline without a team](#using-the-planning-pipeline-without-a-team).
-
-## What you get
-
-- **A product defined before it is built**: brief, PRD with MVP stages, architecture, then a roadmap and stories with acceptance criteria, each gated and open to adversarial review.
-- **Your attention protected.** Only what only you can decide reaches you, once, in one ranked briefing, and each decision carries a **record id** any session can check against your exact words.
-- **Roles that cannot do each other's jobs.** Each role has a **lane**, enforced by hooks.
-- **The right model for each job**, set per role and raised per story.
-- **The product's own experts.** Staffing hires a handful of specialists for your product (infrastructure, security, scalability), each written from the files that need it and kept in the private project repo; every role session can call them: see [Experts](docs/reference.md#the-shipping-teams-mechanisms).
-- **Work that finishes.** The team builds in compounding waves per product area, each verified on the customer's app before the next builds on it; it picks fixes and work that builds on verified work first, and under the budget you set it never starts what it cannot finish. Large stories are costed on the large model they are built with (opus by default), so set the weekly figure with that in mind: see [Waves, budget and selection](docs/reference.md#waves-budget-and-selection).
-- **Strategy stays private.** Plans and decisions live in the project repo; the product repo gets code only.
-- **The plan stays true to what shipped.** Every merge updates the planning repo: story statuses follow the work, the feature map is rebuilt from the product at what merged (what ships, what each open story will touch, a log of what each merge added and removed), and the plan is pushed. The merge gate refuses the next merge while the plan is behind.
-
-## How it works in one picture
+## Install
 
 ```
-                                  YOU (the operator)
-                                       │   ▲
-               you talk; it asks you   │   │  one ranked briefing: open questions,
-               only what you decide    ▼   │  answers waiting for your OK
-                         ┌───────────────────────────────────┐
-                         │          Chief of Staff           │
-                         │ records your words, answers from  │
-                         │ earlier records, routes the work  │
-                         └─────────────────┬─────────────────┘
-                   messages (SendMessage)  │  beads (bd: work items, claims, notes)
-      ┌──────────────┬──────────────┬──────┴───────┬──────────────┬──────────────┐
-      ▼              ▼              ▼              ▼              ▼              ▼
-   Staffing      Product        Delivery       Progress       Builders        Spike
-   (who is on    Manager        Manager        Observer       (build in      Researcher
-   the team)     (define,       (navigate:     (keeps the     the product    (answers
-                 contract)      plan → beads)  record true)   repo)          spike beads)
-
-  How one decision travels (a record id, never a relay):
-
-    1. you say "B"  ──▶  2. Chief of Staff records it  ──▶  3. record id sent to the session
-                            operator.js record --quote 'B' --answers q-...   dec-chief-of-staff-000004
-                                                                          │
-                                     4. the session checks it: operator.js verify dec-chief-of-staff-000004
-                                        VERIFIED ... operator said: "B"   (then acts; never asks you)
-
-  Two repositories:
-
-    private PROJECT repo (strategy)                 PRODUCT repo (code only)
-    .delivery/initiatives, stories, reviews         one worktree per builder, branch team/<instance>
-    .delivery/team/                                 leak guard: plan text and plan files refused
-    branch delivery-operator: operator records
-      (kept in .git/delivery-operator, never in your checkout)
+/plugin marketplace add colombod/ai-augmentation-systems
+/plugin install delivery@ai-augmentation-systems
 ```
 
-## The flow: Define → Contract → Navigate
+You need Claude Code, Node 18 or later, and git. The repository is private, so the marketplace step clones with your existing git credentials. The plugin registers no hooks that can block anything, writes nothing into your Claude settings, and starts no background sessions.
 
-`*` marks optional depth. **Fast path:** `/delivery:brief` → `/delivery:prd` → `/delivery:architecture` → `/delivery:roadmap` → `/delivery:stories`. `/delivery:challenge` runs an adversarial panel at any gate; `/delivery:status` shows where everything stands. Every step reads the previous artifact and stops if it is missing rather than improvising one.
+## Quick start
 
-**1. DEFINE the product.** `/delivery:brief` → `/delivery:research`* → `/delivery:personas`* → `/delivery:simulate`* (`--interview`, `--journey`) → `/delivery:prd` (with MVP staging) → `/delivery:design`* → `/delivery:architecture`.
-- Produces: the problem and who has it, evidence-graded personas, a PRD with falsifiable criteria and NFRs as numbers, MVP stages that each let a persona finish a journey, a design system, an architecture with ADRs and spikes.
-- Owner: the Product Manager, talking with you about the vision. Model tier: the strongest (opus); this is where judgement pays.
+Run these in your project folder, in an interactive Claude Code session, in order. `<name>` is a short name you choose for the work; use the same one in every step. Each step writes under `.delivery/initiatives/<name>/` and checks the one before it. The skills ask you questions; in a headless run, unanswered questions become items marked "assumed".
 
-**2. CONTRACT.** `/delivery:roadmap` → `/delivery:stories`.
-- Produces: phases in risk-first order with cut lists and a value/cost reconciliation, then self-contained stories with acceptance criteria, each sized S, M or L, and spikes that block what they derisk.
-- Owner: the Product Manager writes the roadmap (opus); the Delivery Manager writes the stories (sonnet).
+1. `/delivery:brief <your intent>` writes `brief.md`: the problem, who has it, what is known and unknown.
+2. `/delivery:prd <name>` writes `prd.md` (scenarios, numbered requirements, acceptance criteria), `prioritization.md` (an MVP and later stages) and `storyboard.md`, marked **NOT APPROVED**.
+3. **Approve the storyboard in your own words.** The plugin quotes your message into the storyboard. It never writes an approval for you. The roadmap, stories and sprints wait for it; architecture does not.
+4. `/delivery:architecture <name>` writes `architecture.md`.
+5. `/delivery:roadmap <name>`, then `/delivery:stories <name>`.
+6. `/delivery:sprint`, build, then `/delivery:sprint-review`.
+7. `/delivery:status <name>` at any time: a read-only report of the gates, open findings and what is traceable. It runs two small checking scripts and may ask your approval to run them.
 
-**3. NAVIGATE delivery.** `/delivery:materialise` → `/delivery:sprint` → build → `/delivery:sprint-review` → `/delivery:realign`.
-- Produces: beads from the plan, a sprint package with stop conditions, code from dedicated builders in their own worktrees, an independent acceptance verdict, and a re-aligned plan.
-- Owner: the Delivery Manager runs it (sonnet); builders build (sonnet, raised for L stories); the Product Manager owns realign, the pivot point, and brings any pivot to you.
+Other skills: `research`, `personas`, `simulate`, `design`, `challenge` (an adversarial review of any document), `decision`, `realign`, `handoff`, `glossary`. Each one gates on the artifacts before it and tells you what is missing.
 
-## The team
+## What has been verified
 
-The default team (`minimal` preset) has four roles:
+Run for real on 2026-11-23, on one small intent, in headless Claude Code: `brief`, `prd` (with staging, prioritization and storyboard), `architecture` and `status`. They produced the files above and `status` found real inconsistencies in them.
 
-- **Chief of Staff** — your channel for decisions and logistics; every other session asks it, not you. It runs the team's day from the record: a ranked plan each morning, each item sent to the role that owns it, and a short briefing the plugin writes ([the Chief of Staff's day](docs/reference.md#the-chief-of-staffs-day)).
-- **Product Manager** — owns what to build and why: DEFINE and CONTRACT, realign and pivots; talks with you about vision.
-- **Delivery Manager** — owns stage 3: stories, materialise, sprints, phase reviews and the bead graph; assigns work to builders; has each pull request reviewed independently and merges it on a passing review.
-- **Builder** — builds one story at a time in its own worktree of the product repo, with a runner (`plain`, `superpowers` or `attractor`); opens the pull request and hands it to the Delivery Manager, resolves conflicts when asked, and never merges.
+Not yet run end to end: `roadmap`, `stories`, `sprint`, `sprint-review`, `realign`. Treat them as documented, not proven.
 
-The `full` preset adds five optional roles:
+Cost, measured on that run (Opus, a small intent): about $2 for the brief, $2.50 to $3 for the PRD and storyboard, $2 for the architecture, $0.35 for `status`. Each step runs several reviewers in parallel. A fresh Sonnet session that followed this README on a second small intent and skipped the optional reviewers did the brief, PRD, storyboard and status for $0.74.
 
-- **Staffing** — owns the roster (`team.json`, project briefs).
-- **Progress Observer** — keeps the record true: re-checks what is claimed merged, deployed or verified, watches liveness and releases stale claims.
-- **Spike Researcher** — answers spike beads from the architecture.
-- **Reality Checker** — runs the reality-check script for a deployed story on the real customer surface, with browser control or computer use, and records a row per criterion; the only role with those tools. It is on by default, in either preset, when a declared surface is not scriptable; opt in otherwise with `start.js --reality-checker`. The owner is never asked to run a check: see [Reality checks](docs/reference.md#ready-and-done-gates).
-- **Technical Writer** — owns the product's documentation: the README, the quick start and the reference, kept true to the version that ships. It writes from the product as it runs, for two readers (a person typing commands and an agent following a brief), marks each example with the check it proves so the Reality Checker can run it, changes only Markdown and the product's `docs/` tree in its own worktree, and opens the pull request; it never merges.
+## Verified shipping
 
-**Ready and done gates.** A story names its customer surface (`surface.json`) and states its criteria as what the customer sees there, each with a probe; a story closes only when every criterion has a pass row on that surface, on the deployed sha, recorded by someone other than its builder. Gates block only on a divergence from what was agreed; everything else is a counted warning the Delivery Manager acknowledges. Status is merged, deployed (live), verified (checked on the customer's app), from the record: see [Ready and done gates](docs/reference.md#ready-and-done-gates).
+Set `DELIVERY_LEDGER=1` before starting Claude Code. The plugin then records each skill and agent call and each file written under `.delivery/` to `.delivery/invocations/`. The recorder only observes: it prints nothing, always exits 0, and writes nothing without the variable. `/delivery:status` reads the ledger to say which documents were produced by real skill calls and which were not. In a fresh-project test it recorded the PRD and status skill calls, three reviewer agent calls and four file writes, and `status` used them to say the PRD files came from real writes. The brief's own skill call and its finder agents were not in the ledger, and why is not yet confirmed.
 
-Who talks to whom: you talk to the Chief of Staff (and to the Product Manager about vision); every session messages the Chief of Staff with questions for you; work moves between roles as beads, and the Delivery Manager alone changes their structure. The agents in `agents/` are reviewer lenses that skills call, not sessions: see [Sessions you run vs reviewers they call](docs/reference.md#sessions-you-run-vs-reviewers-they-call).
+## Feature map
 
-## Models
+Know what a change reaches before you touch code, and what removing a feature would free.
 
-| Role | Default | Raise it when |
-| :-- | :-- | :-- |
-| Chief of Staff | opus | keep it high: it judges what reaches you |
-| Product Manager | opus | keep it high: DEFINE and CONTRACT are judgement work |
-| Delivery Manager | sonnet | stories keep coming back not ready, or the plan is large |
-| Builder | sonnet | per story, through its size label (below) |
-| Staffing, Spike Researcher, Reality Checker, Technical Writer | sonnet | spikes are deep research |
-| Progress Observer | haiku | its sweeps miss drift |
+```
+node ${CLAUDE_PLUGIN_ROOT}/scripts/map.js features
+node ${CLAUDE_PLUGIN_ROOT}/scripts/map.js impact <path>...
+node ${CLAUDE_PLUGIN_ROOT}/scripts/map.js retire <feature-id>
+node ${CLAUDE_PLUGIN_ROOT}/scripts/map.js blind
+```
 
-**Pick a whole-team profile** when you start: `start.js --models quality|balanced|economy` (`balanced`, the default, is this table; `quality` also puts the Delivery Manager on opus; `economy` moves the senior roles to sonnet and Staffing to haiku).
+Declare what your product ships in `.delivery/features.json` (`{"features": [{"id", "name", "anchors": [...]}]}`); without declared features the map reaches nothing. Each answer names the commit it was computed at. It reports what a feature reaches, not whether anyone uses it.
 
-**Change a role's model:** edit `roles[].model` in `.delivery/team/team.json`, rerun `prepare-role` for that instance, and restart its session. `/delivery:team` shows each session's model and flags a wrong one. The model is how you set the cost of each role; `budget.builders_cap` limits how many builders run.
+## How it works
 
-**Per story:** the Delivery Manager sets `size: S|M|L` in every story (S routine, M ordinary, L risky or ambiguous). Materialise turns it into a `size-S|M|L` label; a builder gives `size-L` beads a stronger model for its implementer and reviewer (`$DELIVERY_LARGE_MODEL`, opus except in `economy`), and a story that needs a specific model says `model:` in its frontmatter.
+- **Closed sprints.** Deliverables are declared before the sprint starts and fixed; new asks are queued for the next one. One report per sprint: what was promised, shipped, spent and left out.
+- **Your attention is a budget.** You are asked only what only you can decide, with a recommendation.
+- **The right model for each job.** Workers use Sonnet; design and planning use Opus; low-level file and git work uses Haiku.
+- **Useful beats nice-to-have.** Every plan proposes what to simplify or retire.
 
-## Operator decisions
+The reasoning and the contracts behind these are in [.delivery/direction](.delivery/direction/VISION.md).
 
-**In plain words.**
-You answer once.
-The Chief of Staff records your exact words, links them to the question, and sends the record id.
-A worker runs `verify` and sees your words and the chain back to them.
-Nobody asks you to pass anything on.
-You get no orders: what only you can do (a sign-in, a payment, a secret, a scope or money decision) arrives once a day as exact steps (`owner-queue.js list`).
-To set a budget or pause the team, the Chief of Staff asks you a Yes/No question in a question box; clicking Yes is the decision; idle with ready work, a stalled bead or a session stopped on a usage limit is flagged, and a host job you install once wakes the stopped sessions ([the watchdog](docs/reference.md#the-watchdog-stalls-and-the-wake)), and messages to you are plain, short and end with "Ask for details on any item" ([details](docs/reference.md#owner-authority-and-communication)).
+## Not part of the supported product
 
-**Day-one commands** (the Chief of Staff runs them; `/delivery:decision` has the loop):
-
-- `operator.js pending` — your inputs not yet recorded.
-- `operator.js record --cite in-<host>-N --quote '<exact words>' --statement '...' --scope bead:<id>` — record a decision.
-- `operator.js ack --input in-<host>-N --reason '...'`, or `operator.js ack --pending --reason 'conversational'` for chat — acknowledge the rest.
-- `operator.js find`, `operator.js answer`, `operator.js ask` — answer from earlier records, or log a question for your briefing.
-- `operator.js verify <id>` — any session checks a decision before acting; `operator.js ledger` lists every question and answer.
-
-**Where the records live.** Not in your checkout. Each checkout keeps them in a private git repository inside its `.git` directory (`.git/delivery-operator/`), so `git status`, `git clean`, `git stash`, `git reset --hard`, `git pull` and your own commits never see them. They travel on the project remote's `delivery-operator` branch, which carries operator files only: your repository's branch rules must allow pushes to it, and a session (cloud and SSH ones included) publishes only with push access to the project remote. Without a remote the records stay local. **Deleting or re-cloning the checkout deletes `.git/delivery-operator` and every entry not yet published** (without a remote: everything): run `operator.js publish` and check that `/delivery:team` shows `Operator entries unpublished: 0` first. Published entries come back in a new clone. Inspect the store with `git -C .git/delivery-operator log --stat`.
-
-Delegations, ratification, revocation and chain repair are in [docs/operator-reference.md](docs/operator-reference.md); enforcement and the record files in [docs/reference.md](docs/reference.md#operator-decisions-in-detail). [docs/quickstart.md](docs/quickstart.md) walks through one decision with real output.
-
-**Limits.** This is tamper-evidence for cooperative sessions, not a security boundary.
-- **Files can be rewritten.** A session with unrestricted Bash can rewrite and re-hash the files; the hash chains, recorded heads, the store's append-only merge check and its git history make that detectable, not impossible.
-- **Push access is trust too.** Anyone who can push to the project remote can pre-seed a new host's chains, write records citing inputs they typed, or push a line claiming a host, which blocks that host's publishing until its chain is set aside (`operator.js quarantine`, reviewed with `--adopt-remote`). A rehost counts only when the committed `team.json` agrees. Details: [docs/reference.md](docs/reference.md#operator-decisions-in-detail).
-- **Recorded heads are local** (`cursors/heads.json` on each host), so they are cooperative trust too.
-- **Records are checked for form, not relevance.** A well-formed record citing a real input cannot be machine-rejected when the input does not support it; detection is human, from the verbatim words and author `verify` prints.
-- **Capture depends on the harness's undocumented transcript format.** If it changes, `operator.js sync` reports `format_unrecognised` and recording fails closed. Cloud sessions are captured only when they sync from their own host.
-- **The pre-role boundary is a local file** (`cursors/role-since/<instance>.json` in the operator store); deleting or post-dating it hides genuine inputs.
-- **Keystrokes can be injected** into another session by a role with unrestricted Bash, and the harness records that as a human prompt.
-- **The relay detector is a heuristic backstop**; the structural fix is that no session ever needs you to relay.
-- **Instance ids belong to one role.** A new role gets a new id; mark a departed instance `"retired": true` in `team.json` rather than deleting it.
-
-## Using the planning pipeline without a team
-
-Run the skills yourself, in order; each writes under `.delivery/` and gates on the one before. In a shipping team the role whose lane holds the output runs them.
-
-### Which skill do I run when?
-
-| When | Run | Stage |
-| :-- | :-- | :-- |
-| You have an idea, or a product to assess | `/delivery:brief` | DEFINE |
-| The brief exists; you need prior art and constraints | `/delivery:research` | DEFINE, optional |
-| You need the users the product is for | `/delivery:personas`, then `/delivery:simulate --interview` or `--journey` | DEFINE, optional |
-| Users are settled; you need a specification and an MVP | `/delivery:prd` (re-stage with `--stage`) | DEFINE |
-| You need look and feel, then a technical design | `/delivery:design`, then `/delivery:architecture` | DEFINE |
-| Design is settled; you need order and stories | `/delivery:roadmap`, then `/delivery:stories` | CONTRACT |
-| A wave of work is ready to build | `/delivery:sprint` (`--runner superpowers` or `generic` for your own runner) | NAVIGATE |
-| The wave was built | `/delivery:sprint-review`, then `/delivery:realign` | NAVIGATE |
-| Before you commit to any document | `/delivery:challenge` | any gate |
-| You want to know where the plan stands | `/delivery:status` | any time, read-only |
-| You want a shipping team for a project | `/delivery:start` | team, your own session |
-| A role session has just started | `/delivery:team join` | team, every role session |
-| You want to see who is live, stale or missing | `/delivery:team` | team, read-only |
-| The operator spoke, or a session needs an operator decision | `/delivery:decision` | team, the Chief of Staff |
-| The roadmap, stories or spikes changed | `/delivery:materialise <initiative>` | team, the Delivery Manager (anyone with `--check`) |
-
-New terms go in `.delivery/glossary.md`; every skill keeps it. Renamed skills keep a one-line alias for one version: `interview`, `handoff`, `prioritize`, `join`, `glossary`.
-
-## Clashes and limits
-
-The shipping team runs on hooks and per-role settings. These are the places where they meet the rest of a Claude Code setup.
-
-- **Permission modes.** With a user-level `defaultMode` of `auto`, or a role started with `--permission-mode`, nothing prompts: the lane hook is then the only allowlist, and a hook that fails to spawn (no `node`, a moved plugin path) fails open. `prepare-role` also writes native `permissions.deny` rules that hold even then: `AskUserQuestion`, `PushNotification` and `SendUserFile` for every role except the Chief of Staff and the Product Manager, and `Bash(git push:*)`, `Bash(sudo:*)`, `Bash(curl:*)`, `Bash(wget:*)` and `Bash(rm:*)` for manager lanes that do not allow them. A role session whose lane cannot be checked fails closed.
-- **Plugin updates.** Each installed version lives in its own directory, and the lane hook matches a script path against the plugin root it runs from, so a role's own commands (`operator.js record`, `bd` notes and the rest of its lane) are approved at the version that is running, with no `prepare-role` rerun. A session that last ran an older version remembers that version's paths. With the watchdog job installed ([the watchdog](docs/reference.md#the-watchdog-stalls-and-the-wake)), a stopped role is woken fresh after an install, and its brief names the plugin's scripts through the project launcher, the `delivery.js` the plugin writes into each project, which finds the installed plugin at run time; a conversation resumed any other way is told at its start that the plugin moved; and a refusal of an older version's path names the same command at the current root. You rerun `prepare-role` and restart a session only to change what it was prepared with, such as its model (`/delivery:team` says `Restart pending` while the marker is fixed and the session still runs the old model).
-- **superpowers.** Its "you must invoke skills" instruction competes with the manager lanes. Consider disabling it in manager role directories through `enabledPlugins` in the role's `settings.local.json`.
-- **ralph-loop and the Stop cap.** Claude Code allows at most 8 consecutive Stop blocks; the delivery Stop hook blocks at most twice per turn, but a loop plugin that also blocks Stop shares the budget.
-- **Role directories make roles.** An ordinary session started inside a role directory becomes that role, with its lane, deny rules and Stop guard.
-- **The product-repo guard is a first line.** It refuses public text, product changes and branch names that carry a plan term or 8 words copied from the private plan, and it does not catch paraphrase. It stops a cooperative or careless session; for the durable control, scan the denylist on the product remote ([example](docs/reference.md#the-leak-guard)).
-- **The typed judge sends text to a third party, only if you turn it on.** Off by default. With a `judge` block in `team.json` and `TYPESAFE_API_KEY` set, the Stop hook sends the Chief of Staff's or Product Manager's final message (code and quotes removed) to TypeSafe (`api.typesafe.ai`) to ask whether it asks you to relay, gives you orders, or reads as jargon or justification, and any role can ask a catalogued question with `judge.js ask`, which sends only that question's fields. A best-effort pattern filter refuses text that looks like a token, credential, id, email, URL, path, IP address or phone number, or matches the denylist; it does not reliably catch names or other personal data. Answers are advisory and logged locally without the text ([details](docs/reference.md#the-typed-judge)).
-- **Cost.** Each hook is a separate `node` process, about 38 ms per delivery hook; a Bash call pays 3 (lane, leak guard, bd guard), a Write or Edit 3, and the hooks return immediately outside a role.
+The standing team of role sessions (Chief of Staff, builders, watchdog, host manager) is not supported and nothing in this README depends on it. Its README is kept at [docs/team-runtime-readme.md](docs/team-runtime-readme.md) until the feature map shows its code can go.
 
 ## Reference
 
-- [docs/quickstart.md](docs/quickstart.md) — the manual way to start a team, step by step, one decision traced with real output, troubleshooting.
-- [docs/reference.md](docs/reference.md) — sessions vs reviewer lenses, lanes, hooks, the leak guard, bead discipline, operator decisions in detail, superpowers, artifacts, every skill, adapting it, why it exists.
-- [docs/operator-reference.md](docs/operator-reference.md) — the rest of `operator.js`.
-- [docs/team-example.md](docs/team-example.md) — a manifest explained field by field.
+[docs/reference.md](docs/reference.md) describes every skill in detail. Parts of it still describe the team and are not verified for this release.
