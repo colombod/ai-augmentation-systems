@@ -1,0 +1,93 @@
+{
+  "features": [
+    {
+      "id": "plan-an-intent",
+      "name": "Plan an intent: brief, research, personas, PRD, design, architecture, roadmap, stories",
+      "anchors": [
+        "plugins/delivery/skills/brief/SKILL.md",
+        "plugins/delivery/skills/research/SKILL.md",
+        "plugins/delivery/skills/interview/SKILL.md",
+        "plugins/delivery/skills/personas/SKILL.md",
+        "plugins/delivery/skills/simulate/SKILL.md",
+        "plugins/delivery/skills/prd/SKILL.md",
+        "plugins/delivery/skills/challenge/SKILL.md",
+        "plugins/delivery/skills/design/SKILL.md",
+        "plugins/delivery/skills/architecture/SKILL.md",
+        "plugins/delivery/skills/roadmap/SKILL.md",
+        "plugins/delivery/skills/stories/SKILL.md",
+        "plugins/delivery/skills/prioritize/SKILL.md",
+        "plugins/delivery/skills/realign/SKILL.md",
+        "plugins/delivery/skills/glossary/SKILL.md"
+      ]
+    },
+    {
+      "id": "run-a-sprint",
+      "name": "Declare a closed sprint, hand it off to a runner, review it",
+      "anchors": [
+        "plugins/delivery/skills/sprint/SKILL.md",
+        "plugins/delivery/skills/handoff/SKILL.md",
+        "plugins/delivery/skills/sprint-review/SKILL.md"
+      ]
+    },
+    {
+      "id": "verified-shipping",
+      "name": "Verified shipping: evidence rows, the invocation ledger, the status report",
+      "anchors": [
+        "plugins/delivery/skills/status/SKILL.md",
+        "plugins/delivery/scripts/evidence.js",
+        "plugins/delivery/scripts/warnings.js",
+        "plugins/delivery/hooks/scripts/record-invocation.js"
+      ]
+    },
+    {
+      "id": "feature-map",
+      "name": "Feature trail and map to code: features, impact, blind spots, retire",
+      "anchors": [
+        "plugins/delivery/skills/map/SKILL.md",
+        "plugins/delivery/scripts/map.js",
+        "plugins/delivery/scripts/plan-sync.js"
+      ]
+    },
+    {
+      "id": "independent-review",
+      "name": "Independent review of a change by a separate reviewer",
+      "anchors": [
+        "plugins/delivery/agents/pr-reviewer.md"
+      ]
+    },
+    {
+      "id": "decision-record",
+      "name": "Record an owner decision with the owner's exact words",
+      "anchors": [
+        "plugins/delivery/skills/decision/SKILL.md",
+        "plugins/delivery/scripts/operator.js"
+      ]
+    },
+    {
+      "id": "beads-work-queue",
+      "name": "Turn stories into a beads work queue",
+      "anchors": [
+        "plugins/delivery/skills/materialise/SKILL.md",
+        "plugins/delivery/scripts/materialise.js"
+      ]
+    },
+    {
+      "id": "standing-team-runtime",
+      "name": "The standing team: role sessions, watchdog, host manager, self-update, revive",
+      "anchors": [
+        "plugins/delivery/roles/*.md",
+        "plugins/delivery/agents/chief-of-staff.md",
+        "plugins/delivery/agents/delivery-lead.md",
+        "plugins/delivery/skills/team/SKILL.md",
+        "plugins/delivery/skills/join/SKILL.md",
+        "plugins/delivery/skills/start/SKILL.md",
+        "plugins/delivery/skills/amplifier/SKILL.md",
+        "plugins/delivery/scripts/start.js",
+        "plugins/delivery/scripts/prepare-role.js",
+        "plugins/delivery/scripts/watchdog.js",
+        "plugins/delivery/scripts/host-manager.js",
+        "plugins/delivery/scripts/team-status.js"
+      ]
+    }
+  ]
+}
