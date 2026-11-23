@@ -465,10 +465,4 @@ test('E: the leak-guard hook scans a GitHub MCP call for a builder', () => {
   assert.equal(json.hookSpecificOutput.permissionDecision, 'deny');
   assert.match(json.hookSpecificOutput.permissionDecisionReason, /Casual Carl/);
   assert.equal(runHook('leak-guard.js', input('Refs ex-1'), env), '');
-  const hooks = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks;
-  const entry = hooks.PreToolUse.find((e) => e.hooks.some((h) => h.args.some((a) => a.endsWith('leak-guard.js'))));
-  const re = new RegExp(`^(?:${entry.matcher})$`);
-  assert.ok(re.test('mcp__github__create_pull_request'));
-  assert.ok(re.test('mcp__gitlab__create_merge_request'));
-  assert.ok(!re.test('mcp__files__read_file'));
 });

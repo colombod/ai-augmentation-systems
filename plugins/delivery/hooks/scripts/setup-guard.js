@@ -3,7 +3,7 @@
 // (setup.js decides before the tool, setup-net.js reverts after it what the text did not show).
 // Unlike the lane and leak guards this one is NOT inert without a role marker: it binds every Claude
 // Code session on the host, because the session that moved the team's temp files was not a role
-// session. It runs as a plugin hook and as the user-level hook lib/user-guard.js installs.
+// session. It was a plugin hook and, installed by an earlier version, a user-level hook; since 0.44.0 nothing registers or installs it.
 // Pre: deny JSON or nothing. Post: a block decision when something was reverted, or nothing. Exit 0.
 //
 // The operator records are read only when a call is a candidate machine-setup change (decideSetup

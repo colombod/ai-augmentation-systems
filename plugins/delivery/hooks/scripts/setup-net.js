@@ -1,17 +1,19 @@
 // hooks/scripts/setup-net.js — the after-check behind the setup guard (setup.js).
 //
+// The plugin no longer installs a user-level guard hook (sprint 0a): nothing here writes one back.
+//
 // Why: what a command writes is not always in its text. A cp of a staged settings file, a script file
 // run by name, a name built at run time: the guard before the tool cannot see those. So before every
 // write or shell tool the guard snapshots the guarded files, and after it compares: a temp variable
-// added or changed, the delivery plugin disabled, or the user-level guard hook removed is put back in
+// added or changed, or the delivery plugin disabled, is put back in
 // place, and the tool result is blocked with the same record-citing reason, saying it was reverted.
 //
 // The snapshot holds only what is restored (temp variable values, the delivery enabledPlugins values,
-// the guard hook entries, and the temp assignment lines of a shell or environment file), so it stays
+// and the temp assignment lines of a shell or environment file), so it stays
 // small and fast. It lives in the plugin's state directory (CLAUDE_PLUGIN_DATA, else
 // <config dir>/delivery/state), never in /tmp, keyed by session and tool call, and is deleted after the
-// check. Restoring is idempotent: two copies of the guard (the plugin hook and the user-level one) that
-// both run after the same tool write the same values.
+// check. Restoring is idempotent: two copies of the guard (an installation by an earlier plugin version
+// may leave a second copy as a user-level hook) that both run after the same tool write the same values.
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -54,8 +56,6 @@ function guardedFiles({ home, env = {}, cwd, roots = [] }) {
   for (const n of list(path.join(home, '.config', 'fish', 'conf.d'))) add(path.join(home, '.config', 'fish', 'conf.d', n), 'env');
   for (const n of list(path.join(home, '.config', 'systemd', 'user')).filter((x) => /\.(?:service|conf)$/.test(x))) add(path.join(home, '.config', 'systemd', 'user', n), 'env');
   add('/etc/environment', 'env');
-  // the user-level guard launcher: removed or overwritten, it is written again by its installer
-  add(path.join(S.configDirOf(home, env), S.GUARD_HOOK_MARK), 'launcher');
   if (env.CLAUDE_ENV_FILE) add(path.resolve(env.CLAUDE_ENV_FILE), 'env');
   const roleDirs = [];
   if (cwd) {
@@ -70,7 +70,6 @@ function guardedFiles({ home, env = {}, cwd, roots = [] }) {
 // What is kept of one file: null when it does not exist.
 function stateOf(kind, text) {
   if (text === null) return null;
-  if (kind === 'launcher') return { sha: crypto.createHash('sha256').update(text).digest('hex'), text };
   if (kind === 'env') {
     const lines = String(text).split(/\r?\n/).filter((l) => [...S.assignments(l).keys()].some(S.isTempVar));
     return { lines };
@@ -82,15 +81,9 @@ function stateOf(kind, text) {
   for (const [k, v] of Object.entries((j.env && typeof j.env === 'object') ? j.env : {})) if (S.isTempVar(k)) temp[k] = v;
   const plugins = {};
   for (const [k, v] of Object.entries((j.enabledPlugins && typeof j.enabledPlugins === 'object') ? j.enabledPlugins : {})) if (S.PLUGIN_KEY.test(k)) plugins[k] = v;
-  const guard = {};
-  const mark = S.GUARD_HOOK_MARK.split(path.sep).join('/');
-  for (const [ev, entries] of Object.entries((j.hooks && typeof j.hooks === 'object') ? j.hooks : {})) {
-    const mine = Array.isArray(entries) ? entries.filter((e) => JSON.stringify(e).includes(mark)) : [];
-    if (mine.length) guard[ev] = mine;
-  }
   const hooksOff = {};
   for (const k of S.HOOKS_OFF_KEYS) if (Object.prototype.hasOwnProperty.call(j, k)) hooksOff[k] = j[k];
-  return { temp, plugins, guard, hooksOff };
+  return { temp, plugins, hooksOff };
 }
 
 const readText = (f) => { try { return fs.readFileSync(f, 'utf8'); } catch (e) { return null; } };
@@ -109,16 +102,8 @@ function writeAtomic(file, text) {
 }
 
 // The changes to put back for one file: [{ what, restore(json|lines) }], described for the reason.
-const PLUGIN_ROOT = path.join(__dirname, '..', '..');
-const configOfLauncher = (file) => path.dirname(path.dirname(path.dirname(file)));
-function launcherBodyFor(file) { try { return require('../../scripts/lib/user-guard.js').launcherBody(configOfLauncher(file), PLUGIN_ROOT); } catch (e) { return null; } }
 function changesOf(kind, before, after, file) {
   const out = [];
-  if (kind === 'launcher') {
-    // only a launcher that was there; the installer's own bytes are no change
-    if (before && (!after || after.sha !== before.sha) && !(after && after.text === launcherBodyFor(file))) out.push({ type: 'plugin', name: 'the user-level setup guard launcher', launcher: true });
-    return out;
-  }
   if (!after) return out;
   if (kind === 'env') {
     const had = new Set((before && before.lines) || []);
@@ -126,7 +111,7 @@ function changesOf(kind, before, after, file) {
     return out;
   }
   if (after.unparsable) return out; // a file Claude Code cannot load sets nothing; nothing to restore safely
-  const b = before && !before.unparsable ? before : { temp: {}, plugins: {}, guard: {}, hooksOff: {} };
+  const b = before && !before.unparsable ? before : { temp: {}, plugins: {}, hooksOff: {} };
   for (const k of S.HOOKS_OFF_KEYS) if ((after.hooksOff || {})[k] === true && (b.hooksOff || {})[k] !== true) out.push({ type: 'plugin', name: k, top: k, value: (b.hooksOff || {})[k] });
   for (const [k, v] of Object.entries(after.temp)) if (!Object.prototype.hasOwnProperty.call(b.temp, k) || JSON.stringify(b.temp[k]) !== JSON.stringify(v)) out.push({ type: 'temp', name: k, key: k, value: b.temp[k] });
   for (const k of new Set([...Object.keys(b.plugins), ...Object.keys(after.plugins)])) {
@@ -134,21 +119,11 @@ function changesOf(kind, before, after, file) {
     const now = after.plugins[k];
     if ((now === false && was !== false) || (was === true && now === undefined)) out.push({ type: 'plugin', name: k, plugin: k, value: was });
   }
-  for (const [ev, entries] of Object.entries(b.guard)) {
-    const nowEntries = (after.guard[ev] || []).map((e) => JSON.stringify(e));
-    const missing = entries.filter((e) => !nowEntries.includes(JSON.stringify(e)));
-    if (missing.length) out.push({ type: 'plugin', name: 'the user-level setup guard hook', event: ev, entries: missing });
-  }
   return out;
 }
 
 // Put the changes back in place: only those keys (JSON) or lines (text); the rest of the file stays.
 function restore(file, kind, changes) {
-  if (kind === 'launcher') {
-    // the installer writes the launcher and its hook entries again (idempotent)
-    const r = require('../../scripts/lib/user-guard.js').ensureUserGuard({ configDir: configOfLauncher(file), pluginRoot: PLUGIN_ROOT });
-    return !/not installed|does not parse|not a settings object/.test(r.line || '') && fs.existsSync(file);
-  }
   const text = readText(file);
   if (text === null) return false;
   if (kind === 'env') {
@@ -167,9 +142,6 @@ function restore(file, kind, changes) {
       if (c.value === undefined) delete j.enabledPlugins[c.plugin]; else j.enabledPlugins[c.plugin] = c.value;
     } else if (c.top) {
       if (c.value === undefined) delete j[c.top]; else j[c.top] = c.value;
-    } else if (c.event) {
-      j.hooks = j.hooks && typeof j.hooks === 'object' ? j.hooks : {};
-      j.hooks[c.event] = [...(Array.isArray(j.hooks[c.event]) ? j.hooks[c.event] : []), ...c.entries];
     }
   }
   writeAtomic(file, `${JSON.stringify(j, null, 2)}\n`);

@@ -64,6 +64,18 @@ const FILES = {
 
 const run = (args) => { let out = ''; const code = M.main(args, { write: (s) => { out += s; } }); return { code, out, json: () => JSON.parse(out) }; };
 
+test('features: a plugin whose hooks.json registers no hook lists its skills and no hook feature', () => {
+  // the delivery plugin ships an empty hooks.json (sprint 0a); the map must not fail or invent a hook
+  const fx = fixture({
+    'p/.claude-plugin/plugin.json': '{"name":"quiet"}',
+    'p/skills/one/SKILL.md': '# One\n',
+    'p/hooks/hooks.json': '{"hooks":{}}',
+  });
+  const r = run(['features', '--repo', fx.dir, '--json']);
+  assert.equal(r.code, 0);
+  assert.deepEqual(r.json().features.map((f) => f.id), ['quiet:one']);
+});
+
 test('features: derived from the plugin and the package, declared from the register, at a named commit', () => {
   const fx = fixture(FILES);
   const r = run(['features', '--repo', fx.dir, '--json']).json();
