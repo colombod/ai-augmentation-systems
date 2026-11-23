@@ -1,0 +1,37 @@
+{
+  "about": "Properties of features and the methods that can check each one. Read by scripts/verify-property.js. A method of kind `check` runs a function of this plugin and needs nothing installed; a method of kind `lean` needs elan and is reported as not run where it is absent. States are the verification contract's: met, unverified, contradicted.",
+  "properties": [
+    {
+      "id": "P1",
+      "feature": "feature-map",
+      "statement": "Retiring a feature F leaves every other feature's reach unchanged: deleting the files only F reaches cannot change what any other feature reaches.",
+      "methods": [
+        {
+          "id": "property-test",
+          "kind": "check",
+          "module": "scripts/lib/retire-property.js",
+          "export": "retirePreservesReach",
+          "files": ["scripts/lib/retire-property.js", "scripts/retire-property.test.js"],
+          "limit": "Seeded random graphs of at most 12 files, built in memory. It does not exercise how edges are found in real files, and it cannot show the property for graphs it did not draw."
+        },
+        {
+          "id": "examples",
+          "kind": "check",
+          "module": "scripts/lib/retire-property.js",
+          "export": "examplesAgree",
+          "files": ["proofs/feature-map/examples.json", "proofs/feature-map/Model/Examples.lean"],
+          "limit": "Four fixed graphs. They show the model and the code agree on these graphs, not on every graph."
+        },
+        {
+          "id": "lean",
+          "kind": "lean",
+          "project": "proofs/feature-map",
+          "audit": ["Model/Audit.lean", "Model/Examples.lean"],
+          "theorems": ["FeatureMap.retire_preserves_reach", "FeatureMap.reach_remove_of_disjoint", "FeatureMap.reach_iff_of_cert"],
+          "files": ["proofs/feature-map/Model/FeatureMap.lean", "proofs/feature-map/Model/Examples.lean", "proofs/feature-map/Model/Audit.lean"],
+          "limit": "A proof about a hand-written model for every finite graph. Edges are given, and a surviving reference is assumed to resolve to the same file after a deletion. It says nothing about the code except through the examples."
+        }
+      ]
+    }
+  ]
+}
