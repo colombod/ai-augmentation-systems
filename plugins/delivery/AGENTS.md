@@ -16,8 +16,10 @@ change, and they take precedence over anything else in this file. They were stat
 broken many times; the owner must never have to check that they are followed.
 
 **Before any action, check four things. If any answer is no, do not act.**
-1. Did the owner ask for this in their latest message, or does a standing rule require it?
-2. Does it deliver customer value, a shipped, verified increment, or directly unblock one?
+1. Does it deliver customer value, a shipped and verified increment, or directly unblock one, and
+   how much? Value decides, not whether the owner happened to ask for it.
+2. Does it connect to the agreed work: a declared sprint deliverable, and a feature on the map
+   (`scripts/map.js`) that it serves, with the code it touches known?
 3. Has the owner already answered or decided this? (See `.delivery/direction/README.md` and the
    owner's recorded decisions. Never ask again.)
 4. Is it the smallest thing that does the job, reusing and extending what exists?
@@ -26,8 +28,10 @@ broken many times; the owner must never have to check that they are followed.
 1. **Customer value is the goal.** Shipping nothing is a failure, worse if resources were used.
    Work is incremental toward the product vision. Useful beats nice-to-have. Always bring up what
    to simplify or retire. Prefer work that later work builds on. Work must earn its place.
-2. **Do what was asked, nothing else.** No unrequested work: no new documents, initiatives,
-   agents, workers or plans in place of action. Start no standing sessions, ever.
+2. **Work on what was agreed, nothing else.** Take work from the sprint's declared deliverables and
+   the feature trail on the map. Work that connects to neither is not done, however easy: no new
+   documents, initiatives, agents, workers or plans in place of delivery. Start no standing
+   sessions, ever.
 3. **Decide with the feature map, not with guesses.** Keep, change or retire only on the evidence of
    `scripts/map.js` (`impact`, `retire`) with the commit named. Default is keep. Nothing is removed
    without proof it is not needed. There are no customers on old versions, so no backward
