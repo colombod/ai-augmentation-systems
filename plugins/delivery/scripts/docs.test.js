@@ -23,37 +23,24 @@ function section(text, heading) {
   return next < 0 ? rest : rest.slice(0, next);
 }
 
-test('README follows the flow: Start here, what you get, the picture, Define → Contract → Navigate, the team, models, operator decisions, pipeline, limits, reference', () => {
-  const order = ['## Start here', '## What you get', '## How it works in one picture', '## The flow: Define → Contract → Navigate', '## The team', '## Models', '## Operator decisions', '## Using the planning pipeline without a team', '## Clashes and limits', '## Reference'];
+test('README follows the flow: Install, Quick start, what has been verified, verified shipping, feature map, how it works, not supported, reference', () => {
+  const order = ['## Install', '## Quick start', '## What has been verified', '## Verified shipping', '## Feature map', '## How it works', '## Not part of the supported product', '## Reference'];
   const at = order.map((h) => README.indexOf(`\n${h}\n`));
   for (let i = 0; i < order.length; i++) assert.ok(at[i] > 0, `missing ${order[i]}`);
   for (let i = 1; i < order.length; i++) assert.ok(at[i - 1] < at[i], `${order[i - 1]} must come before ${order[i]}`);
+  assert.equal(README.indexOf('\n## '), README.indexOf('\n## Install\n'), 'Install is the first section');
   const lines = README.split('\n').length;
-  assert.ok(lines >= 120 && lines <= 220, `README is ${lines} lines; keep it around 150-200 and move detail to docs/reference.md`);
-  const picture = section(README, '## How it works in one picture');
-  assert.match(picture, /```[\s\S]*Chief of Staff[\s\S]*```/);
-  for (const word of ['Staffing', 'Product', 'Delivery', 'Manager', 'Progress', 'Builders', 'Spike', 'operator.js verify', 'PROJECT repo', 'PRODUCT repo']) {
-    assert.ok(picture.includes(word), `the picture shows ${word}`);
-  }
-  assert.ok(README.includes('(docs/quickstart.md)'), 'README links the quickstart');
-  assert.ok(README.includes('### Which skill do I run when?'));
+  assert.ok(lines <= 100, `README is ${lines} lines; keep it at 100 or fewer and move detail to docs/reference.md`);
 });
 
-test('README flow: three stages, each with what it produces, its owner and its model tier, plus the fast path', () => {
-  const flow = section(README, '## The flow: Define → Contract → Navigate');
-  assert.match(flow, /Fast path:\*\* `\/delivery:brief` → `\/delivery:prd` → `\/delivery:architecture` → `\/delivery:roadmap` → `\/delivery:stories`/);
-  const stages = ['**1. DEFINE the product.**', '**2. CONTRACT.**', '**3. NAVIGATE delivery.**'];
-  const at = stages.map((s) => flow.indexOf(s));
-  for (let i = 0; i < stages.length; i++) assert.ok(at[i] >= 0 && (i === 0 || at[i - 1] < at[i]), stages[i]);
-  for (let i = 0; i < stages.length; i++) {
-    const body = flow.slice(at[i], i + 1 < stages.length ? at[i + 1] : undefined);
-    assert.ok(body.split('\n').filter(Boolean).length <= 10, `${stages[i]} is 10 lines or fewer`);
-    for (const need of ['Produces:', 'Owner', /opus|sonnet|haiku/]) assert.ok(typeof need === 'string' ? body.includes(need) : need.test(body), `${stages[i]} names ${need}`);
-  }
-  assert.ok(flow.includes('/delivery:simulate') && flow.includes('--interview') && flow.includes('--journey'));
-  assert.ok(section(README, '## The team').includes('owns stage 3'), 'the team section says who owns stage 3');
-  const models = section(README, '## Models');
-  for (const need of ['| Chief of Staff | opus', '| Product Manager | opus', '| Delivery Manager | sonnet', '| Builder | sonnet', '| Progress Observer | haiku', 'roles[].model', 'size-L', 'size: S|M|L']) assert.ok(models.includes(need), `Models names ${need}`);
+test('README quick start: the steps name the pipeline skills in order, and what is not yet verified is said so', () => {
+  const qs = section(README, '## Quick start');
+  const order = ['/delivery:brief', '/delivery:prd', '/delivery:architecture', '/delivery:roadmap', '/delivery:stories', '/delivery:sprint', '/delivery:sprint-review', '/delivery:status'];
+  const at = order.map((s) => qs.indexOf(s));
+  for (let i = 0; i < order.length; i++) assert.ok(at[i] >= 0, `the quick start names ${order[i]}`);
+  for (let i = 1; i < order.length; i++) assert.ok(at[i - 1] < at[i], `${order[i - 1]} must come before ${order[i]}`);
+  assert.match(qs, /storyboard in your own words/, 'the owner approves the storyboard in their own words');
+  assert.ok(section(README, '## What has been verified').includes('Not yet run end to end'), 'the README says what has not been run end to end');
 });
 
 test('display names: the Delivery Manager is never called the Delivery Lead in the docs', () => {
@@ -96,7 +83,7 @@ test('quickstart and README: every operator.js command they name is a real comma
   const list = /const COMMANDS = \[([\s\S]*?)\];/.exec(src);
   assert.ok(list, 'operator.js declares COMMANDS');
   const commands = new Set([...list[1].matchAll(/'([a-z-]+)'/g)].map((m) => m[1]));
-  for (const [name, text] of [['docs/quickstart.md', QUICKSTART], ['README.md', README]]) {
+  for (const [name, text] of [['docs/quickstart.md', QUICKSTART]]) {
     const named = [...text.matchAll(/(?:`|\$ |\/scripts\/)operator\.js ([a-z][a-z-]*)/g)].map((m) => m[1]);
     assert.ok(named.length > 0, name);
     for (const c of named) assert.ok(commands.has(c), `${name} names operator.js ${c}, which does not exist`);
@@ -138,16 +125,9 @@ test('front-door docs carry no local paths or personal data', () => {
   }
 });
 
-test('README "Start here": first, short, with prerequisites, three steps and how to use the team', () => {
-  const firstH2 = README.indexOf('\n## ');
-  assert.equal(firstH2, README.indexOf('\n## Start here\n'), 'Start here is the first section');
-  const body = section(README, '## Start here');
-  assert.ok(body.split('\n').length <= 40, `Start here is ${body.split('\n').length} lines; keep it at 40 or fewer`);
-  for (const h of ['### Prerequisites', '### Start a new project in 3 steps', '### Using the team', '### Use the planning pipeline without a team']) assert.ok(body.includes(h), h);
-  const steps = section(body.replace(/^/, '\n'), '### Start a new project in 3 steps') || body.slice(body.indexOf('### Start a new project in 3 steps'));
-  for (const n of ['1. ', '2. ', '3. ']) assert.ok(steps.includes(`\n${n}`), `step ${n}`);
-  assert.match(steps, /\/delivery:start/);
-  for (const need of ['v2.1.224', 'Node 18', 'git', '`bd`', 'project repo', 'product repo', '/plugin install delivery@ai-augmentation-systems']) assert.ok(body.includes(need), `prerequisites name ${need}`);
+test('README "Install": the marketplace commands and what is needed', () => {
+  const body = section(README, '## Install');
+  for (const need of ['/plugin marketplace add colombod/ai-augmentation-systems', '/plugin install delivery@ai-augmentation-systems', 'Node 18', 'git']) assert.ok(body.includes(need), `Install names ${need}`);
 });
 
 test('start.js: every flag the docs and the start skill name is one start.js accepts, and the check minimums match', () => {
@@ -157,7 +137,7 @@ test('start.js: every flag the docs and the start skill name is one start.js acc
   const accepted = new Set([...known[1].matchAll(/'([a-z-]+)'/g)].map((m) => m[1]));
   let seen = 0;
   // a line that runs start.js, or the quickstart's list of its other flags: every --flag after it must exist
-  for (const [name, text] of [['docs/quickstart.md', QUICKSTART], ['README.md', README], ['skills/start/SKILL.md', START_SKILL]]) {
+  for (const [name, text] of [['docs/quickstart.md', QUICKSTART], ['skills/start/SKILL.md', START_SKILL]]) {
     for (const line of text.split('\n')) {
       const at = line.startsWith('Other flags:') ? 0 : line.indexOf('start.js');
       if (at < 0) continue;
@@ -169,7 +149,7 @@ test('start.js: every flag the docs and the start skill name is one start.js acc
   }
   assert.ok(seen > 5);
   const { MIN_CLAUDE, MIN_NODE_MAJOR } = require('./start.js');
-  for (const text of [README, QUICKSTART]) {
+  for (const text of [QUICKSTART]) {
     assert.ok(text.includes(`v${MIN_CLAUDE.join('.')}`), 'docs state the Claude Code minimum start.js checks');
     assert.ok(text.includes(`Node ${MIN_NODE_MAJOR}`), 'docs state the Node minimum start.js checks');
   }
