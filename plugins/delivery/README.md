@@ -55,6 +55,10 @@ It works on a new project and on an existing one.
 
 Without declared features, a project whose users do not start from a route, bin or plugin reaches nothing. Each answer names the commit it was computed at. It reports what a feature reaches, not whether anyone uses it. `retire` also looks for each "deletable" file's path in every file the feature does not reach: a job, config or script that names it moves it to "Named elsewhere: check before deleting"; a mention only in documents is noted and does not block.
 
+### Verify a property
+
+Some properties of a feature can be proven, many cannot, so the check is chosen per property. `.delivery/properties.json` lists a property for a feature with the methods that can check it; `node scripts/verify-property.js` runs every method available and says which ran. With Lean 4 (installed through `elan`, toolchain `leanprover/lean4:v4.34.1`) a property is proven in a small model, and fixed example graphs tie the model to the real code. Without Lean, the property test against the real code and the examples still run, and the result says "checked ... not proven"; `--without-lean` forces that path to compare the two. If two methods disagree it exits non-zero. The first property: retiring a feature leaves every other feature's reach unchanged. Lean added little over the property test for it (see `.delivery/initiatives/lean-verification/exploration.md`); a proof earns its place where the logic is pure and costly to get wrong.
+
 ## How it works
 
 - **Closed sprints.** Deliverables are declared before the sprint starts and fixed; new asks are queued for the next one. One report per sprint: what was promised, shipped, spent and left out.
