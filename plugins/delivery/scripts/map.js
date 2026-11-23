@@ -126,6 +126,7 @@ function main(argv, { write = (s) => process.stdout.write(s) } = {}) {
     r.unknown = added.unknown;
     r.unreached = r.unreached.concat(added.unreached);
   }
+  r.planned = F.plannedFor(feats, r.unknown);
   if (o.json) { write(`${JSON.stringify(r)}\n`); return 0; }
   write(`Impact at ${r.sha} of ${r.changed.length} changed file${r.changed.length === 1 ? '' : 's'}: ${r.reached.length} of ${r.features} features reached\n`);
   // nearest first; past NEAR hops a reach is real but indirect: counted, and listed with --all
@@ -149,7 +150,11 @@ function main(argv, { write = (s) => process.stdout.write(s) } = {}) {
   }
   for (const h of r.hubs) write(`Hub: ${h.path} is reached by ${h.features} features; a change there reaches most of the product.\n`);
   for (const u of r.unreached) write(`Unreached: ${u.path}${u.blind ? ' (blind: no rule reads its kind of file)' : ': no feature reaches it (dead code, an undeclared feature, or a reference no rule reads)'}\n`);
-  for (const u of r.unknown) write(`Not in the commit: ${u}${o.story ? ' (a new file reaches nothing yet)' : ''}\n`);
+  for (const u of r.unknown) {
+    const pl = r.planned.find((x) => x.path === u);
+    if (pl) write(`Planned: ${u} belongs to ${pl.features.map((x) => `${x.id} (anchor ${x.anchor})`).join(', ')}; a new file reaches nothing else yet\n`);
+    else write(`Not in the commit: ${u}${o.story ? ' (a new file reaches nothing yet, and no declared feature\'s anchor covers it)' : ''}\n`);
+  }
   for (const a of r.ambiguous) write(`Ambiguous: ${a.path} matches ${a.candidates.join(', ')}\n`);
   write(`Blind spots: ${r.blind} of ${r.analysed + r.blind} files are read by no rule; reach through them is not seen (map.js blind).\n`);
   return 0;

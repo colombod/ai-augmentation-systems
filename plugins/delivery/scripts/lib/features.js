@@ -81,7 +81,7 @@ function featuresOf(map, texts = map.texts) {
         const hits = /[*]/.test(a) ? map.files.filter((x) => globRe(a).test(x)) : (files.has(a) ? [a] : []);
         if (hits.length) anchors.push(...hits); else dangling.push(a);
       }
-      out.push({ id: d.id, name: d.name, kind: 'declared', source: 'declared', anchors: [...new Set(anchors)], dangling });
+      out.push({ id: d.id, name: d.name, kind: 'declared', source: 'declared', anchors: [...new Set(anchors)], dangling, specs: d.anchors || [] });
     }
   }
   return out;
@@ -276,4 +276,22 @@ function retirement(map, feats, id) {
   return { sha: map.sha, id: f.id, kind: f.kind, source: f.source, anchors: f.anchors, exclusive: deletable, named, docNotes, shared };
 }
 
-module.exports = { featuresOf, impact, retirement, canonicalPath, REGISTER, globRe };
+// A path a story plans to create does not exist yet, so no file reaches it. On a new project every file
+// is new: attribute it to the declared feature whose anchor it matches (a glob or an exact path), so the
+// map says which feature a planned file belongs to instead of "nothing yet". Derived features have no
+// planned files: they come from code that exists.
+function plannedFor(feats, paths) {
+  const out = [];
+  for (const p of paths) {
+    const hits = [];
+    for (const f of feats) {
+      if (f.source !== 'declared') continue;
+      const spec = (f.specs || []).find((s) => (/[*]/.test(s) ? globRe(s).test(p) : s === p));
+      if (spec) hits.push({ id: f.id, anchor: spec });
+    }
+    if (hits.length) out.push({ path: p, features: hits });
+  }
+  return out;
+}
+
+module.exports = { featuresOf, impact, retirement, plannedFor, canonicalPath, REGISTER, globRe };

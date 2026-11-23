@@ -356,4 +356,43 @@ test('retire: a file only the retired feature itself names stays deletable, with
   const j = run(['retire', 'report', '--repo', fx.dir, '--json']).json();
   assert.ok(j.exclusive.includes('src/own.py'));
   assert.ok(!j.named.some((n) => n.path === 'src/own.py'));
+// ---- green field: a story's new files belong to the declared feature whose anchor covers them ----
+// On a new project every file is new, so "not in the commit, reaches nothing yet" says nothing useful.
+const GREEN = {
+  '.delivery/features.json': JSON.stringify({ features: [
+    { id: 'checkout', name: 'Checkout', anchors: ['src/checkout/**', 'api/pay.py'] },
+    { id: 'search', name: 'Search', anchors: ['src/search/index.py'] },
+  ] }),
+  'src/search/index.py': 'def q():\n    return 1\n',
+};
+function storyFile(dir, rows) {
+  const f = path.join(dir, 'story.md');
+  fs.writeFileSync(f, `# S\n\n## Files and modules\n\n| Path | What to do |\n| :-- | :-- |\n${rows.map((r) => `| \`${r}\` | create |`).join('\n')}\n`);
+  return f;
+}
+
+test('green field: a planned file under a declared glob anchor is attributed to that feature, in text and in json', () => {
+  const fx = fixture(GREEN);
+  const story = storyFile(fx.dir, ['src/checkout/cart.py', 'src/search/index.py']);
+  const j = run(['impact', '--repo', fx.dir, '--json', '--story', story]).json();
+  assert.deepEqual(j.planned, [{ path: 'src/checkout/cart.py', features: [{ id: 'checkout', anchor: 'src/checkout/**' }] }]);
+  assert.deepEqual(j.reached.map((f) => f.id), ['search'], 'the file that exists reaches its feature as before');
+  const t = run(['impact', '--repo', fx.dir, '--story', story]).out;
+  assert.match(t, /Planned: src\/checkout\/cart\.py belongs to checkout \(anchor src\/checkout\/\*\*\)/);
+  assert.doesNotMatch(t, /Not in the commit: src\/checkout\/cart\.py/);
+});
+
+test('green field: a planned file at a declared exact-path anchor that does not exist yet is attributed too', () => {
+  const fx = fixture(GREEN);
+  const j = run(['impact', '--repo', fx.dir, '--json', '--story', storyFile(fx.dir, ['api/pay.py'])]).json();
+  assert.deepEqual(j.planned, [{ path: 'api/pay.py', features: [{ id: 'checkout', anchor: 'api/pay.py' }] }]);
+});
+
+test('green field: a planned file no declared anchor covers is still reported as not in the commit, and says why', () => {
+  const fx = fixture(GREEN);
+  const story = storyFile(fx.dir, ['lib/unclaimed.py']);
+  const j = run(['impact', '--repo', fx.dir, '--json', '--story', story]).json();
+  assert.deepEqual(j.planned, []);
+  assert.deepEqual(j.unknown, ['lib/unclaimed.py']);
+  assert.match(run(['impact', '--repo', fx.dir, '--story', story]).out, /Not in the commit: lib\/unclaimed\.py .*no declared feature's anchor covers it/);
 });
