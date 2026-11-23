@@ -35,14 +35,14 @@ test('ready.js, vault-0n9.3 without a measurement plan: the pre-check only repor
   const { root, bd, bead } = setup({ story: STORY.replace(/## Measurement plan[\s\S]*?(?=## Shippable)/, '') });
   const dm = whoFor(root, 'delivery-lead');
   const pre = await ready.main([ID], { cwd: root, env, bd, now: NOW, who: dm });
-  assert.equal(pre.code, 0);
+  assert.equal(pre.code, 0, pre.out);
   assert.match(pre.out, /warn R-19 measurement-plan/);
   assert.doesNotMatch(pre.out, /not-ready/);
   assert.deepEqual(W.list(root), [], 'the pre-check writes nothing');
   assert.equal((await ready.main([ID, '--record'], { cwd: root, env, bd, now: NOW, who: whoFor(root, 'builder-1') })).code, 1, 'only the Delivery Manager records');
-  assert.equal((await ready.main([ID, '--record'], { cwd: root, env, bd, now: NOW, who: dm })).code, 0);
+  { const rec = await ready.main([ID, '--record'], { cwd: root, env, bd, now: NOW, who: dm }); assert.equal(rec.code, 0, rec.out); }
   assert.equal(bead().metadata.ready_hash, G.storyHash(G.parseStory(STORY.replace(/## Measurement plan[\s\S]*?(?=## Shippable)/, ''))));
-  assert.deepEqual(W.list(root).map((w) => w.kind), ['measurement-plan']);
+  assert.deepEqual(W.list(root).map((w) => w.kind).sort(), ['impact-undecided', 'measurement-plan'], 'a story with no impact table is warned, never blocked');
   // fixed and re-recorded with an owner record: the warning resolves itself
   fs.writeFileSync(path.join(root, '.delivery', 'stories', 'vault-0n9-3.md'), STORY.replace('with the card count', 'with the card count and the deck name'));
   const again = (extra) => ready.main([ID, '--record', ...extra], { cwd: root, env, bd, who: dm, verifyRecord: require('./testing/gate-fixture.js').ownerVerify('dec-chief-of-staff-50') });
@@ -51,8 +51,9 @@ test('ready.js, vault-0n9.3 without a measurement plan: the pre-check only repor
   planCheck(root, bead());
   assert.match((await again([])).out, /changed since they were made ready \(D1\)\.\nRe-record with an owner record/);
   assert.match((await again(['--owner-record', 'dec-x-1'])).out, /dec-x-1 does not verify \(not found\)/);
-  assert.equal((await again(['--owner-record', 'dec-chief-of-staff-50'])).code, 0);
-  assert.equal(W.summary(W.list(root)).open, 0);
+  { const last = await again(['--owner-record', 'dec-chief-of-staff-50']); assert.equal(last.code, 0, last.out); }
+  // the measurement plan warning resolved; the story still has no impact table, so that one stays open
+  assert.deepEqual(W.list(root).filter((w) => !w.acked_by).map((w) => w.kind), ['impact-undecided']);
 });
 
 test('ready.js --story checks a story file before it has a bead; an undeclared surface is a block', async () => {
@@ -83,6 +84,32 @@ test('ready.js --story prints the story\'s reach from the feature map; where it 
   assert.match(after.out, /\nReach at [0-9a-f]{12}: p:go \(1 hop\)/);
   const json = JSON.parse((await ready.main(['--story', file, '--initiative', 'vault', '--project', root, '--json'], { cwd: root, env })).out);
   assert.deepEqual(json.reach.features, [{ id: 'p:go', hops: 1 }]);
+});
+
+test('ready.js --story: impact decisions warn when absent, block when a reached feature has none, pass when decided', async () => {
+  const base = `${STORY}\n## Files and modules\n\n| Path | What to do |\n| :-- | :-- |\n| \`p/scripts/run.js\` | modify |\n`;
+  const root = makeProject({ story: base });
+  const { execFileSync } = require('child_process');
+  fs.mkdirSync(path.join(root, 'p', '.claude-plugin'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'p', 'skills', 'go'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'p', 'scripts'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'p', '.claude-plugin', 'plugin.json'), '{"name":"p"}');
+  fs.writeFileSync(path.join(root, 'p', 'skills', 'go', 'SKILL.md'), 'Run `node ${CLAUDE_PLUGIN_ROOT}/scripts/run.js`.\n');
+  fs.writeFileSync(path.join(root, 'p', 'scripts', 'run.js'), '');
+  const g = (...x) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...x], { cwd: root, stdio: 'ignore' });
+  g('init', '-q'); g('add', '-A'); g('commit', '-qm', 'x');
+  const file = path.join(root, '.delivery', 'stories', 'vault-0n9-3.md');
+  const run = () => ready.main(['--story', file, '--initiative', 'vault', '--project', root], { cwd: root, env });
+  const table = (rows) => `${base}\n## Impact decisions\n\n| Feature | Decision | Relation | Evidence |\n| - | - | - | - |\n${rows}\n`;
+  const none = await run();
+  assert.match(none.out, /warn R-35 impact-undecided/);
+  fs.writeFileSync(file, table('| other | accept | none | a.js:1 |'));
+  const bad = await run();
+  assert.equal(bad.code, 1);
+  assert.match(bad.out, /block R-35 impact-missing: p:go/);
+  fs.writeFileSync(file, table('| p:go | accept | extends | p/scripts/run.js:1 only gains a flag |'));
+  const good = await run();
+  assert.doesNotMatch(good.out, /impact-missing|impact-undecided/);
 });
 
 // a team whose code lives apart from the planning repository: the role's product checkout is mapped

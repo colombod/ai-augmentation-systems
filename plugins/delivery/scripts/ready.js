@@ -18,9 +18,10 @@ const W = require('./lib/warnings.js');
 const { loadSurface } = require('./lib/surface.js');
 const { whoAmI, gateInputs, writerProblem } = require('./lib/gate-context.js');
 const A = require('./lib/assumptions.js');
+const ID = require('./lib/impact-decisions.js');
 
 // the warnings a ready check raises; --record resolves the ones it no longer finds
-const READY_KINDS = ['owners-ask', 'surface-missing', 'surface-unnamed', 'placeholder', 'no-criteria', 'mechanism', 'probe', 'reality-check-required', 'measurement-plan', 'shippable-unit', 'shippable-judge', 'not-ready', 'child-scope', 'assumption-unobserved', 'spike-unacked', 'assumption-refuted', 'assumption-unverified'];
+const READY_KINDS = ['owners-ask', 'surface-missing', 'surface-unnamed', 'placeholder', 'no-criteria', 'mechanism', 'probe', 'reality-check-required', 'measurement-plan', 'shippable-unit', 'shippable-judge', 'not-ready', 'child-scope', 'assumption-unobserved', 'spike-unacked', 'assumption-refuted', 'assumption-unverified', 'impact-undecided'];
 
 const USAGE = 'usage: ready.js <bead> [--record [--owner-record dec-...]] [--json] | ready.js --story <file> [--initiative <slug>]';
 
@@ -105,7 +106,9 @@ async function main(argv, { cwd = process.cwd(), env = process.env, bd, now, ver
     }
     // the feature map (owner's ask: blast radius from the feature's side before code): information,
     // never a block; a fault reads reach-not-computed and the gate's verdict is unchanged
-    const reach = storyReach(productRepo(who), fs.readFileSync(path.resolve(cwd, a.story), 'utf8'));
+    const storyText = fs.readFileSync(path.resolve(cwd, a.story), 'utf8');
+    const reach = storyReach(productRepo(who), storyText);
+    findings.push(...ID.check({ text: storyText, reach, root: who.root, ownerRecord: (rid) => require('./lib/gate-context.js').ownerRecord(who.root, rid, verifyRecord) }));
     const out = render(path.basename(a.story), findings, { hash: G.storyHash(story) }, a.flags.has('json'));
     return { code: findings.some((f) => f.level === 'block') ? 1 : 0, out: a.flags.has('json') ? JSON.stringify({ ...JSON.parse(out), reach }) : `${out}\n${reachLines(reach)}` };
   }
@@ -124,6 +127,11 @@ async function main(argv, { cwd = process.cwd(), env = process.env, bd, now, ver
     ...G.claimDivergence({ story: inp.story, bead, parent: inp.parent, parentStory: inp.parentStory }).filter((f) => f.code !== 'not-ready' && f.code !== 'criteria-changed')];
   const asm = A.forStory(who.root, bead, { bd: store, team: who.team, verifyRecord, storyId: (bead.metadata || {}).story || String(inp.story.meta.id || '') });
   findings.push(...asm.findings);
+  // what the story does to the features it reaches: decided, or a warning for a story without the table
+  const sf = (bead.metadata || {}).story_file;
+  let storyText = '';
+  try { storyText = fs.readFileSync(path.join(who.root, '.delivery', 'stories', String(sf)), 'utf8'); } catch (err) { storyText = ''; }
+  findings.push(...ID.check({ text: storyText, reach: storyReach(productRepo(who), storyText), root: who.root, ownerRecord: (rid) => require('./lib/gate-context.js').ownerRecord(who.root, rid, verifyRecord) }));
   const extra = {};
   if (record && !findings.some((f) => f.level === 'block')) {
     const wp = writerProblem(who);
