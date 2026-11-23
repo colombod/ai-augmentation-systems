@@ -60,9 +60,13 @@ plugin, and every session it starts, follows them without being reminded.
    a message to relay or a setting to change when an agent or the plugin can do it. When Claude Code
    truly reserves a step for a person, say so once, in one line, and carry on with everything else.
    Why: the plugin exists so a team ships without the owner driving it.
-3. **Opus by default; never Fable.** Every session or subagent an agent starts names its model, and
-   that model is Opus (Sonnet where a role's brief says so). Never Fable. Why: Fable spends the
-   owner's usage far faster, and the owner set Opus as the default on their machines.
+3. **The right model for the right job.** Every session or subagent an agent starts uses the model
+   configured for it, or else the smallest that can do the job. Design and planning, and other highly
+   complex work (cross-cutting design, subtle bugs, security-sensitive logic, or a failed lower-tier
+   attempt), use Opus or Fable, with the reason recorded. Workers (building, review, checks) use
+   Sonnet. Narrow lookups and low-level file and git operations use Haiku. See `.delivery/direction/contracts/spend-and-idle.md`,
+   commitment 6. Why: the top tiers spend the owner's usage far faster, and a default that picks them
+   for ordinary work is how a month of usage was burned.
 4. **Deliver, do not burn.** Work counts when it is merged, versioned and shown running. Idle hours,
    repeated probing and long reports that ship nothing waste the owner's usage. Keep the team moving;
    never leave it stalled without saying so.
