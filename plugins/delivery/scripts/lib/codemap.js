@@ -24,7 +24,11 @@ function resolveCommit(repo, ref = 'HEAD') {
 }
 
 function listFiles(repo, sha) {
-  return String(git(repo, ['ls-tree', '-r', '-z', '--name-only', sha])).split('\0').filter(Boolean);
+  // --full-tree: every path is relative to the repository root, whichever directory the caller is in.
+  // Without it git lists only the current subtree with paths relative to it, so a story's repo-root
+  // paths matched nothing and the map answered "no feature reached" without saying why (a brief
+  // found it: the same story reached 14 of 78 features from the root and 0 of 47 from plugins/delivery).
+  return String(git(repo, ['ls-tree', '-r', '-z', '--full-tree', '--name-only', sha])).split('\0').filter(Boolean);
 }
 
 // { path: text } for the given paths at sha, in one git process; binary and huge files are left out
