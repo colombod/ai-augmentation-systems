@@ -469,3 +469,45 @@ test('recordInvocation: under a role session, the unreachable-project cases leav
   assert.match(r.stdout, /# pass 2\b/);
   assert.deepEqual(fs.readdirSync(path.join(real, '.delivery')), []);
 });
+
+// ---- the first delivery call in a project that has no .delivery/ yet is recorded at the git root ----
+// Found in a fresh-project run: the brief skill call and its reviewer agents were missing from the ledger.
+function makeGitProject() {
+  const root = makeScratchProject();
+  fs.mkdirSync(path.join(root, '.git'));
+  return root;
+}
+
+test('first call: a delivery skill in a git project with no .delivery/ is recorded at the project root', () => {
+  const root = makeGitProject();
+  const sub = path.join(root, 'src');
+  fs.mkdirSync(sub);
+  const r = recordInvocation({ session_id: 'first', hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'delivery:brief' } }, { cwd: sub });
+  assert.ok(r, 'the first delivery skill call was not recorded');
+  assert.equal(r.ledgerPath, path.join(root, '.delivery', 'invocations', 'first.ndjson'));
+  assert.equal(JSON.parse(fs.readFileSync(r.ledgerPath, 'utf8').trim()).invoked_name, 'delivery:brief');
+  const a = recordInvocation({ session_id: 'first', hook_event_name: 'PostToolUse', tool_name: 'Agent', tool_input: { subagent_type: 'delivery:product-owner' } }, { cwd: sub });
+  assert.ok(a, 'a delivery agent call after it was not recorded');
+});
+
+test('first call: only a delivery-namespaced call starts a ledger; any other creates nothing', () => {
+  const root = makeGitProject();
+  for (const input of [{ skill: 'other:thing' }, { skill: 'brief' }]) {
+    assert.equal(recordInvocation({ session_id: 'x', hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: input }, { cwd: root }), null);
+  }
+  assert.equal(recordInvocation({ session_id: 'x', hook_event_name: 'PostToolUse', tool_name: 'Agent', tool_input: { subagent_type: 'general-purpose' } }, { cwd: root }), null);
+  assert.ok(!fs.existsSync(path.join(root, '.delivery')));
+});
+
+test('first call: with no git project above, or with the ledger off, nothing is created', () => {
+  const noGit = makeScratchProject();
+  assert.equal(recordInvocation({ session_id: 'n', hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'delivery:brief' } }, { cwd: noGit }), null);
+  assert.ok(!fs.existsSync(path.join(noGit, '.delivery')));
+  const root = makeGitProject();
+  const prev = process.env.DELIVERY_LEDGER;
+  delete process.env.DELIVERY_LEDGER;
+  try {
+    assert.equal(recordInvocation({ session_id: 'o', hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'delivery:brief' } }, { cwd: root }), null);
+  } finally { if (prev === undefined) delete process.env.DELIVERY_LEDGER; else process.env.DELIVERY_LEDGER = prev; }
+  assert.ok(!fs.existsSync(path.join(root, '.delivery')));
+});
