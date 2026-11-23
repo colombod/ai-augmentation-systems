@@ -356,6 +356,8 @@ test('retire: a file only the retired feature itself names stays deletable, with
   const j = run(['retire', 'report', '--repo', fx.dir, '--json']).json();
   assert.ok(j.exclusive.includes('src/own.py'));
   assert.ok(!j.named.some((n) => n.path === 'src/own.py'));
+});
+
 // ---- green field: a story's new files belong to the declared feature whose anchor covers them ----
 // On a new project every file is new, so "not in the commit, reaches nothing yet" says nothing useful.
 const GREEN = {
