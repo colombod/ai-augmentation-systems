@@ -60,17 +60,14 @@ plugin, and every session it starts, follows them without being reminded.
    a message to relay or a setting to change when an agent or the plugin can do it. When Claude Code
    truly reserves a step for a person, say so once, in one line, and carry on with everything else.
    Why: the plugin exists so a team ships without the owner driving it.
-3. **Opus by default; never Fable.** Every session or subagent an agent starts names its model, and
-   that model is Opus (Sonnet where a role's brief says so). Never Fable. Why: Fable spends the
-   owner's usage far faster, and the owner set Opus as the default on their machines.
-4. **Deliver, do not burn.** Work counts when it is merged, versioned and shown running. Idle hours,
+3. **Deliver, do not burn.** Work counts when it is merged, versioned and shown running. Idle hours,
    repeated probing and long reports that ship nothing waste the owner's usage. Keep the team moving;
    never leave it stalled without saying so.
-5. **Any user, any project, any language.** Never narrow scope to make the work easier (doctrine 1).
-6. **Machines set up machines.** Credentials and services are wired by whatever set the machine up;
+4. **Any user, any project, any language.** Never narrow scope to make the work easier (doctrine 1).
+5. **Machines set up machines.** Credentials and services are wired by whatever set the machine up;
    where Amplifier is installed, lean on it first. The owner holds no passwords and is never asked for
    one (doctrine 5).
-7. **Pull requests open ready, never as drafts.** A pull request is opened for review and merged
+6. **Pull requests open ready, never as drafts.** A pull request is opened for review and merged
    once CI is green and its review is done. Why: drafts only add a step and leave work looking
    unfinished on the owner's list.
 
