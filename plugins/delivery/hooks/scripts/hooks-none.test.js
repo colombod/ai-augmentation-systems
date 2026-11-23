@@ -17,7 +17,7 @@ test('hooks.json is valid JSON and registers no hook at all', () => {
   assert.deepEqual(j, { hooks: {} });
 });
 
-test('no script that is shipped installs a hook into a user-level settings file', () => {
+test('no shipped script names the deleted user-level guard installer, and its files are gone', () => {
   // the installer is gone and nothing names it: a require of it would fail at run time, so check the text
   const walk = (d, out = []) => {
     for (const e of fs.readdirSync(d, { withFileTypes: true })) {

@@ -50,3 +50,28 @@ Known: the Claude Code version on the owner's machine is 2.1.330, and
 overridden there.
 
 Note: the first version of this declaration named Opus for both. That followed a default in the owner's settings, not the model-selection policy in [Spend and idle](../direction/contracts/spend-and-idle.md) 6. It was corrected before any work was done.
+
+## Queued for the next sprint (from the independent review)
+
+Found after the sprint started, so not done here (closed round).
+
+- Stale statements that still say the hooks run: `skills/decision/SKILL.md`
+  (lines 21, 25, 77), `skills/team/SKILL.md` (29), `docs/quickstart.md`
+  (312, 476), `docs/reference.md` (several, for example 358-373 and 2107-2122),
+  `README.md` (201) and the role briefs. Sprint 1 rewrites the README; the rest
+  goes with Sprint 0b.
+- A user who sets `DELIVERY_LEDGER=1` now sees "OBSERVER DOWN" from the
+  `status` skill, because no hook writes the ledger line. Users without it see
+  no change: the skill already reports "Untraceable" when no invocation
+  directory exists.
+- `hooks/scripts/setup.js` still refuses, before a tool runs, removing a
+  leftover user-level guard from `~/.claude`, while `setup-net.js` no longer puts
+  it back after the tool. Harmless once no host has the old guard; retire both
+  in 0b.
+- `hooks/scripts/setup-guard.js`, `setup-net.js` and the lane, leak, bd, ask and
+  send guards are now unregistered dead code.
+- The second test in `hooks-none.test.js` checks only for the deleted
+  installer's name, so a new writer under another name would pass it. A test
+  that scans for any write of a hook entry into a user-level settings file would
+  guard the real promise.
+
