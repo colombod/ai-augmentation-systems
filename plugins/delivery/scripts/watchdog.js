@@ -677,13 +677,6 @@ function uninstall(root, { platform = process.platform, home = os.homedir(), env
   return { code: 0, out: lines.length ? `${lines.join('\n')}\nThe watchdog job for ${root} is removed from this host.` : `Nothing to remove: no watchdog job for ${root} on this host.` };
 }
 
-// A run inside the sealed test runner never installs into the host's own settings: the suite runs the
-// host job against fixtures with the real home, and a test must never change the machine it runs on.
-function defaultUserGuard(env, home) {
-  if (env.DELIVERY_SEAL_ACTIVE || env.DELIVERY_SEALED_RUN) return null;
-  try { return require('./lib/user-guard.js').ensureUserGuard({ configDir: env.CLAUDE_CONFIG_DIR || path.join(home, '.claude'), pluginRoot: PLUGIN_ROOT }).line; } catch (err) { return `setup guard: not installed (${String(err && err.message || err).slice(0, 200)})`; }
-}
-
 // The team's missing role sessions on this host, started on the owner's Remote Control links while
 // work is in flight (team-revive.js, dec-chief-of-staff-000279): the job runs it each pass, so a team
 // dropped by a network loss comes back with no step from the owner. A run inside the sealed test
@@ -749,7 +742,7 @@ function directoryPass(root, { home = os.homedir(), exec, sdFetch, env } = {}) {
   return parts.length ? `service directory: ${parts.join('; ')}` : null;
 }
 
-function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, live, spawn, deliver, platform = process.platform, home = os.homedir(), exec, has, sweep, lockWaitMs, update = {}, userGuard, revive, hostUnit, sleep, stopWake, kill: killFn } = {}) {
+function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, live, spawn, deliver, platform = process.platform, home = os.homedir(), exec, has, sweep, lockWaitMs, update = {}, revive, hostUnit, sleep, stopWake, kill: killFn } = {}) {
   let o;
   try { o = parse(argv); } catch (err) { return { code: 2, out: `watchdog.js: ${err.message}\n${USAGE}` }; }
   const [cmd] = o._;
@@ -842,10 +835,6 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
       // clone or a cleanup; a failure is reported and never stops the wakes
       const lp = o.dryRun ? null : LAUNCHER.ensureLauncher(who.root, PLUGIN_ROOT, env.CLAUDE_CONFIG_DIR);
       if (lp) swept.push(`launcher: ${lp}`);
-      // the setup guard as a user-level hook (lib/user-guard.js), so it binds every session on this host,
-      // plugin enabled or not; a failure is reported and never stops the wakes
-      const ug = o.dryRun ? null : (userGuard || defaultUserGuard)(env, home);
-      if (ug) swept.push(ug);
       // a run inside the sealed test runner never touches the host's own units unless a test hands it fakes
       const sealed = env.DELIVERY_SEAL_ACTIVE || env.DELIVERY_SEALED_RUN;
       const hm = o.dryRun || hostUnit === false || (!hostUnit && sealed) ? null : ensureHostManager(who.root, { home, exec, now, env, has, ...(live !== undefined ? { live } : {}), ...(hostUnit || {}), sdFetch: passSd });
@@ -876,7 +865,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
   return r || { code: 0, out: 'Another watchdog run holds the lock; this one does nothing.' };
 }
 
-module.exports = { spawnWake, main, defaultRevive, liveSessions, wakeAlive, defaultUserGuard, checkLines, jobFiles, shimBody, everySeconds, roleContext, kickWatchUnit, tagOf, sdq, sdPct, jobPath, ensureHostManager, hostManagerSetup, teamSessionsHere, directoryPass };
+module.exports = { spawnWake, main, defaultRevive, liveSessions, wakeAlive, checkLines, jobFiles, shimBody, everySeconds, roleContext, kickWatchUnit, tagOf, sdq, sdPct, jobPath, ensureHostManager, hostManagerSetup, teamSessionsHere, directoryPass };
 
 if (require.main === module) {
   let r;

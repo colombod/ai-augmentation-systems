@@ -73,7 +73,6 @@ const PROCESS_FILES = {
   'scripts/lib/service-directory.js': 'its own file, through node, for one bounded request to the service directory on 127.0.0.1:8085 (the plugin\'s code is synchronous); it starts no session',
   'scripts/lib/session-message.js': 'the socket client that delivers a message to a running session',
   'scripts/lib/team-revive.js': 'systemctl --user is-enabled and is-active, the reads that tell whether a unit the plugin did not write still serves a role directory',
-  'scripts/lib/user-guard.js': 'a hook script, through node',
   'scripts/lib/wake-run.js': 'the supervisor: runs the command startRole gives it, in its own process group',
   'scripts/lib/watch.js': 'git, to name a worktree\'s branch',
   'scripts/lib/watchdog.js': 'git and bd reads for the watchdog\'s plan',

@@ -1453,7 +1453,7 @@ test('the watchdog pass starts the host manager\'s unit when it is installed and
   fs.writeFileSync(svc, '[Service]\n');
   m.sd.units[HM.UNIT] = loaded(false);
   const env = { ...process.env, DELIVERY_ROLE: '', DELIVERY_ROLE_ID: '', DELIVERY_ROLE_DIR: '' };
-  const deps = { cwd: m.alpha.root, env, now: T0, live: [], bd: store([]), spawn: () => 1, sweep: () => ({ removed: [], failed: [] }), userGuard: () => null, update: { configDir: fs.mkdtempSync(path.join(os.tmpdir(), 'no-install-')) }, revive: () => [], home: m.home, hostUnit: { exec: m.sd.exec, home: m.home } };
+  const deps = { cwd: m.alpha.root, env, now: T0, live: [], bd: store([]), spawn: () => 1, sweep: () => ({ removed: [], failed: [] }), update: { configDir: fs.mkdtempSync(path.join(os.tmpdir(), 'no-install-')) }, revive: () => [], home: m.home, hostUnit: { exec: m.sd.exec, home: m.home } };
   const r = watchdog.main(['run', '--project', m.alpha.root], deps);
   assert.match(r.out, /host manager: delivery-host-manager\.service was inactive; started it/, r.out);
   assert.ok(m.sd.calls.includes(`systemctl --user start ${HM.UNIT}`));
@@ -1598,7 +1598,7 @@ test('each watchdog run installs the host manager\'s units when they are missing
   const env = runEnv();
   // enable --now leaves the fake unit inactive, so the start check after the install starts it
   m.sd.units[HM.UNIT] = loaded(false);
-  const deps = { cwd: m.alpha.root, env, now: T0, live: [], bd: store([]), spawn: () => 1, sweep: () => ({ removed: [], failed: [] }), userGuard: () => null, update: { configDir: fs.mkdtempSync(path.join(os.tmpdir(), 'no-install-')) }, revive: () => [], home: m.home, hostUnit: { exec: m.sd.exec, home: m.home, has: () => true, sdFetch: m.dir.fetch } };
+  const deps = { cwd: m.alpha.root, env, now: T0, live: [], bd: store([]), spawn: () => 1, sweep: () => ({ removed: [], failed: [] }), update: { configDir: fs.mkdtempSync(path.join(os.tmpdir(), 'no-install-')) }, revive: () => [], home: m.home, hostUnit: { exec: m.sd.exec, home: m.home, has: () => true, sdFetch: m.dir.fetch } };
   const r = watchdog.main(['run', '--project', m.alpha.root], deps);
   // each unit it wrote is registered with the service directory, read again before the start
   for (const u of [HM.UNIT, HM.TICK_SERVICE, HM.TICK_TIMER]) assert.equal((m.dir.entry(u) || {}).owner, 'delivery plugin', u);

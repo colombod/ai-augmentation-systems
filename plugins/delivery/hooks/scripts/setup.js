@@ -5,7 +5,7 @@
 // runner's private /tmp and are never relocated. The lane and leak guards could not stop it: they are
 // inert without a role marker. This guard is the opposite: setup-guard.js runs it in EVERY session on
 // the host, team role or not (as a plugin hook, and as a user-level hook the team installs, so it
-// holds where the plugin is not enabled and after the plugin is removed: lib/user-guard.js).
+// held where the plugin is not enabled; the installer was removed in 0.44.0, so only a copy an earlier version left behind still runs).
 //
 // What it refuses before a tool runs (decideSetup):
 //   1. Any change of where temp files go (TMPDIR, CLAUDE_CODE_TMPDIR, TMP, TEMP, TEMPDIR) in a Claude
@@ -46,7 +46,7 @@ const PLUGIN_KEY = /^delivery@/;
 // included (Claude Code's settings schema: disableAllHooks; allowManagedHooksOnly drops user, project,
 // local and user-installed plugin hooks). Set to true anywhere, they are refused and reverted.
 const HOOKS_OFF_KEYS = ['disableAllHooks', 'allowManagedHooksOnly'];
-// the user-level hook command lib/user-guard.js installs; a settings change that drops it is refused
+// the user-level hook command an earlier version installed; a settings change that drops it is refused
 const GUARD_HOOK_MARK = path.join('delivery', 'bin', 'setup-guard.js');
 const MAX_QUOTE = 160;
 const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
@@ -454,7 +454,7 @@ function pluginFindings(shell, scripts) {
   return [];
 }
 
-// The user-level guard launcher (lib/user-guard.js): only its installer writes it. A command that
+// The user-level guard launcher an earlier version installed (no installer remains). A command that
 // removes, moves, truncates or overwrites it, or a script that writes it, switches the guard off.
 const LAUNCHER_NAME = GUARD_HOOK_MARK.split(path.sep).join('/');
 function isLauncher(file, ctx) {

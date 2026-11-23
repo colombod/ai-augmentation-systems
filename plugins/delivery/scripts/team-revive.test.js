@@ -358,7 +358,7 @@ test('the watchdog\'s host-job run starts the missing role sessions after its wa
   const seen = [];
   const revive = (root, o) => { seen.push({ root, ...o }); return ['Started: builder (pid 1): x.']; };
   const env = { ...process.env, DELIVERY_ROLE: '', DELIVERY_ROLE_ID: '', DELIVERY_ROLE_DIR: '' };
-  const deps = { cwd: p.root, env, now: T0, live: [], bd: store(BUSY), spawn: () => 1, sweep: () => ({ removed: [], failed: [] }), userGuard: () => null, update: { configDir: fs.mkdtempSync(path.join(os.tmpdir(), 'no-install-')) }, revive };
+  const deps = { cwd: p.root, env, now: T0, live: [], bd: store(BUSY), spawn: () => 1, sweep: () => ({ removed: [], failed: [] }), update: { configDir: fs.mkdtempSync(path.join(os.tmpdir(), 'no-install-')) }, revive };
   const r = watchdog.main(['run', '--project', p.root], deps);
   assert.equal(seen.length, 1, r.out);
   assert.equal(seen[0].root, p.root);

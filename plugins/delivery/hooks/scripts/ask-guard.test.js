@@ -89,12 +89,3 @@ test('PushNotification and SendUserFile are operator channels too: denied for wo
   assert.equal(decideAsk({ tool_name: 'constructor' }), null, 'only the named tools are channels');
 });
 
-test('hooks.json routes the operator channels, and only them, to the guard', () => {
-  const hooks = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks;
-  const entry = hooks.PreToolUse.find((e) => e.hooks.some((h) => h.args.some((a) => a.endsWith('ask-guard.js'))));
-  assert.ok(entry, 'ask-guard.js is wired');
-  const re = new RegExp(`^(?:${entry.matcher})$`);
-  for (const tool of ['AskUserQuestion', 'PushNotification', 'SendUserFile']) assert.ok(re.test(tool), tool);
-  assert.ok(!re.test('Bash'));
-  assert.ok(!re.test('SendMessage'));
-});

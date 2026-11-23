@@ -93,7 +93,7 @@ session its role and keep it:
   host, model or prepared_at, naming the field. The marker and `.claude/settings.json` or
   `settings.local.json` of a role directory are written only by `prepare-role`: the lane refuses a
   Write, Edit or shell write to them for every role, `any` lanes included.
-- **Hooks** (all in `hooks/hooks.json`; each is inert outside a role session unless noted):
+- **Hooks** (as of 0.44.0 `hooks/hooks.json` registers none; what follows is what the scripts under `hooks/scripts/` do when something runs them; each is inert outside a role session unless noted):
   - SessionStart rewrites `CLAUDE.local.md` from the manifest, registers the session in the
     roster and captures operator input. On clear and compact it restates the role; on startup
     and resume it restates it only when `CLAUDE.local.md` changed in this run (otherwise the
@@ -111,15 +111,10 @@ session its role and keep it:
     `setup.js`, the after-check in `setup-net.js`; on Write, Edit, MultiEdit, NotebookEdit, Bash,
     Monitor and PowerShell, before and after the tool) is the exception to "inert outside a role
     session": it binds every Claude Code session on the host, team role or not, because the session
-    that once moved the team's temp files into the home directory was not a role session. It runs as a
-    plugin hook and as a user-level hook: `lib/user-guard.js` writes a launcher at a stable path,
-    `<config dir>/delivery/bin/setup-guard.js`, and adds PreToolUse, PostToolUse and
-    PostToolUseFailure entries naming it to `<config dir>/settings.json`, merged beside every other key
-    and hook, idempotent, with an atomic write. The watchdog host job does it every cycle (never inside
-    the sealed test runner), and the team can run `scripts/setup-guard.js install`; it is never the
-    operator's. The launcher runs the installed plugin's guard, or, with no plugin installed, a small
-    embedded temp-variable check, so a project that disables the plugin, or removing the plugin, does
-    not switch the guard off.
+    that once moved the team's temp files into the home directory was not a role session. As of 0.44.0 `hooks/hooks.json` registers no hooks and no script installs a
+    user-level hook, so the scripts described under Hooks are not run by the plugin; they remain in the
+    tree until the standing-team runtime is retired (sprint 0b). An earlier version's user-level guard
+    stays on a host until it is removed by hand.
 
     Before the tool it refuses any change of where temp files go (`TMPDIR`, `CLAUDE_CODE_TMPDIR`,
     `TMP`, `TEMP`, `TEMPDIR` added or changed) in a Claude settings file (any `settings.json` or

@@ -351,13 +351,3 @@ test('end to end: garbage input and an unrelated tool leave the hook silent', ()
   assert.equal(runHook({ cwd: '/', tool_name: 'Read', tool_input: { file_path: '/etc/environment' } }).stdout, '');
 });
 
-test('hooks.json routes write and shell tools to the setup guard', () => {
-  const hooks = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks;
-  const entry = hooks.PreToolUse.find((e) => e.hooks.some((h) => (h.args || []).some((a) => a.endsWith('setup-guard.js'))));
-  assert.ok(entry, 'setup-guard.js is wired');
-  const re = new RegExp(entry.matcher);
-  for (const t of ['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Bash', 'Monitor', 'PowerShell']) assert.ok(re.test(t), t);
-  for (const t of ['TodoWrite', 'Read', 'MyBash', 'EditX', 'mcp__github__create_issue']) assert.ok(!re.test(t), t);
-  assert.equal(entry.hooks[0].command, 'node');
-  assert.equal(entry.hooks[0].timeout, 10);
-});
