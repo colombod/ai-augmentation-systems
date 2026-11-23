@@ -90,7 +90,8 @@ const PROCESS_FILES = {
   'scripts/testing/role-harness.js': 'the hook scripts under test, through node',
   'scripts/testing/run-tests.js': 'bwrap and node --test, the sealed runner',
   'scripts/testing/seal-check.js': 'run-tests.js, to check the seal',
-  'scripts/verify-run.js': 'git and the story\'s check script',
+  'scripts/verify-property.js': 'elan, to build and audit a property\'s Lean proof where Lean is installed',
+  'scripts/verify-run.js':'git and the story\'s check script',
   'scripts/watch.js': 'gh and the command it waits on',
   'scripts/watchdog.js': 'claude agents (a read), and the wake through startRole',
 };

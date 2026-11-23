@@ -21,7 +21,7 @@ What it did add:
 ## Cost
 
 About 45 tool turns in total, roughly a third on Lean. The model and proof built on the second
-run. Cold build 2.2 s, warm 1.2 s, build output 704 KB, toolchain directory 3.0 GB. 164 lines of
+run. Each run builds in a temporary copy: 2.2 s, 704 KB, toolchain directory 3.0 GB. 164 lines of
 model, 126 of generated examples.
 
 ## What was hard

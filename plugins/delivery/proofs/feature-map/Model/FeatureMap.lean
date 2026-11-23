@@ -2,7 +2,7 @@
 Model of the delivery feature map's reach and retire semantics, and a proof of property P1:
 retiring a feature leaves every other feature's reach unchanged.
 
-Follows (plugins/delivery):
+Follows, in this plugin:
   scripts/lib/codemap.js   `reach`       the breadth-first walk and the document rule
   scripts/lib/features.js  `retirement`  exclusive = reached by the feature and by no other
 

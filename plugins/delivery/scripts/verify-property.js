@@ -64,9 +64,17 @@ function runLean(method, opts) {
   if (opts.withoutLean) return { ran: false, detail: 'not run (--without-lean)' };
   const elan = findElan(opts.env);
   if (!elan) return { ran: false, detail: 'unavailable, not run (elan not found; install Lean 4 with elan to run the proof)' };
-  const project = path.join(ROOT, method.project);
+  const source = path.join(ROOT, method.project);
   let toolchain;
-  try { toolchain = fs.readFileSync(path.join(project, 'lean-toolchain'), 'utf8').trim(); } catch (err) { return { ran: true, verdict: 'contradicted', detail: `no lean-toolchain in ${method.project}` }; }
+  try { toolchain = fs.readFileSync(path.join(source, 'lean-toolchain'), 'utf8').trim(); } catch (err) { return { ran: true, verdict: 'contradicted', detail: `no lean-toolchain in ${method.project}` }; }
+  // Build in a private copy, never in the plugin: an installed plugin may be read-only, and Lake's
+  // build output records absolute local paths that must not sit among the files the plugin ships.
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), 'verify-property-'));
+  fs.cpSync(source, project, { recursive: true, filter: (p) => path.basename(p) !== '.lake' });
+  try { return buildAndAudit(method, opts, elan, project, toolchain); } finally { fs.rmSync(project, { recursive: true, force: true }); }
+}
+
+function buildAndAudit(method, opts, elan, project, toolchain) {
   const started = Date.now();
   // elan has no default toolchain here by design: every call names the project's pinned one
   const lake = (args) => spawnSync(elan, ['run', toolchain, 'lake', ...args], { cwd: project, encoding: 'utf8', timeout: 15 * 60 * 1000, maxBuffer: 64 * 1024 * 1024 });
@@ -157,6 +165,6 @@ function main(argv, env = process.env) {
   return records.some((r) => r.state === 'contradicted') ? 1 : 0;
 }
 
-if (require.main === module) process.exitCode = main(process.argv.slice(2));
-
 module.exports = { verify, report, main, findElan, parseAxioms };
+
+if (require.main === module) process.exitCode = main(process.argv.slice(2));
