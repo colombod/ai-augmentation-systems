@@ -9,9 +9,9 @@ Method: primary sources only. These are Anthropic's docs at `code.claude.com/doc
 ## Answers
 
 1. **Can a sprint be one bounded run that stops when deliverables verify or a bound is hit?** Partly, and only with a wrapper of our own. `claude -p` has hard caps on spend (`--max-budget-usd`) and on turns (`--max-turns`). `/goal` keeps a run going until a condition is judged met. But there is no documented wall-clock limit for a run, no token budget, and no cap on review rounds, and the goal's own turn or time clause is advisory. Time and review-round bounds must be enforced by the runner.
-2. **Can a wake be an event with a recorded reason?** Not natively, apart from one narrow case. The inbox, timers and outbox in the always-on article are patterns for us to build. `ScheduleWakeup` takes a `reason`, which is shown to the user and recorded in telemetry. A runner that appends each event, with its reason, to a file and passes it as the run's prompt does this today.
+2. **Can a wake be an event with a recorded reason?** Not natively, apart from one narrow case. The inbox, timers and outbox in the always-on article are patterns for us to build. `ScheduleWakeup` takes a `reason`, which is shown to the user and recorded in telemetry. A wrapper that appends each event, with its reason, to a file and passes it as the run's prompt does this today.
 3. **Can each run start fresh from a small working record?** Yes. `claude -p` starts fresh unless told to resume. `--bare` skips hooks, plugins, memory and CLAUDE.md, and the docs recommend it for scripted calls. Subagents start fresh. Attractor nodes are fresh by default.
-4. **Can the owner's stop be a first-class control of the engine?** For some engines, from a plain shell. Background sessions have `claude stop <id>` and `claude daemon stop --any`. A `claude -p` process can be sent SIGINT or SIGTERM. Nothing documented is a single stop for everything, and the attractor engine has no stop at all. A stop is something our runner must provide.
+4. **Can the owner's stop be a first-class control of the engine?** For some engines, from a plain shell. Background sessions have `claude stop <id>` and `claude daemon stop --any`. A `claude -p` process can be sent SIGINT or SIGTERM. Nothing documented is a single stop for everything, and the attractor engine has no stop at all. In practice the stop is SIGINT to the `claude -p` process, or Ctrl+C, and nothing of ours is needed beyond documenting it.
 
 ## Summary
 
@@ -86,7 +86,7 @@ The plugin's own `goal.js` is an owner-pause record and is unrelated. Claude Cod
 ## 7. Hooks
 
 - **Decisions.** PreToolUse returns `permissionDecision` of `allow`, `deny`, `ask` or `defer`, inside `hookSpecificOutput`. Precedence across hooks is deny, then defer, then ask, then allow.
-- **`defer` is narrow.** "Claude Code honors `"defer"` only in non-interactive mode with the `-p` flag, and only when Claude makes a single tool call in the turn." In an interactive session "it logs a warning and ignores the hook result." The turn ends with `stop_reason: "tool_deferred"`, the caller reads `deferred_tool_use`, and resumes with `claude -p --resume <session-id>`. "There is no timeout or retry limit"; the session stays on disk until the 30-day retention sweep. So `defer` suits our runner, not an interactive session. Interactive sessions use `ask`.
+- **`defer` is narrow.** "Claude Code honors `"defer"` only in non-interactive mode with the `-p` flag, and only when Claude makes a single tool call in the turn." In an interactive session "it logs a warning and ignores the hook result." The turn ends with `stop_reason: "tool_deferred"`, the caller reads `deferred_tool_use`, and resumes with `claude -p --resume <session-id>`. "There is no timeout or retry limit"; the session stays on disk until the 30-day retention sweep. So `defer` suits a `claude -p` sprint run, not an interactive session. Interactive sessions use `ask`.
 - **`ask` under `-p`** is not stated for PreToolUse. The docs say a denied call in a `-p` run, where no one can answer, shows Claude the reason. Treat the behaviour as unconfirmed.
 - **Failure is open by default.** A hook that exits with a code other than 0 or 2, crashes, times out, or prints invalid JSON is a non-blocking error and the call goes ahead. Exit 2 blocks. Blocking on failure is opt-in through `onFailure: "block"` (v2.1.295 and later). The default hook timeout is 600 seconds for command hooks.
 - **Hooks run in every permission mode.** A `deny` blocks the tool even under `bypassPermissions`.
@@ -117,10 +117,10 @@ Source: "Building always-on agents" (claude.com, 13 November 2026). It describes
 
 | Primitive | What it says | What we would build |
 | --- | --- | --- |
-| Event inbox | A durable list, one active worker, deduplicate on source IDs, batch pending events into one run. For mid-run events, push to the next run, fold in, or interrupt | A file inbox the runner reads between runs. Mid-sprint owner requests are pushed to the next sprint |
+| Event inbox | A durable list, one active worker, deduplicate on source IDs, batch pending events into one run. For mid-run events, push to the next run, fold in, or interrupt | A sprint file the next run reads. Mid-sprint owner requests are queued for the next sprint |
 | Timers | A separate store. A timer does not start a run; a scheduler polls for due timers and adds an event | Checkpoint timers declared in the sprint, as events |
 | Memory | Hold only what cannot be looked up, with a small index loaded each run; a progress file per task; keep overhead lean | One working record per product; beads and PRs stay the source of truth |
-| Permissions | "Where always-on agents carry the most risk"; deferred tool calls end the run and resume on an answer | `ask` in interactive sessions; `defer` in the `-p` runner |
+| Permissions | "Where always-on agents carry the most risk"; deferred tool calls end the run and resume on an answer | `ask` in interactive sessions; `defer` in a `claude -p` sprint run |
 | Outbox | A run ends by sending, deciding nothing needs sending, or deferring for input; start quiet | The sprint report, and a valid "nothing to report" |
 
 The article is silent on stopping, usage caps, observability and model sizing.

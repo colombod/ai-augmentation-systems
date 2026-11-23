@@ -10,7 +10,7 @@ For the owner, the Chief of Staff, every role and anything that wakes a role. Th
 
 2. **Bound the sprint as a whole.** Every sprint declares, before it starts, a bound on time, on spend and on review rounds across all its assignments. Reaching any one of them ends the sprint, whatever state its assignments are in. Assignment bounds sit inside the sprint's bounds and cannot add up to more than them.
 
-3. **Wake only for a reason.** A role is woken by an owner message, by a declared deliverable with a next step, by a merge that needs review, or by a due checkpoint. "Ready work exists" is not a reason. Each wake records why it happened. A healthy wait has a next checkpoint; it does not poll.
+3. **Nothing runs unless it is started for a reason.** A run starts because the owner starts it, because a declared deliverable has a next step in a running sprint, or because of an explicit timer the owner approved, such as a `/loop` on CI, with a recorded reason and an end. "Ready work exists" is not a reason, and nothing wakes itself. Each run records why it started. A healthy wait has a next checkpoint; it does not poll.
 
 4. **Idle is a normal, reported state.** No role, brief or hook treats idleness as a defect. A check never re-arms itself from its own output, and a successful verification does not create new work.
 
@@ -22,8 +22,8 @@ For the owner, the Chief of Staff, every role and anything that wakes a role. Th
 
 8. **Keep sessions small.** A session starts from the working record, not from a conversation that has grown to hundreds of thousands of tokens. Context size is reported. Above an agreed size, the next wake starts fresh.
 
-9. **The machinery that wakes work is under the same limits.** Watchdogs, timers, restarters and managers count toward the budget and respond to the stop in [Owner authority and stop](owner-authority-and-stop.md). They do not restart each other.
+9. **Anything that starts work is under the same limits.** A timer, loop or scheduled task counts toward the budget and responds to the stop in [Owner authority and stop](owner-authority-and-stop.md). None starts another, and none is installed without the owner's approval.
 
-**Check:** Set a very low budget: spending should stop at the limit, not after it. Declare a sprint whose assignment bounds add up to more than its own, or an assignment with no model tier or reason: the declaration should be refused. Reach the sprint's time bound while an assignment is running: everything should stop and the report should say which bound ended it. Leave a project with no declared sprint for a day: spend should be near zero. Cut a session off with a usage limit: nothing should resume until the owner's rule says so. Count wakes against recorded reasons: every wake should have one. Set a host-wide model override: the declaration should flag it. Fail a lower-tier attempt: the move up should be recorded with its evidence. Finish a sprint that spent mostly on the top tier: the report should flag it and show the reasons.
+**Check:** Set a very low budget: spending should stop at the limit, not after it. Declare a sprint whose assignment bounds add up to more than its own, or an assignment with no model tier or reason: the declaration should be refused. Reach the sprint's time bound while an assignment is running: everything should stop and the report should say which bound ended it. Leave a project with no declared sprint for a day: spend should be near zero. Cut a session off with a usage limit: nothing should resume until the owner's rule says so. Count runs against recorded reasons: every run should have one. Set a host-wide model override: the declaration should flag it. Fail a lower-tier attempt: the move up should be recorded with its evidence. Finish a sprint that spent mostly on the top tier: the report should flag it and show the reasons.
 
-**Left open:** The budget's unit and size, model names, the wake mechanism, and session-size thresholds.
+**Left open:** The budget's unit and size, model names, how the time bound is enforced, and session-size thresholds.

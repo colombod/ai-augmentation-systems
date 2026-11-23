@@ -1,12 +1,12 @@
 # Roles and handoffs
 
-For the owner and every role. The promise: each role exists to move a declared sprint, acts within stated authority and limits, and work moves only through accepted handoffs. Two roles, the Chief of Staff and the Delivery Manager, exist to protect the owner's attention.
+For the owner and every role. The promise: each role exists to move a declared sprint, acts within stated authority and limits, and work moves only through accepted handoffs. Two roles, the Chief of Staff and the Delivery Manager, exist to protect the owner's attention. Roles are duties of the owner's own session and its subagents, not standing sessions.
 
 **Example:** Two builders both need the next version number, and one pull request needs a rebase. The Delivery Manager assigns the version at merge and does the rebase, and the owner hears nothing about either. A builder finishes a story, and the Delivery Manager accepts it for review. Until then the builder remains accountable. The Chief of Staff reports it to the owner only if it needs a decision.
 
 ## Commitments
 
-1. **A role runs only while it has work.** The team is formed per sprint and sized to the number of parallel lanes with a low risk of conflict. The number of builders is variable. Where it pays, two builders try competing implementations of one deliverable and a final task chooses or combines the best. A role with no declared work is stopped, not idled and re-woken.
+1. **No standing sessions.** A sprint is run by the owner's own session, acting as Chief of Staff, with subagents for the rest. A role is a duty, or a subagent for the length of one assignment, and never a long-lived session. Parallel work is sized to lanes with a low risk of conflict. Where it pays, two subagents try competing implementations of one deliverable and a final task chooses or combines the best. Between sprints nothing runs.
 
 2. **Each role has a purpose, and a limit.**
 

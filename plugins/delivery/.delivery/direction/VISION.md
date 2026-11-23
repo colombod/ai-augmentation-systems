@@ -14,7 +14,7 @@ Delivery serves the whole life of a product, not only its creation. A product is
 
 A typical week is quiet. The team works only on a declared sprint and is silent between reports. When the person opens a conversation, the first thing they get is an answer, then what has shipped, what it cost, and any decision waiting. They are never asked to restart a machine or run a command, and they can stop everything with one plain action.
 
-Their attention is a budget, like usage. They set a limit on the decisions and messages a sprint may cost them, and the team reports against it. The Chief of Staff filters what reaches them. The Delivery Manager absorbs the routine conflicts of branches, versions and review rounds so none of those do.
+Their attention is a budget, like usage. They set a limit on the decisions and messages a sprint may cost them, and the team reports against it. The Chief of Staff filters what reaches them. The Delivery Manager absorbs the routine conflicts of branches, versions and review rounds so none of those do. Neither is a standing session; they are duties of the owner's own session and its subagents.
 
 Three things are always true: what is reported as shipped can be used, what is spent is bounded by what the person allowed, and when they say stop, it stops.
 
