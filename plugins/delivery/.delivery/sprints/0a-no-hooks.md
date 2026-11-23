@@ -25,15 +25,15 @@ sessions to be left alone.
 - Review rounds: 2. One independent review of the diff, then one fix round.
 - Attention: at most 2 decision requests to the owner.
 - Spend: the owner set no cap. No hard cap is available in an interactive
-  session, so the sprint uses at most 3 subagents and never the top tier unless
+  session, so the sprint uses at most 3 subagents and nothing above the middle tier unless
   a lower-tier attempt fails, with the reason recorded.
 
 ## Model tiers
 
 | Work | Tier and reason |
 | --- | --- |
-| Implementation | Opus, the owner's default for ordinary implementation. Focused edits with tests. |
-| Independent review | Opus. One review per changed diff; the top tier only if the review fails. |
+| Implementation | Sonnet, the middle tier. Focused edits with tests; no hard design. Move up only if an attempt fails, and record why. |
+| Independent review | Sonnet. One review per changed diff; a higher tier only if the review fails or finds a security-sensitive flaw. |
 
 ## Necessity
 
@@ -48,3 +48,5 @@ a planning skill; the beads data.
 Known: the Claude Code version on the owner's machine is 2.1.330, and
 `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` is not set, so a tier chosen above is not
 overridden there.
+
+Note: the first version of this declaration named Opus for both. That followed a default in the owner's settings, not the model-selection policy in [Spend and idle](../direction/contracts/spend-and-idle.md) 6. It was corrected before any work was done.
