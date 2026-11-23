@@ -48,7 +48,12 @@ node ${CLAUDE_PLUGIN_ROOT}/scripts/map.js retire <feature-id>
 node ${CLAUDE_PLUGIN_ROOT}/scripts/map.js blind
 ```
 
-Declare what your product ships in `.delivery/features.json` (`{"features": [{"id", "name", "anchors": [...]}]}`); without declared features the map reaches nothing. Each answer names the commit it was computed at. It reports what a feature reaches, not whether anyone uses it.
+It works on a new project and on an existing one.
+
+- **Existing code (brown field):** the map derives features from where users and machines start: web routes, package bins, serverless functions, CI workflows, plugin skills. Declare the rest in `.delivery/features.json` (`{"features": [{"id", "name", "anchors": [...]}]}`).
+- **New project (green field):** declare the features first, with anchors for code that does not exist yet. Anchors with no files yet are listed as dangling and resolve as the code lands. A story's planned files are attributed to the declared feature whose anchor covers them (`impact --story` prints `Planned: <file> belongs to <feature>`); a story lists them in backticks in its "Files and modules" table.
+
+Without declared features, a project whose users do not start from a route, bin or plugin reaches nothing. Each answer names the commit it was computed at. It reports what a feature reaches, not whether anyone uses it.
 
 ## How it works
 
