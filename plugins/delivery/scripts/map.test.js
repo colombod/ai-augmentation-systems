@@ -398,3 +398,26 @@ test('green field: a planned file no declared anchor covers is still reported as
   assert.deepEqual(j.unknown, ['lib/unclaimed.py']);
   assert.match(run(['impact', '--repo', fx.dir, '--story', story]).out, /Not in the commit: lib\/unclaimed\.py .*no declared feature's anchor covers it/);
 });
+
+// ---- the map must give the same answer from any directory inside the repository ----
+// A brief found `impact --story` reached 14 of 78 features from the repo root and 0 of 47 from a
+// subdirectory: git ls-tree lists only the current subtree unless told --full-tree.
+test('the map answers the same from a subdirectory as from the repository root', () => {
+  const fx = fixture({
+    '.delivery/features.json': JSON.stringify({ features: [{ id: 'billing', name: 'Billing', anchors: ['svc/src/billing.py'] }] }),
+    'svc/src/billing.py': 'import tax\n',
+    'svc/src/tax.py': 'def t():\n    return 1\n',
+    'svc/README.md': '# svc\n',
+  });
+  const sub = path.join(fx.dir, 'svc');
+  const story = path.join(fx.dir, 'story.md');
+  fs.writeFileSync(story, '# S\n\n## Files and modules\n\n| Path | What to do |\n| :-- | :-- |\n| `svc/src/tax.py` | modify |\n');
+  const fromRoot = run(['impact', '--repo', fx.dir, '--json', '--story', story]).json();
+  const fromSub = run(['impact', '--repo', sub, '--json', '--story', story]).json();
+  assert.deepEqual(fromRoot.reached.map((f) => f.id), ['billing'], 'the root answer reaches the feature');
+  assert.deepEqual(fromSub.reached.map((f) => f.id), fromRoot.reached.map((f) => f.id), 'a subdirectory gives the same reach');
+  assert.deepEqual(fromSub.unknown, [], 'a file that exists is not reported as not in the commit');
+  const listed = (r) => r.json().features.filter((f) => f.id === 'billing').length;
+  assert.equal(listed(run(['features', '--repo', sub, '--json'])), listed(run(['features', '--repo', fx.dir, '--json'])), 'features lists the same declared feature');
+  assert.equal(listed(run(['features', '--repo', sub, '--json'])), 1);
+});
