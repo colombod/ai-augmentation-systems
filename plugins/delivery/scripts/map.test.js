@@ -318,6 +318,46 @@ test('real story: impact --story leaves out the files a story only reads', () =>
   assert.deepEqual(s, ['a.js', 'd.js', 'e.js', 'f.js']);
 });
 
+// ---- retire: "no other feature reaches it" must not hide that something else names it ----
+// Reproduced from a brief's claim: a root-level job ran src/helper.py, the map called helper.py deletable.
+const RETIRE = {
+  '.delivery/features.json': JSON.stringify({ features: [
+    { id: 'report', name: 'Report', anchors: ['src/report.py'] },
+    { id: 'other', name: 'Other', anchors: ['src/other.py'] },
+  ] }),
+  'src/report.py': 'import helper\nimport docsonly\nimport own\n# the feature names its own file: src/own.py\n',
+  'src/helper.py': 'def h():\n    return 1\n',
+  'src/docsonly.py': 'def d():\n    return 1\n',
+  'src/own.py': 'def o():\n    return 1\n',
+  'src/other.py': 'x = 1\n',
+  'nightly.yaml': 'jobs:\n  nightly:\n    run: python src/helper.py\n',
+  'README.md': '# Notes\n\nsrc/docsonly.py explains the report.\n',
+};
+
+test('retire: a file another non-document file names is not deletable, and says which file and line', () => {
+  const fx = fixture(RETIRE);
+  const j = run(['retire', 'report', '--repo', fx.dir, '--json']).json();
+  assert.deepEqual(j.named, [{ path: 'src/helper.py', by: [{ path: 'nightly.yaml', line: 3 }] }]);
+  assert.ok(!j.exclusive.includes('src/helper.py'), 'a file a job still runs is not offered as deletable');
+  const t = run(['retire', 'report', '--repo', fx.dir]).out;
+  assert.match(t, /Named elsewhere[^\n]*\n\s+src\/helper\.py\s+named by nightly\.yaml:3/);
+  assert.doesNotMatch(t.split('Named elsewhere')[0], /src\/helper\.py/, 'it is not under Deletable');
+});
+
+test('retire: a file named only in documents stays deletable and the mention is noted', () => {
+  const fx = fixture(RETIRE);
+  const j = run(['retire', 'report', '--repo', fx.dir, '--json']).json();
+  assert.ok(j.exclusive.includes('src/docsonly.py'));
+  assert.deepEqual(j.docNotes.find((d) => d.path === 'src/docsonly.py').by, [{ path: 'README.md', line: 3 }]);
+});
+
+test('retire: a file only the retired feature itself names stays deletable, with nothing named elsewhere for it', () => {
+  const fx = fixture(RETIRE);
+  const j = run(['retire', 'report', '--repo', fx.dir, '--json']).json();
+  assert.ok(j.exclusive.includes('src/own.py'));
+  assert.ok(!j.named.some((n) => n.path === 'src/own.py'));
+});
+
 // ---- green field: a story's new files belong to the declared feature whose anchor covers them ----
 // On a new project every file is new, so "not in the commit, reaches nothing yet" says nothing useful.
 const GREEN = {
