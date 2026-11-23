@@ -1,0 +1,51 @@
+{
+  "about": "Fixed graphs with their expected reach and exclusive sets, written down once. scripts/lib/retire-property.js checks them against the real codemap.reach and features.retirement, and generates Model/Examples.lean, where Lean checks the same numbers against the model. A drift between model and code makes one side fail. Files are numbers; a number listed in docs is a document.",
+  "examples": [
+    {
+      "name": "docEndsChain",
+      "note": "A document reached from another file ends the chain; the same document as an anchor is walked.",
+      "files": 6,
+      "docs": [1, 4],
+      "edges": [[0, 1], [1, 2], [0, 3], [3, 4], [4, 5]],
+      "features": [
+        { "id": "A", "anchors": [0], "reach": [0, 1, 3, 4], "exclusive": [0, 3] },
+        { "id": "B", "anchors": [1], "reach": [1, 2], "exclusive": [2] },
+        { "id": "C", "anchors": [4], "reach": [4, 5], "exclusive": [5] }
+      ]
+    },
+    {
+      "name": "sharedHelperWithCycle",
+      "note": "Two features share a helper that sits on a cycle; only the entry files are exclusive.",
+      "files": 5,
+      "docs": [],
+      "edges": [[0, 2], [1, 2], [2, 3], [3, 2], [1, 4]],
+      "features": [
+        { "id": "A", "anchors": [0], "reach": [0, 2, 3], "exclusive": [0] },
+        { "id": "B", "anchors": [1], "reach": [1, 2, 3, 4], "exclusive": [1, 4] }
+      ]
+    },
+    {
+      "name": "anchorDocAlsoReached",
+      "note": "File 0 is a document: feature A anchors it and walks on to 6, feature C only reaches it and stops, so 6 is exclusive to A.",
+      "files": 7,
+      "docs": [0, 2],
+      "edges": [[0, 1], [1, 2], [2, 3], [3, 0], [1, 4], [3, 5], [0, 6]],
+      "features": [
+        { "id": "A", "anchors": [0, 2], "reach": [0, 1, 2, 3, 4, 5, 6], "exclusive": [6] },
+        { "id": "B", "anchors": [1], "reach": [1, 2, 4], "exclusive": [] },
+        { "id": "C", "anchors": [3], "reach": [0, 3, 5], "exclusive": [] }
+      ]
+    },
+    {
+      "name": "sharedAnchorNoEdges",
+      "note": "No edges: a feature reaches exactly its anchors, and an anchor two features share is not exclusive.",
+      "files": 3,
+      "docs": [],
+      "edges": [],
+      "features": [
+        { "id": "A", "anchors": [0, 1], "reach": [0, 1], "exclusive": [0] },
+        { "id": "B", "anchors": [1], "reach": [1], "exclusive": [] }
+      ]
+    }
+  ]
+}
