@@ -249,7 +249,31 @@ function retirement(map, feats, id) {
     if (by.length) shared.push({ path: file, features: by });
     else exclusive.push(file);
   }
-  return { sha: map.sha, id: f.id, kind: f.kind, source: f.source, anchors: f.anchors, exclusive, shared };
+  // "No other feature reaches it" is not "nothing else names it". A job, a config or a script the map
+  // reads no edge from may still run a file this feature reaches. Found by reproducing a brief's claim: a
+  // root-level job file ran src/helper.py, the map listed helper.py as deletable and warned of nothing.
+  // So for each exclusive file, look for its full path in every analysed file the feature does not
+  // itself reach. A mention in a non-document file takes it out of "deletable" until someone checks;
+  // a mention only in documents is noted and does not (docs name files to explain them).
+  const named = [];
+  const deletable = [];
+  const docNotes = [];
+  for (const file of exclusive) {
+    const hits = [];
+    for (const [p, text] of Object.entries(map.texts || {})) {
+      // the register declares features by their anchors: naming a file there is the declaration, not a use
+      if (p === file || mine.has(p) || p === REGISTER || p.endsWith(`/${REGISTER}`)) continue;
+      const at = text.indexOf(file);
+      if (at < 0) continue;
+      hits.push({ path: p, line: text.slice(0, at).split('\n').length, doc: C.langOf(p) === 'doc' });
+    }
+    const live = hits.filter((h) => !h.doc);
+    if (live.length) named.push({ path: file, by: live.map(({ path: pp, line }) => ({ path: pp, line })) });
+    else deletable.push(file);
+    const docs = hits.filter((h) => h.doc);
+    if (!live.length && docs.length) docNotes.push({ path: file, by: docs.map(({ path: pp, line }) => ({ path: pp, line })) });
+  }
+  return { sha: map.sha, id: f.id, kind: f.kind, source: f.source, anchors: f.anchors, exclusive: deletable, named, docNotes, shared };
 }
 
 module.exports = { featuresOf, impact, retirement, canonicalPath, REGISTER, globRe };

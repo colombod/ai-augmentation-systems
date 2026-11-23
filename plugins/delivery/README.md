@@ -48,7 +48,7 @@ node ${CLAUDE_PLUGIN_ROOT}/scripts/map.js retire <feature-id>
 node ${CLAUDE_PLUGIN_ROOT}/scripts/map.js blind
 ```
 
-Declare what your product ships in `.delivery/features.json` (`{"features": [{"id", "name", "anchors": [...]}]}`); without declared features the map reaches nothing. Each answer names the commit it was computed at. It reports what a feature reaches, not whether anyone uses it.
+Declare what your product ships in `.delivery/features.json` (`{"features": [{"id", "name", "anchors": [...]}]}`); without declared features the map reaches nothing. Each answer names the commit it was computed at. It reports what a feature reaches, not whether anyone uses it. `retire` also looks for each "deletable" file's path in every file the feature does not reach: a job, config or script that names it moves it to "Named elsewhere: check before deleting"; a mention only in documents is noted and does not block.
 
 ## How it works
 

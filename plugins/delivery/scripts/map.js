@@ -81,9 +81,11 @@ function main(argv, { write = (s) => process.stdout.write(s) } = {}) {
     const r = F.retirement(map, feats, o.paths[0]);
     if (r.error) { write(o.json ? `${JSON.stringify(r)}\n` : `map.js: refused: ${r.error}\n`); return 1; }
     if (o.json) { write(`${JSON.stringify(r)}\n`); return 0; }
-    write(`Retiring ${r.id} (${r.kind}, ${r.source}) at ${r.sha}: ${r.exclusive.length} file${r.exclusive.length === 1 ? '' : 's'} only it reaches, ${r.shared.length} shared\n`);
-    write('  Deletable with it (no other feature reaches them):\n');
-    for (const p of r.exclusive) write(`    ${p}\n`);
+    write(`Retiring ${r.id} (${r.kind}, ${r.source}) at ${r.sha}: ${r.exclusive.length + r.named.length} file${r.exclusive.length + r.named.length === 1 ? '' : 's'} only it reaches, ${r.shared.length} shared\n`);
+    write('  Deletable with it (no other feature reaches them, and nothing else names them):\n');
+    for (const p of r.exclusive) write(`    ${p}${(r.docNotes.find((d) => d.path === p) || { by: [] }).by.length ? `  (named only in docs: ${r.docNotes.find((d) => d.path === p).by.map((b) => `${b.path}:${b.line}`).join(', ')})` : ''}\n`);
+    if (r.named.length) write('  Named elsewhere (no feature reaches them, but another file names them: check before deleting):\n');
+    for (const x of r.named) write(`    ${x.path}  named by ${x.by.map((b) => `${b.path}:${b.line}`).join(', ')}\n`);
     if (r.shared.length) write('  Shared (retire the surface, keep the code):\n');
     for (const x of r.shared) write(`    ${x.path}  also reached by ${x.features.length > 3 ? `${x.features.slice(0, 3).join(', ')} and ${x.features.length - 3} more` : x.features.join(', ')}\n`);
     write('The map shows reach, not use. Before retiring, show from the product\'s own logs that the feature is no longer used; with no logs, instrument it first and decide later. Deleting is irreversible: it is the owner\'s decision, recorded (/delivery:decision), never inferred.\n');
