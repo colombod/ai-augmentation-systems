@@ -35,7 +35,7 @@ Cost, measured on that run (Opus, a small intent): about $2 for the brief, $2.50
 
 ## Verified shipping
 
-Set `DELIVERY_LEDGER=1` before starting Claude Code. The plugin then records each skill and agent call and each file written under `.delivery/` to `.delivery/invocations/`. The recorder only observes: it prints nothing, always exits 0, and writes nothing without the variable. `/delivery:status` reads the ledger to say which documents were produced by real skill calls and which were not. In a fresh-project test it recorded the PRD and status skill calls, three reviewer agent calls and four file writes, and `status` used them to say the PRD files came from real writes. The brief's own skill call and its finder agents were not in the ledger, and why is not yet confirmed.
+Set `DELIVERY_LEDGER=1` before starting Claude Code. The plugin then records each skill and agent call and each file written under `.delivery/` to `.delivery/invocations/`. The recorder only observes: it prints nothing, always exits 0, and writes nothing without the variable. `/delivery:status` reads the ledger to say which documents were produced by real skill calls and which were not. In a fresh-project test it recorded the PRD and status skill calls, three reviewer agent calls and four file writes, and `status` used them to say the PRD files came from real writes. That test also found that in a new project the first skill call and its reviewers were not recorded, because `.delivery/` did not exist yet. Fixed in 0.44.2: the first delivery call now starts the ledger at the project's git root.
 
 ## Feature map
 

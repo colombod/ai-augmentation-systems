@@ -64,12 +64,34 @@ function findDeliveryRoot(startDir) {
   return null;
 }
 
-// The gate: the opt-in ledger is on, and this is a delivery role session or a cwd inside a project.
+// A project that has not run a delivery skill yet has no .delivery/, and its first skill and that
+// skill's reviewer agents run before anything writes it. Found in a fresh-project test: the brief's
+// own skill call and its three reviewers were missing from the ledger, which started at the first
+// file write. The first delivery call is what starts the project, so it is recorded at the project's
+// git root. Only a delivery-namespaced Skill or Agent does this, and only with the ledger on.
+function projectGitRoot(startDir) {
+  let dir = startDir;
+  for (;;) {
+    if (fs.existsSync(path.join(dir, '.git'))) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+function isDeliveryCall(payload) {
+  if (!payload || (payload.tool_name !== 'Skill' && payload.tool_name !== 'Agent')) return false;
+  const name = invokedNameFrom(payload.tool_name, payload.tool_input);
+  return typeof name === 'string' && name.startsWith('delivery:');
+}
+
+// The gate: the opt-in ledger is on, and this is a delivery role session, a cwd inside a project, or
+// the first delivery call in a git project that has no .delivery/ yet (see projectGitRoot).
 // The ledger is opt-in (DELIVERY_LEDGER=1): without it nothing is written anywhere.
-function shouldRecord(cwd) {
+function shouldRecord(cwd, payload) {
   if (process.env.DELIVERY_LEDGER !== '1') return false;
   if (process.env.DELIVERY_ROLE) return true;
-  return !!findDeliveryRootUpward(cwd);
+  if (findDeliveryRootUpward(cwd)) return true;
+  return isDeliveryCall(payload) && !!projectGitRoot(cwd);
 }
 
 // harden-03 — capture-tool discrimination (FR-9's channel cross-check).
@@ -194,7 +216,7 @@ function recordArtifactWrite(payload) {
 
 function recordInvocation(payload, options) {
   const cwdForResolution = (options && options.cwd) || payload.cwd || process.cwd();
-  if (!shouldRecord(cwdForResolution)) return null; // an ordinary session outside any project
+  if (!shouldRecord(cwdForResolution, payload)) return null; // an ordinary session outside any project
 
   // Artifact writes are their own governed class (gy5.3) — resolved by the
   // artifact's path, not the session cwd.
@@ -215,7 +237,11 @@ function recordInvocation(payload, options) {
   }
 
   const sessionId = payload.session_id || 'unknown-session';
-  const deliveryRoot = findDeliveryRoot(cwdForResolution);
+  let deliveryRoot = findDeliveryRoot(cwdForResolution);
+  if (!deliveryRoot && isDeliveryCall(payload)) {
+    const gitRoot = projectGitRoot(cwdForResolution);
+    if (gitRoot) deliveryRoot = path.join(gitRoot, '.delivery'); // the first delivery call starts the project's ledger
+  }
   if (!deliveryRoot) return null; // nothing governed reachable — no-op, not an error
 
   const ledgerDir = path.join(deliveryRoot, 'invocations');
@@ -243,6 +269,8 @@ module.exports = {
   findDeliveryRoot,
   findDeliveryRootUpward,
   shouldRecord,
+  isDeliveryCall,
+  projectGitRoot,
   invokedNameFrom,
   captureActionFrom,
   isGovernedToolCall,
