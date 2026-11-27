@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // scripts/merge-gate.js — the merge gate (R-32): the Delivery Manager merges only on a passing
 // independent review of the pull request's current head, with CI green and no conflict.
-//   merge-gate.js check <pr> [--head <sha>]     read only; exit 0 when the merge may go ahead
+//   merge-gate.js check <pr> [--head <sha>]     writes no record (it may fetch commits into the product
+//                                               checkout); exit 0 when the merge may go ahead
 //   merge-gate.js merged <pr> [--head <sha>]    after the merge: the merged row, state-merged on its beads, and
 //                                               the fix-on-fix check (two fixes on one symptom in 48 h: a spike)
 // The lane runs the same check before it lets the Delivery Manager's `gh pr merge` through. The merge
@@ -10,8 +11,11 @@
 // reviewed. gh supplies the head, mergeable and the checks; where gh cannot read them, the head named
 // on the command and the Delivery Manager's recorded `review.js ci` row stand in. The Delivery
 // Manager's GitHub approvals (`gh pr review --approve`) are refused too: approvals are review rows.
-// Size and scope are warnings only. Exit codes: 0 passes / done; 1 refused; 2 usage.
+// Size, scope and a widened impact (features reached that the stories never listed) are warnings only. Exit codes: 0 passes / done; 1 refused; 2 usage.
+const fs = require('fs');
 const path = require('path');
+const { spawnSync } = require('child_process');
+const ID = require('./lib/impact-decisions.js');
 const R = require('./lib/reviews.js');
 const G = require('./lib/gates.js');
 const DI = require('./lib/doc-impact.js');
@@ -83,6 +87,75 @@ function versionStep(pr, view, head, { repo, root, readFile }) {
   return { why: `PR ${pr}: ${r.why}`, fix: `Send it back to take the next free version above ${baseRef}'s (merge ${baseRef} in, raise the version, push): ${R.cmd('review.js', `send-back ${pr} --reason '${r.base ? `version ${r.head || 'missing'} is not above ${baseRef} ${r.base}` : 'plugin version not checkable'}' --note 'merge ${baseRef} in and take the next free version'`)}` };
 }
 
+// What the pull request really reaches, against what its stories decided (lib/impact-decisions.js):
+// a fix can widen the impact after the story was made ready. One warning line or null; where it cannot
+// be compared it says so. Never a refusal.
+function impactStep(pr, view, head, rows, { root, team, roleDir, bd }) {
+  const skipped = (why) => `impact of PR ${pr} not checked: ${why}`;
+  try {
+    if (view.unavailable || !Array.isArray(view.files) || !R.FULL_SHA.test(String(head))) return skipped('gh cannot read its changed files and full head');
+    const req = R.lastRequest(rows) || {};
+    const store = bd || require('./lib/bd.js').makeBd({ cwd: root, timeoutMs: 10000 });
+    const texts = [];
+    const notes = [];
+    for (const id of new Set([...(req.stories || []), ...(req.beads || [])])) {
+      let file = null;
+      try { file = ((store.show(id) || {}).metadata || {}).story_file; } catch (err) { notes.push(`Bead ${id} was not read.`); }
+      if (!file || path.basename(String(file)) !== String(file)) continue;
+      try { texts.push(fs.readFileSync(path.join(root, '.delivery', 'stories', String(file)), 'utf8')); } catch (err) { notes.push(`Story file ${file} was not read.`); }
+    }
+    if (!texts.length) return skipped(['no story file is recorded for it', ...notes].join('. '));
+    const Ready = require('./ready.js');
+    const dir = Ready.productRepo({ root, team, roleDir });
+    const git = (...a) => spawnSync('git', ['-C', dir, ...a], { encoding: 'utf8', timeout: 20000, maxBuffer: 1 << 26 });
+    // the base is fetched each time (a stale one would count others' changes), the head when it is missing;
+    // objects and remote refs only, never the checkout
+    const base = String(view.baseRefName || 'main');
+    const named = /^(?!-)[\w./-]+$/.test(base);
+    const remote = git('remote', 'get-url', 'origin').status === 0;
+    const fetched = named && git('fetch', '--quiet', '--no-write-fetch-head', 'origin', base).status === 0;
+    const has = () => git('cat-file', '-e', `${head}^{commit}`).status === 0;
+    if (!has()) git('fetch', '--quiet', '--no-write-fetch-head', 'origin', head);
+    if (!has()) return skipped(`commit ${R.short(head)} is not in ${dir}; fetch it there and check again`);
+    // from the common commit, with renames as a delete and an add: a removed file is mapped where it
+    // still exists, or the feature that loses it would not show
+    let from = null;
+    for (const ref of named ? [`refs/remotes/origin/${base}`, `refs/heads/${base}`] : []) {
+      const m = git('merge-base', ref, head);
+      if (m.status === 0) { from = m.stdout.trim(); break; }
+    }
+    const diff = from ? git('diff', '--name-status', '--no-renames', '-z', from, head) : null;
+    let reach;
+    if (diff && diff.status === 0) {
+      // with no remote the local base is the base; with one, an unrefreshed copy may be stale
+      if (remote && !fetched) notes.push(`The base ${base} could not be refreshed.`);
+      const parts = diff.stdout.split('\0').filter(Boolean);
+      const gone = [];
+      const kept = [];
+      for (let i = 0; i + 1 < parts.length; i += 2) (parts[i] === 'D' ? gone : kept).push(parts[i + 1]);
+      reach = bothSides(kept.length ? Ready.reachOf(dir, kept, head) : null, gone.length ? Ready.reachOf(dir, gone, from) : null);
+    } else {
+      notes.push(`The base ${base} was not found, so deleted and renamed files were not checked.`);
+      // gh pr view lists at most 100 files
+      if (view.files.length === 100) notes.push('Only the first 100 changed files were read.');
+      reach = Ready.reachOf(dir, view.files.map((f) => f.path), head);
+    }
+    const found = reach && ID.widened({ pr, reach, texts });
+    if (!notes.length) return found || null;
+    return `${found || `impact of PR ${pr} only partly checked.`} ${notes.join(' ')}`;
+  } catch (err) { return skipped(String(err.message).split('\n')[0]); }
+}
+
+// one reach from what the changed files reach at the head and what the removed files reached before
+function bothSides(a, b) {
+  const sides = [a, b].filter(Boolean);
+  const bad = sides.find((x) => x.error);
+  if (bad || sides.length < 2) return bad || sides[0] || null;
+  const all = (f) => [...new Set(sides.flatMap(f))];
+  const ids = all((x) => x.live.ids);
+  return { features: all((x) => x.features.map((y) => y.id)).map((id) => ({ id })), live: { reached: all((x) => x.live.reached), ids, total: ids.length, uncounted: all((x) => x.live.uncounted) } };
+}
+
 function defaultPlanDrift(root) {
   let beads = null;
   try { beads = require('./lib/bd.js').makeBd({ cwd: root, timeoutMs: 10000 }).list({ all: true }); } catch (err) { beads = null; }
@@ -91,7 +164,9 @@ function defaultPlanDrift(root) {
 
 function check(root, pr, opts) {
   const g = gate(root, pr, opts);
-  const warn = (g.warnings || []).map((w) => `warning: ${w.detail}`);
+  // computed here, not in gate(): the lane's merge check runs gate() inside a hook, and this maps the product
+  const impact = g.ok ? impactStep(pr, g.view, g.head, g.rows, { root, ...opts }) : null;
+  const warn = [...(g.warnings || []).map((w) => w.detail), ...(impact ? [impact] : [])].map((d) => `warning: ${d}`);
   if (!g.ok) return { code: 1, out: [`merge-gate: refused: ${g.why}.`, g.fix, ...warn].join('\n'), gate: g };
   const via = g.view.unavailable ? ` (gh: ${g.view.unavailable}; head and CI from the record)` : '';
   return { code: 0, out: [`merge-gate: PR ${pr} passes at ${R.short(g.head)}: review ${g.review.id} by ${g.review.reviewer}, CI green${via}.`,
@@ -258,7 +333,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, gh, now, who: 
   if (!who.root) return { code: 2, out: 'merge-gate.js: no project found; pass --project <root>' };
   const repo = productRepoOf(who.team, { roleDir: who.roleDir });
   if (!repo && (sub === 'check' || sub === 'merged')) return { code: 1, out: `merge-gate.js: ${UNKNOWN(pr)}` };
-  if (sub === 'check') return check(who.root, pr, { head: a.head, gh, team: who.team, repo, planDrift });
+  if (sub === 'check') return check(who.root, pr, { head: a.head, gh, team: who.team, repo, planDrift, bd, roleDir: who.roleDir });
   if (sub !== 'merged') return { code: 2, out: USAGE };
   const wp = writerProblem(who, ['delivery-lead']);
   if (wp) return { code: 1, out: `merge-gate.js: ${wp}` };
@@ -304,7 +379,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, gh, now, who: 
   return { code: 0, out: [...out, ...plan].join('\n') };
 }
 
-module.exports = { main, gate, check, ghPrCalls, mergeCommandProblem, handOver };
+module.exports = { main, gate, check, impactStep, ghPrCalls, mergeCommandProblem, handOver };
 
 if (require.main === module) {
   let r;
