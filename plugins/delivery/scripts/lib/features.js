@@ -181,8 +181,10 @@ function canonicalPath(map, p) {
   return null;
 }
 
-// What changing `paths` reaches, from the feature's side, at map.sha.
-function impact(map, feats, paths) {
+// What changing `paths` reaches, from the feature's side, at map.sha. The file links say which features
+// can reach a change; the syntax tree (lib/syntax.js) then keeps those that use what changed: by whole
+// file, or, with `from` (and `to`), by the definitions that range changed.
+function impact(map, feats, paths, { from, to, syntax = require('./syntax.js') } = {}) {
   const changed = [];
   const unknown = [];
   const ambiguous = [];
@@ -214,6 +216,15 @@ function impact(map, feats, paths) {
     reached.push({ id: f.id, kind: f.kind, source: f.source, hops: via[0].hops, via, viaHub: direct.length ? null : via[0].hub });
   }
   reached.sort((a, b) => a.hops - b.hops || a.id.localeCompare(b.id));
+  // only JavaScript is parsed; where the parser cannot answer, the file links stand and it is said
+  let narrowed = [];
+  let syntaxError = null;
+  if (reached.length && map.repo && map.files.some((f) => /\.[cm]?js$/.test(f))) {
+    const anchors = new Map(withAnchors.map((f) => [f.id, f.anchors]));
+    const answer = syntax.narrow({ repo: map.repo, sha: map.sha, from, to, paths: changed, features: reached.map((f) => ({ id: f.id, anchors: anchors.get(f.id) })) });
+    if (answer.error) syntaxError = answer.error;
+    else narrowed = reached.filter((f) => !answer.ids.includes(f.id)).map((f) => f.id);
+  }
   const blindSet = new Set(map.blind);
   const unreached = changed.filter((p) => !fanIn.has(p));
   return {
@@ -221,7 +232,10 @@ function impact(map, feats, paths) {
     changed,
     unknown,
     ambiguous,
-    reached,
+    reached: reached.filter((f) => !narrowed.includes(f.id)),
+    // features whose files link to the change but which use none of it
+    narrowed,
+    ...(syntaxError ? { syntaxError } : {}),
     // changed files that are hubs: changing one reaches much of the product, so the answer says so
     hubs: changed.filter((p) => isHub(p) && C.langOf(p) !== 'doc').map((p) => ({ path: p, features: fanIn.get(p) })),
     // changed files no feature reaches: dead code, a feature nobody declared, or a reference no rule reads

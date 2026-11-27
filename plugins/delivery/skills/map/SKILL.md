@@ -56,6 +56,11 @@ register, because naming what the product ships is a product decision.
   Delivery Manager, and size and test it as a change to all of them.
 - **Unreached**: a changed file no feature reaches. It is dead code, a feature nobody declared, or a
   reference no rule reads. Find out which before calling the change safe.
+- **What is really used** (JavaScript): after the file links, the syntax tree (tree-sitter, shipped in
+  `vendor/`) keeps the features that use what changed. Where a use cannot be followed the whole file
+  counts. With a commit range (`impact --diff`, the merge check) only the changed definitions count;
+  for a story or a list of files, any use of the file counts. If the parser cannot run, the answer says
+  features are counted by file links alone.
 - **Blind spots**: files of a kind no rule reads (binary, generated, an unsupported language), and
   references the rules do not understand (a path built at run time, dependency injection). The map
   never claims reach through them. When the blind share matters to a decision, say it in the answer.

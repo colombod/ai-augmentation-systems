@@ -2,6 +2,11 @@
 
 **Status:** proposed · **partly built**: the approach shipped, its safeguards did not
 
+> **2026-11-27, delivery 0.49.0:** the parser this decision could not install is now obtainable. The
+> owner asked for real code analysis ("tehre are tools like tree sitter that do this better") and
+> approved it. JavaScript is parsed with tree-sitter's WebAssembly build, shipped in `vendor/`, to
+> narrow reach to what is used; Python and workflows are still read as described here.
+
 > **Against what shipped (2026-10-30, delivery 0.39.0 to 0.41.2: #91, #93, #94, #96, #97):** lexical
 > scanners in `lib/codemap.js` read Python imports (resolved to repository files) and path mentions in
 > other files, as this ADR proposed. Not built: lexical state for Python strings, so an import-shaped

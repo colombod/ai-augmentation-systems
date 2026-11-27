@@ -37,3 +37,9 @@ The MIT License, as each project states it:
   FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
   OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
   DEALINGS IN THE SOFTWARE.
+
+## Vendored parser: vendor/tree-sitter
+
+web-tree-sitter 0.27.2 (web-tree-sitter.cjs, web-tree-sitter.wasm) and the grammar
+tree-sitter-javascript 0.25.0 (tree-sitter-javascript.wasm), from the public npm registry, unmodified,
+both MIT: see vendor/tree-sitter/LICENSE.web-tree-sitter and LICENSE.tree-sitter-javascript.

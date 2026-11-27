@@ -2,9 +2,11 @@
 // syntax tree (tree-sitter, vendor/tree-sitter), and reach from a feature's files to definitions.
 // Where a use cannot be followed (a module passed around as a value, a computed require, an export
 // this cannot name), the whole file is taken: reach is never narrowed on a guess.
-const fs = require('fs');
 const path = require('path');
+const { spawnSync } = require('child_process');
 const C = require('./codemap.js');
+
+const JS_FILE = /\.[cm]?js$/;
 
 const VENDOR = path.join(__dirname, '..', '..', 'vendor', 'tree-sitter');
 
@@ -44,6 +46,10 @@ function bindingsOf(d) {
   return out;
 }
 
+const FUNCTIONS = ['arrow_function', 'function_expression', 'function', 'generator_function', 'class', 'class_declaration', 'function_declaration'];
+// does evaluating this initializer run code now (a call or `new` outside a function body)?
+const runsAtLoad = (n) => Boolean(n) && !FUNCTIONS.includes(n.type) && (n.type === 'call_expression' || n.type === 'new_expression' || n.namedChildren.some(runsAtLoad));
+
 function parseFile(parser, text) {
   const tree = parser.parse(text);
   const defs = new Map(); // name -> [nodes]
@@ -52,6 +58,7 @@ function parseFile(parser, text) {
   const spans = []; // { from, to, sym }
   const moduleNodes = [];
   const topRequires = [];
+  const eager = new Set(); // definitions whose initializer runs when the file loads
   let openExports = false; // an export shape this cannot name
   const span = (n, sym) => spans.push({ from: n.startPosition.row + 1, to: n.endPosition.row + 1, sym });
   const define = (name, node, at = node) => { if (!defs.has(name)) defs.set(name, []); defs.get(name).push(node); span(at, name); };
@@ -80,7 +87,7 @@ function parseFile(parser, text) {
       for (const d of kids(n).filter((x) => x.type === 'variable_declarator')) {
         const b = bindingsOf(d);
         if (b) { for (const [name, to] of b) { bindings.set(name, to); span(outer, `<binding:${name}>`); } topRequires.push(b[0][1].spec); }
-        else if (d.childForFieldName('name').type === 'identifier') define(d.childForFieldName('name').text, d, outer);
+        else if (d.childForFieldName('name').type === 'identifier') { define(d.childForFieldName('name').text, d, outer); if (runsAtLoad(d.childForFieldName('value'))) eager.add(d.childForFieldName('name').text); }
         else moduleNodes.push(d);
       }
       return;
@@ -104,6 +111,13 @@ function parseFile(parser, text) {
       const local = new Map(bindings);
       const walk = (n) => {
         if (n.type === 'variable_declarator') { const b = bindingsOf(n); if (b) { for (const [name, to] of b) { local.set(name, to); uses.push({ spec: to.spec, name: '<module>' }); } return; } }
+        // the file's own export, called through module.exports (a test seam, or recursion by name)
+        if (n.type === 'member_expression' && /^(?:module\.)?exports$/.test(n.childForFieldName('object').text)) {
+          const to = exports.get(n.childForFieldName('property').text);
+          if (typeof to === 'string' && defs.has(to)) uses.push({ local: to });
+          else if (to) uses.push(to);
+          return;
+        }
         const spec = required(n);
         if (spec !== null) {
           if (spec === false) uses.push({ unknown: true });
@@ -128,10 +142,10 @@ function parseFile(parser, text) {
     return uses;
   };
   const uses = new Map([...defs].map(([name, nodes]) => [name, usesOf(nodes)]));
-  uses.set('<module>', [...usesOf(moduleNodes), ...topRequires.map((spec) => ({ spec, name: '<module>' }))]);
+  uses.set('<module>', [...usesOf(moduleNodes), ...topRequires.map((spec) => ({ spec, name: '<module>' })), ...[...eager].map((local) => ({ local }))]);
   const comments = new Set();
   (function walk(n) { if (n.type === 'comment') { for (let r = n.startPosition.row + 1; r <= n.endPosition.row + 1; r++) { const line = text.split('\n')[r - 1] || ''; if (/^\s*(\/\/|\/\*|\*)/.test(line)) comments.add(r); } return; } for (const c of n.namedChildren) walk(c); })(tree.rootNode);
-  const info = { uses, exports, openExports, bindings, spans, comments, lines: text.split('\n'), error: tree.rootNode.hasError };
+  const info = { eager, uses, exports, openExports, bindings, spans, comments, lines: text.split('\n'), error: tree.rootNode.hasError };
   tree.delete();
   return info;
 }
@@ -160,6 +174,8 @@ function changedSymbols(before, after, oldLines, newLines) {
       if (info.comments.has(n) || !String(info.lines[n - 1] || '').trim()) continue;
       const sym = symbolAt(info, n);
       if (sym !== '<exports>' && !sym.startsWith('<binding:')) out.add(sym);
+      // what runs on load reaches everyone who loads the file
+      if (info.eager.has(sym)) out.add('<module>');
     }
   }
   // an export removed or pointed elsewhere reaches who uses it
@@ -230,4 +246,60 @@ function touches(reached, file, syms) {
   return [...syms].some((s) => s === '<module>' || have.has(s));
 }
 
-module.exports = { loadParser, parseFile, changedSymbols, reach, touches, resolveSpec, symbolAt };
+const git = (repo, ...a) => {
+  const r = spawnSync('git', ['-C', repo, ...a], { encoding: 'utf8', maxBuffer: 1 << 28 });
+  if (r.status !== 0) throw new Error(`git ${a[0]}: ${String(r.stderr || '').trim().split('\n')[0]}`);
+  return r.stdout;
+};
+// parsed files, read as the walk asks for them
+function lazyParsed(parser, map) {
+  const cache = new Map();
+  return { get: (f) => { if (!cache.has(f)) cache.set(f, JS_FILE.test(f) && typeof map.texts[f] === 'string' ? parseFile(parser, map.texts[f]) : undefined); return cache.get(f); } };
+}
+
+// the definitions `from`..`to` changed in a file, or null for the whole file
+function diffSymbols(parser, repo, from, to, file) {
+  if (!JS_FILE.test(file)) return null;
+  let before; let after; let diff;
+  try {
+    before = parseFile(parser, git(repo, 'show', `${from}:${file}`));
+    after = parseFile(parser, git(repo, 'show', `${to}:${file}`));
+    diff = git(repo, 'diff', '-U0', '--no-renames', from, to, '--', `:(top,literal)${file}`);
+  } catch (err) { return null; } // added or removed: whole
+  const oldLines = []; const newLines = [];
+  for (const m of diff.matchAll(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/gm)) {
+    for (let i = 0; i < Number(m[2] === undefined ? 1 : m[2]); i++) oldLines.push(Number(m[1]) + i);
+    for (let i = 0; i < Number(m[4] === undefined ? 1 : m[4]); i++) newLines.push(Number(m[3]) + i);
+  }
+  // an unchanged file in this range: nothing is known about the change, so all of it
+  if (!oldLines.length && !newLines.length) return null;
+  return changedSymbols(before, after, oldLines, newLines);
+}
+
+// Which of `features` ([{ id, anchors }]) reach what changed in `paths` at map.sha, following what each
+// definition uses. With `from`, only the definitions changed between `from` and `to` count.
+async function touched({ repo, sha, from, to, paths, features }) {
+  const parser = await loadParser();
+  const map = C.buildMap(repo, sha);
+  const parsed = lazyParsed(parser, map);
+  const changes = paths.map((f) => [f, from ? diffSymbols(parser, repo, from, to || map.sha, f) : null]);
+  return features.filter((f) => { const r = reach(map, parsed, f.anchors); return changes.some(([file, syms]) => touches(r, file, syms)); }).map((f) => f.id);
+}
+
+// The same, from synchronous code: the parser loads asynchronously, so it runs in its own process.
+// { ids } or { error }; the caller keeps the file-level answer on an error.
+function narrow(request) {
+  const r = spawnSync(process.execPath, [__filename], { input: JSON.stringify(request), encoding: 'utf8', timeout: 60000, maxBuffer: 1 << 26 });
+  if (r.status !== 0) return { error: String((r.error && r.error.message) || r.stderr || 'the parser did not finish').trim().split('\n')[0].slice(0, 200) };
+  try { return { ids: JSON.parse(r.stdout) }; } catch (err) { return { error: 'the parser answered nothing readable' }; }
+}
+
+module.exports = { loadParser, parseFile, changedSymbols, reach, touches, resolveSpec, symbolAt, touched, narrow };
+
+if (require.main === module) {
+  let input = '';
+  process.stdin.on('data', (d) => { input += d; }).on('end', () => {
+    Promise.resolve().then(() => touched(JSON.parse(input))).then((ids) => process.stdout.write(JSON.stringify(ids)),
+      (err) => { process.stderr.write(`${err.message}\n`); process.exitCode = 1; });
+  });
+}
