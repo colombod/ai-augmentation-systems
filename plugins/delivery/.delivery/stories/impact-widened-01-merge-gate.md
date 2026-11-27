@@ -25,7 +25,8 @@ before the merge.
 1. `merge-gate.js check <pr>` warns, naming the features, when the pull request's changed files reach a
    feature that no story on the pull request lists in its Impact decisions, with the new N/M share.
 2. At 50% or more the warning says the owner decides before the merge. It never refuses a merge.
-3. Where it cannot compare (no story, commit not available), it says the impact was not checked.
+3. A deleted or renamed file counts for the features that reached it before.
+4. Where it cannot compare (no story, commit not available), it says the impact was not checked.
 
 ## Files and modules
 

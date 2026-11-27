@@ -85,7 +85,7 @@ function reachOf(root, paths, ref = 'HEAD') {
     const planned = F.plannedFor(feats, r.unknown);
     const hit = new Set([...r.reached.map((f) => f.id), ...planned.flatMap((p) => p.features.map((f) => f.id))]);
     const uncounted = [...r.unknown.filter((p) => !planned.some((x) => x.path === p)), ...r.ambiguous.map((a) => a.path)];
-    return { sha: r.sha, live: { reached: live.filter((id) => hit.has(id)), total: live.length, counted: r.changed.length + planned.length, uncounted }, features: r.reached.map((f) => ({ id: f.id, hops: f.hops })), hubs: r.hubs.map((h) => h.path), unreached: r.unreached.map((u) => u.path), unknown: r.unknown };
+    return { sha: r.sha, live: { reached: live.filter((id) => hit.has(id)), ids: live, total: live.length, counted: r.changed.length + planned.length, uncounted }, features: r.reached.map((f) => ({ id: f.id, hops: f.hops })), hubs: r.hubs.map((h) => h.path), unreached: r.unreached.map((u) => u.path), unknown: r.unknown };
   } catch (err) {
     return { error: String(err.message).split('\n')[0] };
   }

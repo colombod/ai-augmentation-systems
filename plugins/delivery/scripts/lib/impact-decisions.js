@@ -71,7 +71,8 @@ function evidenceProblem(row, { root, storyText, ownerRecord }) {
 // what its changed files reach at its head; texts: its stories. A widened impact is told, not refused.
 function widened({ pr, reach, texts }) {
   if (reach.error) return `impact of PR ${pr} not checked: ${reach.error}`;
-  const reached = reach.features.map((x) => x.id);
+  // both: what the files reach, and the live features that only claim a new file by their anchors
+  const reached = [...new Set([...reach.features.map((x) => x.id), ...reach.live.reached])];
   const listed = new Set(texts.flatMap((t) => (parseTable(t, reached) || []).flatMap((r) => r.ids)));
   const added = reached.filter((id) => !listed.has(id));
   const { reached: live, total, uncounted = [] } = reach.live;

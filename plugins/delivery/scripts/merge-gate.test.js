@@ -110,22 +110,46 @@ test('merge-gate check warns when the pull request reaches a feature its story d
   const story = path.join(h.root, '.delivery', 'stories', 'vault-0n9-3.md');
   fs.appendFileSync(story, '\n## Impact decisions\n\n| Feature | Decision | Relation | Evidence |\n| - | - | - | - |\n| import | accept | extends | src/import.js:1 read |\n');
   git('add', '-A'); git('commit', '-qm', 'x');
-  const head = git('rev-parse', 'HEAD');
-  const changes = (...paths) => h.setPr(478, (p) => { p.headRefOid = head; p.files = paths.map((x) => ({ path: x, additions: 1, deletions: 0 })); p.body = `Refs ${BEAD}\nDoc-impact: none (a test fixture)`; });
-  changes('src/import.js');
-  h.review('delivery-lead', 'request 478 --reviewer builder-2');
-  assert.equal(h.pass('builder-2', head).code, 0);
-  const listed = h.gate('delivery-lead', 'check 478');
-  assert.equal(listed.code, 0, listed.out);
-  assert.doesNotMatch(listed.out, /do not list|impact of PR/);
-  changes('src/import.js', 'src/export.js');
-  const wider = h.gate('delivery-lead', 'check 478');
-  assert.equal(wider.code, 0, wider.out);
-  assert.match(wider.out, /warning: PR 478 reaches 1 feature its stories do not list: export\. Live features affected: 2\/2; its stories list 1 of those\. That is 50% or more: the owner decides before this merge/);
-  h.setPr(478, (p) => { p.headRefOid = H2; });
-  h.review('delivery-lead', 'request 478 --reviewer builder-2');
-  h.pass('builder-2', H2);
-  assert.match(h.gate('delivery-lead', 'check 478').out, /warning: impact of PR 478 not checked: commit b2c3d4e5f607 is not in /);
+  const base = git('branch', '--show-current');
+  // a pull request's branch: one change on top of the base
+  const branch = (name, change) => { git('checkout', '-q', '-b', name, base); change(); git('add', '-A'); git('commit', '-qm', name); const sha = git('rev-parse', 'HEAD'); git('checkout', '-q', base); return sha; };
+  const edit = (...files) => () => { for (const f of files) fs.writeFileSync(path.join(product, f), `// ${f}\n`); };
+  const checkAt = (sha, over = {}) => {
+    h.setPr(478, (p) => { Object.assign(p, { headRefOid: sha, baseRefName: base, files: [{ path: 'src/import.js', additions: 1, deletions: 0 }], body: `Refs ${BEAD}\nDoc-impact: none (a test fixture)`, ...over }); });
+    h.review('delivery-lead', 'request 478 --reviewer builder-2');
+    assert.equal(h.pass('builder-2', sha).code, 0);
+    const g = h.gate('delivery-lead', 'check 478');
+    assert.equal(g.code, 0, g.out);
+    return g.out;
+  };
+  assert.doesNotMatch(checkAt(branch('listed', edit('src/import.js'))), /do not list|impact of PR/);
+  // the changed files are read from git, whatever gh lists
+  assert.match(checkAt(branch('wider', edit('src/import.js', 'src/export.js'))), /warning: PR 478 reaches 1 feature its stories do not list: export\. Live features affected: 2\/2; its stories list 1 of those\. That is 50% or more: the owner decides before this merge/);
+  // removed and renamed files are mapped where they still exist
+  for (const sha of [branch('removes', () => git('rm', '-q', 'src/export.js')), branch('renames', () => git('mv', 'src/export.js', 'src/other.js'))]) {
+    assert.match(checkAt(sha), /do not list: export\. Live features affected: 1\/2; its stories list 0 of those\./);
+  }
+  assert.match(checkAt(H2), /warning: impact of PR 478 not checked: commit b2c3d4e5f607 is not in /);
+  // without the base, the listed files are read, and what that misses is said
+  const lost = checkAt(branch('nobase', edit('src/export.js')), { baseRefName: 'gone', files: Array.from({ length: 100 }, () => ({ path: 'src/export.js', additions: 1, deletions: 0 })) });
+  assert.match(lost, /do not list: export\..*The base gone was not found, so deleted and renamed files were not checked\. Only the first 100 changed files were read\./);
+  // a head only the product's remote has is fetched
+  const remote = fs.mkdtempSync(path.join(require('os').tmpdir(), 'impact-origin-'));
+  execFileSync('git', ['clone', '-q', product, remote]);
+  const there = (...x) => execFileSync('git', ['-C', remote, '-c', 'user.email=t@t', '-c', 'user.name=t', ...x], { encoding: 'utf8' }).trim();
+  there('config', 'uploadpack.allowAnySHA1InWant', 'true');
+  there('checkout', '-q', '-b', 'only', `origin/${base}`); there('rm', '-q', 'src/export.js'); there('commit', '-qm', 'remote only');
+  const only = there('rev-parse', 'HEAD');
+  there('checkout', '-q', base);
+  git('remote', 'add', 'origin', remote);
+  assert.match(checkAt(only), /do not list: export\./);
+});
+
+test('merge-gate check says the impact was not checked when no story file is recorded', () => {
+  const h = setup();
+  fs.rmSync(path.join(h.root, '.delivery', 'stories', 'vault-0n9-3.md'));
+  const gate = mergeGate.impactStep('478', { files: [] }, 'a'.repeat(40), [{ type: 'request', beads: [BEAD] }], { root: h.root, bd: { show: () => ({ metadata: { story_file: 'vault-0n9-3.md' } }) } });
+  assert.match(gate, /not checked: no story file is recorded for it\. Story file vault-0n9-3\.md was not read\./);
 });
 
 test('a reviewed, green change users can see is refused at the gate and the merge until its description carries a doc-impact line', () => {

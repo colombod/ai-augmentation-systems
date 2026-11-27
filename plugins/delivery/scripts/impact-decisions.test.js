@@ -43,6 +43,8 @@ test('impact: a pull request that reaches more than its stories list is told, wi
   assert.match(one, /^PR 7 reaches 1 feature its stories do not list: x:y\. Live features affected: 1\/4; its stories list 1 of those\./);
   assert.doesNotMatch(one, /50%/);
   assert.match(ID.widened({ pr: 7, reach: r(['a', 'b'], ['a', 'b']), texts: [story] }), /2\/4; its stories list 1 of those\. That is 50% or more: the owner decides before this merge/);
+  // a live feature that only claims a new file is told too
+  assert.match(ID.widened({ pr: 7, reach: r(['a'], ['a', 'c']), texts: [story] }), /do not list: c\./);
   // any story on the pull request can list a feature
   assert.equal(ID.widened({ pr: 7, reach: r(['a', 'b'], ['a', 'b']), texts: [story, table('| b | accept | none | x.js:1 |')] }), null);
   assert.match(ID.widened({ pr: 7, reach: r(['a'], ['a'], { uncounted: ['gone.js'] }), texts: [story] }), /only partly checked\. Not counted: gone\.js/);
