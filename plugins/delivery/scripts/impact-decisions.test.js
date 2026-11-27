@@ -19,6 +19,18 @@ test('impact: no table blocks a story that reaches features; unknown reach warns
   assert.deepEqual(codes('# story', { features: [] }), []);
 });
 
+test('impact: the share of live features is said, and 50% or more is a warning for the owner', () => {
+  const of = (n, total) => ID.share({ features: [], live: { reached: ['a', 'b', 'c'].slice(0, n), total } });
+  assert.equal(of(1, 3).line, 'Impact: 1/3 live features affected: a');
+  assert.deepEqual(of(1, 3).findings, []);
+  assert.equal(of(0, 2).line, 'Impact: 0/2 live features affected');
+  for (const [n, total] of [[1, 2], [2, 3], [3, 3]]) assert.deepEqual(of(n, total).findings.map((f) => `${f.level}:${f.code}`), ['warn:impact-large'], `${n}/${total}`);
+  assert.match(of(1, 2).findings[0].detail, /1\/2 live features affected: a\. That is 50% or more: the owner decides/);
+  assert.match(of(0, 0).line, /no live feature is declared/);
+  assert.deepEqual(of(0, 0).findings, []);
+  assert.deepEqual(ID.share({ error: 'no map' }), { line: '', findings: [] });
+});
+
 test('impact: every reached feature needs one decision with evidence', () => {
   assert.deepEqual(codes(table('| billing | accept | extends | src/bill.js:12 reads only |', '| tax | accept | none | src/tax.js:3 untouched |')), []);
   assert.deepEqual(codes(table('| billing | accept | extends | src/bill.js:12 |')), ['block:impact-missing']);

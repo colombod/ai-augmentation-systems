@@ -21,7 +21,7 @@ const A = require('./lib/assumptions.js');
 const ID = require('./lib/impact-decisions.js');
 
 // the warnings a ready check raises; --record resolves the ones it no longer finds
-const READY_KINDS = ['owners-ask', 'surface-missing', 'surface-unnamed', 'placeholder', 'no-criteria', 'mechanism', 'probe', 'reality-check-required', 'measurement-plan', 'shippable-unit', 'shippable-judge', 'not-ready', 'child-scope', 'assumption-unobserved', 'spike-unacked', 'assumption-refuted', 'assumption-unverified', 'impact-undecided'];
+const READY_KINDS = ['owners-ask', 'surface-missing', 'surface-unnamed', 'placeholder', 'no-criteria', 'mechanism', 'probe', 'reality-check-required', 'measurement-plan', 'shippable-unit', 'shippable-judge', 'not-ready', 'child-scope', 'assumption-unobserved', 'spike-unacked', 'assumption-refuted', 'assumption-unverified', 'impact-undecided', 'impact-large'];
 
 const USAGE = 'usage: ready.js <bead> [--record [--owner-record dec-...]] [--json] | ready.js --story <file> [--initiative <slug>]';
 
@@ -48,7 +48,7 @@ function render(id, findings, extra, json) {
   if (json) return JSON.stringify({ id, ready: !findings.some((f) => f.level === 'block'), findings, ...extra }, null, 2);
   const blocks = findings.filter((f) => f.level === 'block');
   const head = blocks.length ? `${id}: not ready (${blocks.length} divergence(s))` : `${id}: ready${findings.length ? ` with ${findings.length} warning(s)` : ''}`;
-  return [head, ...findings.map((f) => `  ${f.level} ${f.rule} ${f.code}: ${f.detail}${f.warning ? ` [${f.warning}]` : ''}`), ...(extra.recorded ? [`  recorded criteria hash ${extra.recorded}`] : [])].join('\n');
+  return [head, ...findings.map((f) => `  ${f.level} ${f.rule} ${f.code}: ${f.detail}${f.warning ? ` [${f.warning}]` : ''}`), ...(extra.impact ? [`  ${extra.impact}`] : []), ...(extra.recorded ? [`  recorded criteria hash ${extra.recorded}`] : [])].join('\n');
 }
 
 // What the story's "Files and modules" reach, at the project's HEAD: { sha, features: [{ id, hops }],
@@ -72,8 +72,11 @@ function storyReach(root, text) {
     const C = require('./lib/codemap.js');
     const F = require('./lib/features.js');
     const map = C.buildMap(root, 'HEAD');
-    const r = F.impact(map, F.featuresOf(map), paths);
-    return { sha: r.sha, features: r.reached.map((f) => ({ id: f.id, hops: f.hops })), hubs: r.hubs.map((h) => h.path), unreached: r.unreached.map((u) => u.path), unknown: r.unknown };
+    const feats = F.featuresOf(map);
+    const r = F.impact(map, feats, paths);
+    // live: the declared features that have code at this commit; derived entry points are not counted
+    const live = (f) => f.kind === 'declared' && f.anchors.length;
+    return { sha: r.sha, live: { reached: r.reached.filter((f) => f.kind === 'declared').map((f) => f.id), total: feats.filter(live).length }, features: r.reached.map((f) => ({ id: f.id, hops: f.hops })), hubs: r.hubs.map((h) => h.path), unreached: r.unreached.map((u) => u.path), unknown: r.unknown };
   } catch (err) {
     return { error: String(err.message).split('\n')[0] };
   }
@@ -84,6 +87,8 @@ function reachLines(r) {
   const lines = [`Reach at ${r.sha.slice(0, 12)}: ${r.features.length ? r.features.map((f) => `${f.id} (${f.hops} hop${f.hops === 1 ? '' : 's'})`).join(', ') : 'no feature'} (map.js impact --story for the chains)`];
   if (r.hubs.length) lines.push(`Reach: touches a hub (${r.hubs.join(', ')}): a change there reaches most of the product`);
   if (r.unreached.length) lines.push(`Reach: no feature reaches ${r.unreached.join(', ')}`);
+  const { line } = ID.share(r);
+  if (line) lines.push(line);
   return lines.join('\n');
 }
 
@@ -108,7 +113,7 @@ async function main(argv, { cwd = process.cwd(), env = process.env, bd, now, ver
     // decided (R-35); a fault in the map reads reach-not-computed
     const storyText = fs.readFileSync(path.resolve(cwd, a.story), 'utf8');
     const reach = storyReach(productRepo(who), storyText);
-    findings.push(...ID.check({ text: storyText, reach, root: who.root, ownerRecord: (rid) => require('./lib/gate-context.js').ownerRecord(who.root, rid, verifyRecord) }));
+    findings.push(...ID.check({ text: storyText, reach, root: who.root, ownerRecord: (rid) => require('./lib/gate-context.js').ownerRecord(who.root, rid, verifyRecord) }), ...ID.share(reach).findings);
     const out = render(path.basename(a.story), findings, { hash: G.storyHash(story) }, a.flags.has('json'));
     return { code: findings.some((f) => f.level === 'block') ? 1 : 0, out: a.flags.has('json') ? JSON.stringify({ ...JSON.parse(out), reach }) : `${out}\n${reachLines(reach)}` };
   }
@@ -131,8 +136,10 @@ async function main(argv, { cwd = process.cwd(), env = process.env, bd, now, ver
   const sf = (bead.metadata || {}).story_file;
   let storyText = '';
   try { storyText = fs.readFileSync(path.join(who.root, '.delivery', 'stories', String(sf)), 'utf8'); } catch (err) { storyText = ''; }
-  findings.push(...ID.check({ text: storyText, reach: storyReach(productRepo(who), storyText), root: who.root, ownerRecord: (rid) => require('./lib/gate-context.js').ownerRecord(who.root, rid, verifyRecord) }));
-  const extra = {};
+  const reach = storyReach(productRepo(who), storyText);
+  const impact = ID.share(reach);
+  findings.push(...ID.check({ text: storyText, reach, root: who.root, ownerRecord: (rid) => require('./lib/gate-context.js').ownerRecord(who.root, rid, verifyRecord) }), ...impact.findings);
+  const extra = impact.line ? { impact: impact.line } : {};
   if (record && !findings.some((f) => f.level === 'block')) {
     const wp = writerProblem(who);
     if (wp) return { code: 1, out: `ready.js: ${wp}` };

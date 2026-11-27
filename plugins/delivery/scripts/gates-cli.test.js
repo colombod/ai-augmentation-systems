@@ -137,6 +137,33 @@ test('ready.js --record never marks a story ready while a feature it reaches has
   assert.ok(bead().metadata.ready_hash, 'decided, so stamped');
 });
 
+test('ready.js says how many live features a story affects, warns at half, and records the warning', async () => {
+  const story = `${STORY}\n## Files and modules\n\n| Path | What to do |\n| :-- | :-- |\n| \`src/a.js\` | modify |\n\n## Impact decisions\n\n| Feature | Decision | Relation | Evidence |\n| - | - | - | - |\n| alpha | accept | extends | src/a.js:1 read |\n`;
+  const { root, bd } = setup({ story });
+  fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+  for (const n of ['a', 'b', 'c']) fs.writeFileSync(path.join(root, 'src', `${n}.js`), '');
+  const declare = (ids) => fs.writeFileSync(path.join(root, '.delivery', 'features.json'), JSON.stringify({ features: ids.map(([id, n]) => ({ id, name: id, anchors: [`src/${n}.js`] })) }));
+  const g = (...x) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...x], { cwd: root, stdio: 'ignore' });
+  // a declared feature whose code is gone is not live: it is not counted
+  declare([['alpha', 'a'], ['beta', 'b'], ['gone', 'zz']]);
+  g('init', '-q'); g('add', '-A'); g('commit', '-qm', 'x');
+  const file = path.join(root, '.delivery', 'stories', 'vault-0n9-3.md');
+  const check = () => ready.main(['--story', file, '--initiative', 'vault', '--project', root], { cwd: root, env });
+  const half = await check();
+  assert.equal(half.code, 0, half.out);
+  assert.match(half.out, /\nImpact: 1\/2 live features affected: alpha/);
+  assert.match(half.out, /warn R-35 impact-large: 1\/2/);
+  const rec = await ready.main([ID, '--record'], { cwd: root, env, bd, now: NOW, who: whoFor(root, 'delivery-lead') });
+  assert.equal(rec.code, 0, rec.out);
+  assert.match(rec.out, /\n {2}Impact: 1\/2 live features affected: alpha/);
+  assert.ok(W.list(root).some((w) => w.kind === 'impact-large'), 'the warning is kept');
+  declare([['alpha', 'a'], ['beta', 'b'], ['delta', 'c']]);
+  g('add', '-A'); g('commit', '-qm', 'three');
+  const third = await check();
+  assert.match(third.out, /Impact: 1\/3 live features affected: alpha/);
+  assert.doesNotMatch(third.out, /impact-large/);
+});
+
 // a team whose code lives apart from the planning repository: the role's product checkout is mapped
 test('ready.js --story maps the role\'s product checkout, not the planning repository', async () => {
   const story = `${STORY}\n## Files and modules\n\n| Path | What to do |\n| :-- | :-- |\n| \`p/scripts/run.js\` | modify |\n`;

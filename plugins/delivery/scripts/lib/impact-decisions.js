@@ -8,6 +8,19 @@ const path = require('path');
 
 const DECISIONS = ['guard', 'decommission', 'accept'];
 const RELATIONS = ['extends', 'conflicts', 'duplicates', 'supersedes', 'none'];
+// the share of live features at which an impact is large (the owner's number)
+const LARGE = 0.5;
+
+// reach.live: { reached: [ids], total }, the declared features a story affects out of those shipped.
+// Empty when the reach is unknown: a share is never guessed.
+function share(reach) {
+  if (!reach || reach.error || !reach.live) return { line: '', findings: [] };
+  const { reached, total } = reach.live;
+  if (!total) return { line: 'Impact: no live feature is declared in .delivery/features.json, so no share', findings: [] };
+  const said = `${reached.length}/${total} live features affected${reached.length ? `: ${reached.join(', ')}` : ''}`;
+  const large = reached.length / total >= LARGE;
+  return { line: `Impact: ${said}`, findings: large ? [{ level: 'warn', rule: 'R-35', code: 'impact-large', detail: `${said}. That is ${LARGE * 100}% or more: the owner decides whether to take on all that work or prune first` }] : [] };
+}
 
 // rows of the table under "## Impact decisions": | feature(s) | decision | relation | evidence |
 // `known` holds the reached feature ids: a declared id may contain spaces, so a known id is read
@@ -83,4 +96,4 @@ function check({ text, reach, root, ownerRecord }) {
   return out;
 }
 
-module.exports = { parseTable, check, DECISIONS, RELATIONS };
+module.exports = { parseTable, check, share, DECISIONS, RELATIONS, LARGE };
