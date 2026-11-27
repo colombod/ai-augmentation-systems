@@ -12,8 +12,10 @@ const table = (...rows) => `## Impact decisions\n\n| Feature | Decision | Relati
 const ok = (rid) => ({ ok: /^dec-/.test(rid), why: `${rid} does not verify` });
 const codes = (text, r = reach, extra = {}) => ID.check({ text, reach: r, root: os.tmpdir(), ownerRecord: ok, ...extra }).map((f) => `${f.level}:${f.code}`);
 
-test('impact: no table is a warning, never a block; and nothing reached needs nothing', () => {
-  assert.deepEqual(codes('# story'), ['warn:impact-undecided']);
+test('impact: no table blocks a story that reaches features; unknown reach warns; nothing reached needs nothing', () => {
+  assert.deepEqual(codes('# story'), ['block:impact-undecided']);
+  assert.match(ID.check({ text: '# story', reach, root: os.tmpdir() })[0].detail, /billing, tax are reached/);
+  assert.deepEqual(codes('# story', { error: 'no map' }), ['warn:impact-undecided']);
   assert.deepEqual(codes('# story', { features: [] }), []);
 });
 

@@ -49,7 +49,13 @@ function check({ text, reach, root, ownerRecord }) {
   const f = (level, code, detail) => ({ level, rule: 'R-35', code, detail });
   const rows = parseTable(text);
   const reached = reach && !reach.error ? reach.features : [];
-  if (!rows) return reach && !reach.error && !reached.length ? [] : [f('warn', 'impact-undecided', 'no "## Impact decisions" table: what this story does to the features it reaches is undecided')];
+  if (!rows) {
+    // a story known to reach features is not ready until each is decided; with no computed reach
+    // there is nothing to name, so it stays a warning
+    if (reach && !reach.error && !reached.length) return [];
+    if (!reached.length) return [f('warn', 'impact-undecided', 'no "## Impact decisions" table and the reach is not known: what this story does to existing features is undecided')];
+    return [f('block', 'impact-undecided', `no "## Impact decisions" table: ${reached.map((x) => x.id).join(', ')} ${reached.length === 1 ? 'is' : 'are'} reached and undecided`)];
+  }
   if (reach && reach.error) return [f('block', 'impact-reach', `the reach was not computed (${reach.error}); missing evidence is never a pass`)];
   const out = [];
   const seen = new Map();
