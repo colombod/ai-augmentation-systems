@@ -45,3 +45,12 @@ a gerat solid number", and "8/8 is more precise and readable".
 | delivery:stories | guard | extends | plugins/delivery/scripts/gates-cli.test.js |
 | standing-team-runtime | guard | extends | plugins/delivery/scripts/gates-cli.test.js |
 | delivery:role:delivery-lead | accept | extends | plugins/delivery/roles/delivery-lead.md:48 reports what ready.js prints, unchanged |
+| verified-shipping, beads-work-queue, decision-record, delivery:architecture, delivery:realign, delivery:roadmap, delivery:role:builder, delivery:role:chief-of-staff, delivery:role:product-manager, delivery:role:reality-checker, delivery:role:spike-researcher, delivery:sprint, delivery:status, delivery:team, run-a-sprint, delivery:decision, delivery:materialise, delivery:role:host-manager, delivery:role:progress-observer, delivery:sprint-review, delivery:start, ci:delivery-tests, delivery:agent:pr-reviewer, feature-map, independent-review, delivery:role:staffing | accept | none | plugins/delivery/scripts/lib/warnings.js:90 is the only function changed in that file, and its only caller is plugins/delivery/scripts/ready.js:169; read 2026-11-27, after the merge |
+
+## Owner decision on the large impact
+
+Recorded after the merge of #256, which should have waited for it. With the review fix in
+`scripts/lib/warnings.js` this story reads 8/8 live features. Asked on 2026-11-27 to "keep" the change
+or "revert" the warning log fix, the owner answered, verbatim:
+
+"keep"
