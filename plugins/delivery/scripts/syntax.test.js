@@ -11,7 +11,8 @@ const C = require('./lib/codemap.js');
 const F = require('./lib/features.js');
 
 // fixtures say req('x') for a relative require, so this file names no path that is not there
-const code = (text) => text.replace(/\breq\('(\w+)'\)/g, (m, f) => `${'require'}('./${f}.js')`);
+// (bare('x') is a require written exactly as given)
+const code = (text) => text.replace(/\breq\('(\w+)'\)/g, (m, f) => `${'require'}('./${f}.js')`).replace(/\bbare\(/g, `${'require'}(`);
 function product(files, features) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'syntax-'));
   const g = (...a) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...a], { cwd: root, encoding: 'utf8' }).trim();
@@ -58,6 +59,32 @@ test('syntax: where a use cannot be followed the whole file counts, and what run
   assert.deepEqual(run(eager, "req('lib').f();\n", eager.replace('(x) => x', '(x) => x + 1')), ['u'], 'an initializer that runs on load');
   const seam = "function ok() { return 1; }\nfunction f() { return module.exports.ok(); }\nmodule.exports = { f, ok };\n";
   assert.deepEqual(run(seam, "req('lib').f();\n", seam.replace('return 1', 'return 2')), ['u'], 'its own export, called by name');
+});
+
+// each of these was once dropped by the narrowing (the review of #259), or could be
+test('syntax: a feature a change affects is never dropped, whatever the shape of the code', () => {
+  // [what, the files, the change]: feature u starts at src/u.js
+  const cases = [
+    ['an ES import', { 'src/lib.js': 'export function f() { return 1; }\n', 'src/u.js': "import { f } from './lib.js';\nf();\n" }, { 'src/lib.js': 'export function f() { return 2; }\n' }],
+    ['an ES re-export', { 'src/lib.js': 'export function f() { return 1; }\n', 'src/mid.js': "export { f } from './lib.js';\n", 'src/u.js': "import { f } from './mid.js';\nf();\n" }, { 'src/lib.js': 'export function f() { return 2; }\n' }],
+    ['a dynamic import', { 'src/lib.js': 'export const a = 1;\n', 'src/u.js': "async function go() { await import('./lib.js'); }\ngo();\n" }, { 'src/lib.js': 'export const a = 2;\n' }],
+    ['an extensionless require of a .ts file', { 'src/lib.ts': 'export const a = 1;\n', 'src/u.js': "bare('./lib');\n" }, { 'src/lib.ts': 'export const a = 2;\n' }],
+    ['code after a comment on its line', { 'src/lib.js': '/** @type {number} */ const T = 5;\nfunction f() { return T; }\nmodule.exports = { f };\n', 'src/u.js': "req('lib').f();\n" }, { 'src/lib.js': '/** @type {number} */ const T = 1;\nfunction f() { return T; }\nmodule.exports = { f };\n' }],
+    ['a call through this', { 'src/lib.js': 'module.exports = {\n  a() { return this.b(); },\n  b() { return 1; },\n};\n', 'src/u.js': "req('lib').a();\n" }, { 'src/lib.js': 'module.exports = {\n  a() { return this.b(); },\n  b() { return 2; },\n};\n' }],
+    ['a computed export', { 'src/lib.js': 'exports.run = (c) => exports[c]();\nexports.build = () => 1;\n', 'src/u.js': "req('lib').run('build');\n" }, { 'src/lib.js': 'exports.run = (c) => exports[c]();\nexports.build = () => 2;\n' }],
+    ['an export assigned from a call', { 'src/lib.js': 'function reg() { return 1; }\nexports.tok = reg();\nexports.get = () => 0;\n', 'src/u.js': "req('lib').get();\n" }, { 'src/lib.js': 'function reg() { return 2; }\nexports.tok = reg();\nexports.get = () => 0;\n' }],
+    ['a static field', { 'src/lib.js': 'function init() { return 1; }\nclass A { static s = init(); }\nexports.get = () => 0;\n', 'src/u.js': "req('lib').get();\n" }, { 'src/lib.js': 'function init() { return 2; }\nclass A { static s = init(); }\nexports.get = () => 0;\n' }],
+    ['a removed side-effect require', { 'src/setup.js': "process.title = 's';\n", 'src/lib.js': "const _s = req('setup');\nfunction f() {}\nmodule.exports = { f };\n", 'src/u.js': "req('lib').f();\n" }, { 'src/lib.js': 'function f() {}\nmodule.exports = { f };\n' }],
+    ['module.require', { 'src/lib.js': 'exports.a = 1;\n', 'src/u.js': "module.bare('./lib.js');\n" }, { 'src/lib.js': 'exports.a = 2;\n' }],
+    ['an export pointed elsewhere', { 'src/lib.js': 'function a() {}\nfunction b() {}\nmodule.exports = { g: a, b };\n', 'src/u.js': "req('lib').g();\n" }, { 'src/lib.js': 'function a() {}\nfunction b() {}\nmodule.exports = { g: b, b };\n' }],
+    ['a require pointed elsewhere', { 'src/a.js': 'exports.v = 1;\n', 'src/b.js': 'exports.v = 2;\n', 'src/lib.js': "const D = req('a');\nfunction f() { return D.v; }\nmodule.exports = { f };\n", 'src/u.js': "req('lib').f();\n" }, { 'src/lib.js': "const D = req('b');\nfunction f() { return D.v; }\nmodule.exports = { f };\n" }],
+    ['a re-exported require', { 'src/deep.js': 'function f() { return 1; }\nmodule.exports = { f };\n', 'src/lib.js': "const { f } = req('deep');\nmodule.exports = { f };\n", 'src/u.js': "req('lib').f();\n" }, { 'src/deep.js': 'function f() { return 2; }\nmodule.exports = { f };\n' }],
+    ['a spread export', { 'src/deep.js': 'exports.f = () => 1;\n', 'src/lib.js': "module.exports = { ...req('deep') };\n", 'src/u.js': "req('lib').f();\n" }, { 'src/deep.js': 'exports.f = () => 2;\n' }],
+    ['state written in one function and read in another', { 'src/lib.js': "let h = null;\nfunction set() { h = () => 1; }\nfunction get() { return h && h(); }\nmodule.exports = { set, get };\n", 'src/u.js': "req('lib').get();\n" }, { 'src/lib.js': "let h = null;\nfunction set() { h = () => 2; }\nfunction get() { return h && h(); }\nmodule.exports = { set, get };\n" }],
+    ['a script run as main', { 'src/lib.js': 'function main() { return 1; }\nif (require.main === module) main();\n', 'src/u.js': "const path = bare('path');\nconst p = path.join(__dirname, 'lib.js');\n" }, { 'src/lib.js': 'function main() { return 2; }\nif (require.main === module) main();\n' }],
+    ['a file with a syntax error', { 'src/lib.js': 'function f() { return 1; }\nmodule.exports = { f };\n', 'src/u.js': "req('lib');\n)(\n" }, { 'src/lib.js': 'function f() { return 2; }\nmodule.exports = { f };\n' }],
+  ];
+  for (const [what, files, change] of cases) assert.deepEqual(product(files, [['u', 'src/u.js']]).ids(null, change), ['u'], what);
 });
 
 test('syntax: when the parser cannot answer, the file links stand and it is said', () => {

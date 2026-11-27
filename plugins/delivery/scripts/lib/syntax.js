@@ -1,7 +1,8 @@
 // scripts/lib/syntax.js — what each top-level definition of a JavaScript file uses, read from its
 // syntax tree (tree-sitter, vendor/tree-sitter), and reach from a feature's files to definitions.
-// Where a use cannot be followed (a module passed around as a value, a computed require, an export
-// this cannot name), the whole file is taken: reach is never narrowed on a guess.
+// It narrows only what it understands: CommonJS with literal requires and named exports. A file using
+// anything else (ES modules, `this` outside a class, computed or aliased require and exports, eval, a
+// syntax error) is opaque: it counts whole, by the map's own file links, as if never parsed.
 const path = require('path');
 const { spawnSync } = require('child_process');
 const C = require('./codemap.js');
@@ -11,7 +12,8 @@ const JS_FILE = /\.[cm]?js$/;
 const VENDOR = path.join(__dirname, '..', '..', 'vendor', 'tree-sitter');
 
 async function loadParser() {
-  const { Parser, Language } = require(path.join(VENDOR, 'web-tree-sitter.cjs'));
+  // written literally, so the map sees the link
+  const { Parser, Language } = require('../../vendor/tree-sitter/web-tree-sitter.cjs');
   await Parser.init({ locateFile: (f) => path.join(VENDOR, f) });
   const parser = new Parser();
   parser.setLanguage(await Language.load(path.join(VENDOR, 'tree-sitter-javascript.wasm')));
@@ -48,7 +50,52 @@ function bindingsOf(d) {
 
 const FUNCTIONS = ['arrow_function', 'function_expression', 'function', 'generator_function', 'class', 'class_declaration', 'function_declaration'];
 // does evaluating this initializer run code now (a call or `new` outside a function body)?
-const runsAtLoad = (n) => Boolean(n) && !FUNCTIONS.includes(n.type) && (n.type === 'call_expression' || n.type === 'new_expression' || n.namedChildren.some(runsAtLoad));
+const RUNS = ['call_expression', 'new_expression', 'await_expression', 'assignment_expression', 'augmented_assignment_expression', 'update_expression'];
+function runsAtLoad(n) {
+  if (!n) return false;
+  if (n.type === 'variable_declarator') return runsAtLoad(n.childForFieldName('value'));
+  if (n.type === 'class_declaration' || n.type === 'class') {
+    return n.namedChildren.some((c) => (c.type === 'class_heritage' && runsAtLoad(c))
+      || (c.type === 'class_body' && c.namedChildren.some((m) => m.type === 'class_static_block' || (m.type === 'field_definition' && m.children.some((x) => x.type === 'static') && runsAtLoad(m.childForFieldName('value'))))));
+  }
+  if (FUNCTIONS.includes(n.type) || n.type === 'method_definition') return false;
+  return RUNS.includes(n.type) || n.namedChildren.some(runsAtLoad);
+}
+
+const isExports = (n) => Boolean(n) && /^(?:module\.exports|exports)$/.test(n.text) && (n.type === 'identifier' || n.type === 'member_expression');
+const field = (n, name) => n.childForFieldName(name);
+const same = (a, b) => Boolean(a && b) && a.id === b.id;
+
+// why a file cannot be narrowed, or null. `topAssigns`: the ids of the top-level export assignments.
+function opaqueBecause(root, topAssigns) {
+  let why = null;
+  (function walk(n, inClass) {
+    if (why) return;
+    const p = n.parent;
+    if (n.type === 'import_statement' || n.type === 'export_statement' || n.type === 'import') why = 'ES module syntax';
+    else if (n.type === 'this' && !inClass) why = 'this outside a class';
+    else if (n.type === 'with_statement') why = 'with';
+    else if (n.type === 'identifier' && (n.text === 'eval' || n.text === 'Function') && p && (same(field(p, 'function'), n) || same(field(p, 'constructor'), n))) why = 'code built at run time';
+    else if (n.type === 'identifier' && n.text === 'require') {
+      const called = p && p.type === 'call_expression' && same(field(p, 'function'), n);
+      if (called) { const a = field(p, 'arguments').namedChildren[0]; if (!a || a.type !== 'string') why = 'a computed require'; }
+      else if (!(p && p.type === 'member_expression' && field(p, 'property').text === 'main')) why = 'require used as a value';
+    } else if (n.type === 'identifier' && n.text === 'module') {
+      const member = p && p.type === 'member_expression' && same(field(p, 'object'), n) && field(p, 'property').text === 'exports';
+      const main = p && p.type === 'binary_expression' && /require\.main/.test(p.text);
+      if (!member && !main) why = 'module used as a value';
+    } else if (isExports(n) && !(p && p.type === 'member_expression' && isExports(p))) {
+      // allowed: a top-level assignment to it or to one of its names, and reading a name from it
+      const named = p && p.type === 'member_expression' && same(field(p, 'object'), n);
+      const target = named ? p : n;
+      const a = target.parent;
+      const assigned = a && /assignment_expression$/.test(a.type) && same(field(a, 'left'), target);
+      if (assigned ? !topAssigns.has(a.id) : !named) why = 'exports used in a way not followed';
+    }
+    for (const c of n.namedChildren) walk(c, inClass || n.type === 'class_body');
+  })(root, false);
+  return why;
+}
 
 function parseFile(parser, text) {
   const tree = parser.parse(text);
@@ -59,23 +106,24 @@ function parseFile(parser, text) {
   const moduleNodes = [];
   const topRequires = [];
   const eager = new Set(); // definitions whose initializer runs when the file loads
-  let openExports = false; // an export shape this cannot name
+  const topAssigns = new Set();
+  let unnamed = false; // an export shape this cannot name
   const span = (n, sym) => spans.push({ from: n.startPosition.row + 1, to: n.endPosition.row + 1, sym });
-  const define = (name, node, at = node) => { if (!defs.has(name)) defs.set(name, []); defs.get(name).push(node); span(at, name); };
+  const define = (name, node, at = node) => { if (!defs.has(name)) defs.set(name, []); defs.get(name).push(node); span(at, name); if (runsAtLoad(node)) eager.add(name); };
 
   const exportAssign = (stmt, left, right) => {
     const target = left.text;
     const prop = /^(?:module\.)?exports\.([\w$]+)$/.exec(target);
     if (prop) { if (right.type === 'identifier') { exports.set(prop[1], right.text); span(stmt, '<exports>'); } else { const sym = `exports.${prop[1]}`; exports.set(prop[1], sym); define(sym, right, stmt); } return true; }
     if (target !== 'module.exports') return false;
-    if (right.type !== 'object') { if (right.type === 'identifier') exports.set('*default*', right.text); else { define('exports.*default*', right, stmt); exports.set('*default*', 'exports.*default*'); } openExports = true; return true; }
+    if (right.type !== 'object') { if (right.type === 'identifier') exports.set('*default*', right.text); else { define('exports.*default*', right, stmt); exports.set('*default*', 'exports.*default*'); } return true; }
     span(stmt, '<exports>');
     for (const p of kids(right)) {
       if (p.type === 'shorthand_property_identifier') exports.set(p.text, p.text);
       else if (p.type === 'pair' && p.childForFieldName('value').type === 'identifier') exports.set(p.childForFieldName('key').text, p.childForFieldName('value').text);
-      else if (p.type === 'pair') { const k = p.childForFieldName('key').text; define(`exports.${k}`, p.childForFieldName('value'), p); exports.set(k, `exports.${k}`); }
+      else if (p.type === 'pair' && p.childForFieldName('key').type !== 'computed_property_name') { const k = p.childForFieldName('key').text; define(`exports.${k}`, p.childForFieldName('value'), p); exports.set(k, `exports.${k}`); }
       else if (p.type === 'method_definition') { const k = p.childForFieldName('name').text; define(`exports.${k}`, p, p); exports.set(k, `exports.${k}`); }
-      else if (p.type !== 'comment') openExports = true;
+      else if (p.type !== 'comment') unnamed = true; // a spread, or a shape with no name
     }
     return true;
   };
@@ -87,22 +135,23 @@ function parseFile(parser, text) {
       for (const d of kids(n).filter((x) => x.type === 'variable_declarator')) {
         const b = bindingsOf(d);
         if (b) { for (const [name, to] of b) { bindings.set(name, to); span(outer, `<binding:${name}>`); } topRequires.push(b[0][1].spec); }
-        else if (d.childForFieldName('name').type === 'identifier') { define(d.childForFieldName('name').text, d, outer); if (runsAtLoad(d.childForFieldName('value'))) eager.add(d.childForFieldName('name').text); }
+        else if (d.childForFieldName('name').type === 'identifier') define(d.childForFieldName('name').text, d, outer);
         else moduleNodes.push(d);
       }
       return;
     }
-    if (n.type === 'export_statement') { const d = n.childForFieldName('declaration'); if (d) { top(d, n); const name = d.childForFieldName('name'); if (name) exports.set(name.text, name.text); } openExports = true; return; }
-    if (n.type === 'import_statement') { openExports = true; moduleNodes.push(n); return; }
     if (n.type === 'expression_statement' && kids(n)[0] && kids(n)[0].type === 'assignment_expression') {
       const a = kids(n)[0];
-      if (exportAssign(n, a.childForFieldName('left'), a.childForFieldName('right'))) return;
+      if (exportAssign(n, a.childForFieldName('left'), a.childForFieldName('right'))) { topAssigns.add(a.id); return; }
     }
     if (n.type === 'if_statement' && /require\.main\s*===?\s*module/.test(n.childForFieldName('condition').text)) { define('<main>', n); return; }
     moduleNodes.push(n);
     span(n, '<module>');
   };
   for (const n of kids(tree.rootNode)) top(n);
+  // a name exported straight from a require is that module's name
+  for (const [name, to] of exports) if (typeof to === 'string' && bindings.has(to)) exports.set(name, bindings.get(to));
+  const opaque = tree.rootNode.hasError ? 'a syntax error' : opaqueBecause(tree.rootNode, topAssigns) || (unnamed ? 'an export with no name' : null);
 
   // what a definition uses: { local }, { spec, name } or { spec } (the whole module)
   const usesOf = (nodes) => {
@@ -142,10 +191,36 @@ function parseFile(parser, text) {
     return uses;
   };
   const uses = new Map([...defs].map(([name, nodes]) => [name, usesOf(nodes)]));
+  // whoever reads a definition also gets those that write to it (state set in one function, read in another)
+  const baseOf = (n) => (n && (n.type === 'member_expression' || n.type === 'subscript_expression') ? baseOf(field(n, 'object')) : n);
+  for (const [name, nodes] of defs) {
+    for (const root of nodes) (function walk(n) {
+      if (/assignment_expression$/.test(n.type) || n.type === 'update_expression') {
+        const to = baseOf(field(n, 'left') || field(n, 'argument'));
+        if (to && to.type === 'identifier' && to.text !== name && defs.has(to.text)) uses.get(to.text).push({ local: name });
+      }
+      for (const c of kids(n)) walk(c);
+    })(root);
+  }
   uses.set('<module>', [...usesOf(moduleNodes), ...topRequires.map((spec) => ({ spec, name: '<module>' })), ...[...eager].map((local) => ({ local }))]);
-  const comments = new Set();
-  (function walk(n) { if (n.type === 'comment') { for (let r = n.startPosition.row + 1; r <= n.endPosition.row + 1; r++) { const line = text.split('\n')[r - 1] || ''; if (/^\s*(\/\/|\/\*|\*)/.test(line)) comments.add(r); } return; } for (const c of n.namedChildren) walk(c); })(tree.rootNode);
-  const info = { eager, uses, exports, openExports, bindings, spans, comments, lines: text.split('\n'), error: tree.rootNode.hasError };
+  // the lines holding nothing but comment
+  const lines = text.split('\n');
+  const bare = lines.map((l) => l.split(''));
+  (function walk(n) {
+    if (n.type === 'comment') {
+      for (let r = n.startPosition.row; r <= n.endPosition.row; r++) {
+        const from = r === n.startPosition.row ? n.startPosition.column : 0;
+        const to = r === n.endPosition.row ? n.endPosition.column : bare[r].length;
+        for (let c = from; c < to; c++) bare[r][c] = ' ';
+      }
+      return;
+    }
+    for (const c of n.namedChildren) walk(c);
+  })(tree.rootNode);
+  const comments = new Set(lines.map((l, i) => (l.trim() && !bare[i].join('').trim() ? i + 1 : 0)).filter(Boolean));
+  const required_ = new Set();
+  (function walk(n) { const spec = required(n); if (spec) required_.add(spec); for (const c of n.namedChildren) walk(c); })(tree.rootNode);
+  const info = { eager, uses, exports, opaque, bindings, spans, comments, requires: required_, lines };
   tree.delete();
   return info;
 }
@@ -167,8 +242,10 @@ const symbolAt = (info, line) => {
 // What a change to a file touches: a Set of symbols, or null for the whole file. before/after: parsed
 // files; oldLines/newLines: the changed line numbers on each side.
 function changedSymbols(before, after, oldLines, newLines) {
-  if (!before || !after || before.error || after.error) return null;
+  if (!before || !after || before.opaque || after.opaque) return null;
   const out = new Set();
+  // loading another module, or no longer loading one, changes what happens when this file loads
+  if ([...before.requires].sort().join() !== [...after.requires].sort().join()) out.add('<module>');
   for (const [info, nums] of [[before, oldLines], [after, newLines]]) {
     for (const n of nums) {
       if (info.comments.has(n) || !String(info.lines[n - 1] || '').trim()) continue;
@@ -202,36 +279,45 @@ function reach(map, parsed, starts) {
     queue.push([file, sym]);
   };
   const starting = new Set(starts);
+  // a name used from another file: its definition there, through re-exports; whole if it cannot be named
+  const follow = (to, name, seenNames = new Set()) => {
+    const target = parsed.get(to);
+    if (!name || !target || target.opaque) { visit(to, '*'); return; }
+    if (name === '<module>') { visit(to, '<module>'); return; }
+    visit(to, `export:${name}`);
+    visit(to, '<module>');
+    const local = target.exports.get(name);
+    if (typeof local === 'string' && target.uses.has(local)) { visit(to, local); return; }
+    const on = local && local.spec ? resolveSpec(files, to, local.spec) : null;
+    const key = `${to}#${name}`;
+    if (on && !seenNames.has(key)) { seenNames.add(key); follow(on, local.name, seenNames); return; }
+    visit(to, '*');
+  };
   for (const s of starts) visit(s, '*');
   while (queue.length) {
     const [file, sym] = queue.shift();
     const info = parsed.get(file);
-    if (!info || info.error) { // not a parsed file: the map's own file edges, whole files
+    if (!info || info.opaque) { // not narrowed: the map's own file links, whole files
       if (C.langOf(file) === 'doc' && !starting.has(file)) continue;
       for (const e of map.edges.get(file) || []) visit(e.to, '*');
       continue;
     }
     const syms = sym === '*' ? [...info.uses.keys()] : sym.startsWith('export:') ? [] : [sym];
     if (sym !== '*' && sym !== '<module>') visit(file, '<module>');
+    // taken whole, it hands out what it re-exports
+    if (sym === '*') for (const to of info.exports.values()) { const on = to && to.spec && resolveSpec(files, file, to.spec); if (on) follow(on, to.name); }
     for (const s of syms) {
       for (const u of info.uses.get(s) || []) {
         if (u.local) { visit(file, u.local); continue; }
-        if (u.unknown) { for (const e of map.edges.get(file) || []) visit(e.to, '*'); continue; }
-        const to = resolveSpec(files, file, u.spec);
-        if (!to) continue;
-        const target = parsed.get(to);
-        if (!u.name || !target || target.error) { visit(to, '*'); continue; }
-        if (u.name === '<module>') { visit(to, '<module>'); continue; }
-        const local = target.exports.get(u.name);
-        if (typeof local === 'string' && target.uses.has(local)) { visit(to, local); visit(to, `export:${u.name}`); }
-        else if (target.openExports || local !== undefined) visit(to, '*');
-        else { visit(to, `export:${u.name}`); visit(to, '*'); }
+        const to = u.spec && resolveSpec(files, file, u.spec);
+        if (to) follow(to, u.name);
       }
     }
-    // what the syntax rules do not cover (a script run by path, a file named in a string): whole files,
-    // charged to the definition whose line names them
+    // every file link the walk above does not resolve itself (a script run by path, a file named in a
+    // string, a require of a kind this does not resolve): whole, charged to the definition naming it
+    const resolved = new Set([...info.requires].map((spec) => resolveSpec(files, file, spec)).filter(Boolean));
     for (const e of map.edges.get(file) || []) {
-      if (e.kind === 'require' || e.kind === 'import') continue;
+      if ((e.kind === 'require' || e.kind === 'import') && resolved.has(e.to)) continue;
       if (sym === '*' || symbolAt(info, e.line) === sym) visit(e.to, '*');
     }
   }

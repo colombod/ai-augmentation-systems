@@ -17,7 +17,7 @@ const S = require('../lib/syntax.js');
   const parsed = new Map(Object.entries(map.texts).filter(([f]) => /\.[cm]?js$/.test(f)).map(([f, t]) => [f, S.parseFile(parser, t)]));
   // a start: a test file, a script whose main block ran, or a script that exports nothing (a hook or
   // tool that works as it loads)
-  const starts = (f, ran) => f.endsWith('.test.js') || ran.has('<main>') || (!parsed.get(f).exports.size && !parsed.get(f).openExports && !f.includes('/testing/'));
+  const starts = (f, ran) => f.endsWith('.test.js') || ran.has('<main>') || (!parsed.get(f).exports.size && !f.includes('/testing/'));
   const lineAt = new Map();
   const lineOf = (f, offset) => {
     if (!lineAt.has(f)) { const at = [0]; const t = map.texts[f]; for (let i = t.indexOf('\n'); i >= 0; i = t.indexOf('\n', i + 1)) at.push(i + 1); lineAt.set(f, at); }
