@@ -67,5 +67,8 @@ test('syntax: when the parser cannot answer, the file links stand and it is said
   assert.equal(r.syntaxError, 'no parser');
   assert.deepEqual(r.reached.map((x) => x.id).sort(), ['buyer', 'seller']);
   assert.deepEqual(r.narrowed, []);
+  const links = F.impact(map, F.featuresOf(map), ['src/lib.js'], { syntax: null });
+  assert.equal(links.syntaxError, undefined);
+  assert.deepEqual(links.reached, r.reached, 'asked for file links only');
   assert.match(require('./lib/syntax.js').narrow({ repo: path.join(p.root, 'nowhere'), sha: p.base, paths: [], features: [] }).error, /git/);
 });

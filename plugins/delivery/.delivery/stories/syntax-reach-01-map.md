@@ -36,6 +36,7 @@ query of code graph rag", and "tehre are tools like tree sitter that do this bet
 | `plugins/delivery/scripts/lib/syntax.js` | create: the syntax analyser |
 | `plugins/delivery/scripts/lib/features.js` | modify: keep the features that use the change |
 | `plugins/delivery/scripts/lib/codemap.js` | modify: the map names its repository |
+| `plugins/delivery/scripts/lib/plan-sync.js` | modify: the plan's per-story list stays on file links, for speed |
 | `plugins/delivery/scripts/map.js` | modify: pass the commit range; say when syntax was not read |
 | `plugins/delivery/scripts/ready.js` | modify: the same |
 | `plugins/delivery/scripts/merge-gate.js` | modify: the same |

@@ -117,7 +117,9 @@ function featureMap(root, { repo, ref }, { previous, pr = null, stories = [], at
     let reached = [];
     try {
       const paths = require('../map.js').storyPaths(s.text);
-      if (paths.length) reached = F.impact(map, F.featuresOf(map), paths).reached.map((f) => f.id);
+      // file links only: this runs once per open story after every merge, and parsing each time would
+      // add seconds per story. It can list more features than ready.js does, never fewer
+      if (paths.length) reached = F.impact(map, F.featuresOf(map), paths, { syntax: null }).reached.map((f) => f.id);
     } catch (err) { reached = []; }
     planned.push({ story: s.id, file: s.file, status: s.status, features: reached });
   }

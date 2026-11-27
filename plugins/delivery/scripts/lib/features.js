@@ -219,7 +219,7 @@ function impact(map, feats, paths, { from, to, syntax = require('./syntax.js') }
   // only JavaScript is parsed; where the parser cannot answer, the file links stand and it is said
   let narrowed = [];
   let syntaxError = null;
-  if (reached.length && map.repo && map.files.some((f) => /\.[cm]?js$/.test(f))) {
+  if (syntax && reached.length && map.repo && map.files.some((f) => /\.[cm]?js$/.test(f))) {
     const anchors = new Map(withAnchors.map((f) => [f.id, f.anchors]));
     const answer = syntax.narrow({ repo: map.repo, sha: map.sha, from, to, paths: changed, features: reached.map((f) => ({ id: f.id, anchors: anchors.get(f.id) })) });
     if (answer.error) syntaxError = answer.error;
