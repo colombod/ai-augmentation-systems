@@ -2,7 +2,7 @@
 // scripts/ready.js — the ready gate (R-10, R-19, R-35) on one story.
 //   ready.js <bead> [--record [--owner-record dec-...]] [--json] [--project <root>]
 //   ready.js --story <story file> [--initiative <slug>] [--json] [--project <root>]
-// Missing sections and mechanism-worded criteria are warnings, a divergence (D1, D2, D4) is a block:
+// Missing sections (but for Impact decisions, R-35) and mechanism-worded criteria are warnings, a divergence (D1, D2, D4) is a block:
 // criteria resting on an external-host assumption still assumed, or on a spike result its decision
 // owner has not acknowledged, or on a refuted assumption (the register, lib/assumptions.js).
 // Without --record it only reports. --record (the Delivery Manager's role session) stamps the hash of

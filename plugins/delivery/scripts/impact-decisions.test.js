@@ -36,6 +36,18 @@ test('impact: evidence must resolve: accept needs file:line, decommission an own
   assert.deepEqual(codes(table('| billing | guard | extends | bill.test.js |', '| tax | accept | none | a.js:1 |'), reach, { root }), []);
 });
 
+test('impact: a feature id with spaces, or starting with "feature", can be decided', () => {
+  const r = { features: [{ id: 'User login', hops: 0 }, { id: 'feature-dev:go', hops: 1 }, { id: 'features', hops: 1 }] };
+  const rows = (first) => table(`| ${first} | accept | none | a.js:1 |`, '| feature-dev:go | accept | none | a.js:1 |', '| features | accept | none | a.js:1 |');
+  assert.deepEqual(codes(rows('User login'), r), []);
+  assert.deepEqual(codes(rows('`User login`'), r), []);
+  assert.deepEqual(codes(table('| User login, feature-dev:go features | accept | none | a.js:1 |'), r), []);
+  assert.deepEqual(codes(table('| `User login`, `feature-dev:go`, features | accept | none | a.js:1 |'), r), []);
+  // an id that is no longer reached stays one id when backticked
+  assert.deepEqual(codes(table('| `Old thing` | guard | none | P-none |'), { features: [] }, { storyText: '' }).filter((c) => c.includes('shared-row')), []);
+  assert.deepEqual(codes(table('| Feature(s) | Decision | Relation | Evidence |'), { features: [] }), []);
+});
+
 test('impact: a known conflict is never accepted; a missing reach blocks a table; an old reach row only warns', () => {
   assert.deepEqual(codes(table('| billing | accept | conflicts | a.js:1 |', '| tax | accept | none | a.js:1 |')), ['block:impact-conflict-accepted']);
   assert.deepEqual(codes(table('| billing | accept | none | a.js:1 |'), { error: 'no map' }), ['block:impact-reach']);
