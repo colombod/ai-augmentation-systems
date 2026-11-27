@@ -74,9 +74,13 @@ function storyReach(root, text) {
     const map = C.buildMap(root, 'HEAD');
     const feats = F.featuresOf(map);
     const r = F.impact(map, feats, paths);
-    // live: the declared features that have code at this commit; derived entry points are not counted
-    const live = (f) => f.kind === 'declared' && f.anchors.length;
-    return { sha: r.sha, live: { reached: r.reached.filter((f) => f.kind === 'declared').map((f) => f.id), total: feats.filter(live).length }, features: r.reached.map((f) => ({ id: f.id, hops: f.hops })), hubs: r.hubs.map((h) => h.path), unreached: r.unreached.map((u) => u.path), unknown: r.unknown };
+    // live: the declared features that have code at this commit; derived entry points are not counted.
+    // A file the story adds counts for the features whose anchors claim it; what stays unplaced is named.
+    const live = feats.filter((f) => f.kind === 'declared' && f.anchors.length).map((f) => f.id);
+    const planned = F.plannedFor(feats, r.unknown);
+    const hit = new Set([...r.reached.map((f) => f.id), ...planned.flatMap((p) => p.features.map((f) => f.id))]);
+    const uncounted = [...r.unknown.filter((p) => !planned.some((x) => x.path === p)), ...r.ambiguous.map((a) => a.path)];
+    return { sha: r.sha, live: { reached: live.filter((id) => hit.has(id)), total: live.length, counted: r.changed.length + planned.length, uncounted }, features: r.reached.map((f) => ({ id: f.id, hops: f.hops })), hubs: r.hubs.map((h) => h.path), unreached: r.unreached.map((u) => u.path), unknown: r.unknown };
   } catch (err) {
     return { error: String(err.message).split('\n')[0] };
   }

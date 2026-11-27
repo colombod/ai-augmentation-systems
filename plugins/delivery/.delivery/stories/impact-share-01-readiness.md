@@ -23,13 +23,15 @@ a gerat solid number", and "8/8 is more precise and readable".
 
 1. `ready.js` prints `Impact: N/M live features affected` with their names, for a story file and a bead.
 2. At 50% or more it warns `impact-large`; below that it does not. It never blocks.
-3. With the reach unknown it prints no share; with no declared feature it says so.
+3. A new file counts for the features whose anchors claim it. A file that cannot be placed is named and the
+   share reads `at least`; with none placed, or the reach unknown, no share. With no live feature it says so.
 
 ## Files and modules
 
 | Path | What to do |
 | :-- | :-- |
 | `plugins/delivery/scripts/lib/impact-decisions.js` | modify: the share and its warning |
+| `plugins/delivery/scripts/lib/warnings.js` | modify: a long warning stays open |
 | `plugins/delivery/scripts/ready.js` | modify: count live features and print the share |
 | `plugins/delivery/skills/stories/SKILL.md` | modify: say what it means |
 | `plugins/delivery/scripts/impact-decisions.test.js` | modify |

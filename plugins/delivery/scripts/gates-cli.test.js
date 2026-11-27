@@ -162,6 +162,33 @@ test('ready.js says how many live features a story affects, warns at half, and r
   const third = await check();
   assert.match(third.out, /Impact: 1\/3 live features affected: alpha/);
   assert.doesNotMatch(third.out, /impact-large/);
+  assert.equal((await ready.main([ID, '--record'], { cwd: root, env, bd, now: NOW, who: whoFor(root, 'delivery-lead') })).code, 0);
+  assert.ok(W.list(root).filter((w) => w.kind === 'impact-large').every((w) => w.acked_by), 'no longer large, so resolved');
+});
+
+test('ready.js counts files a story adds for the features that claim them, and leaves derived entry points out', async () => {
+  const rows = (paths) => `${STORY}\n## Files and modules\n\n| Path | What to do |\n| :-- | :-- |\n${paths.map((p) => `| \`${p}\` | modify |`).join('\n')}\n`;
+  const root = makeProject({ story: STORY });
+  for (const [f, text] of [['p/.claude-plugin/plugin.json', '{"name":"p"}'], ['p/skills/go/SKILL.md', 'Run `node ${CLAUDE_PLUGIN_ROOT}/scripts/run.js`.\n'], ['p/scripts/run.js', ''], ['src/billing/a.js', ''], ['src/auth/a.js', ''], ['src/search/a.js', '']]) {
+    fs.mkdirSync(path.dirname(path.join(root, f)), { recursive: true });
+    fs.writeFileSync(path.join(root, f), text);
+  }
+  fs.writeFileSync(path.join(root, '.delivery', 'features.json'), JSON.stringify({ features: ['billing', 'auth', 'search'].map((id) => ({ id, name: id, anchors: [`src/${id}/**`] })) }));
+  const g = (...x) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...x], { cwd: root, stdio: 'ignore' });
+  g('init', '-q'); g('add', '-A'); g('commit', '-qm', 'x');
+  const file = path.join(root, '.delivery', 'stories', 'vault-0n9-3.md');
+  const impact = async (paths) => { fs.writeFileSync(file, rows(paths)); return (await ready.main(['--story', file, '--initiative', 'vault', '--project', root], { cwd: root, env })).out.split('\n').find((l) => l.startsWith('Impact:')); };
+  assert.equal(await impact(['src/billing/new.js', 'src/auth/new.js']), 'Impact: 2/3 live features affected: billing, auth');
+  assert.equal(await impact(['p/scripts/run.js', 'src/search/a.js']), 'Impact: 1/3 live features affected: search');
+  assert.equal(await impact(['src/search/a.js', 'nowhere/new.js']), 'Impact: at least 1/3 live features affected: search (not counted: nowhere/new.js)');
+  assert.equal(await impact(['nowhere/new.js']), 'Impact: share not known (not counted: nowhere/new.js)');
+});
+
+test('a long warning still found stays open', () => {
+  const root = makeProject({ story: STORY });
+  const detail = 'x'.repeat(600);
+  W.record(root, { kind: 'impact-large', bead: ID, detail, instance: 'delivery-lead' });
+  assert.deepEqual(W.resolve(root, { bead: ID, kinds: ['impact-large'], still: [detail], by: 'delivery-lead', instance: 'delivery-lead', reason: 'fixed' }), []);
 });
 
 // a team whose code lives apart from the planning repository: the role's product checkout is mapped

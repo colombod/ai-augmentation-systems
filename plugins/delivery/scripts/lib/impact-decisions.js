@@ -11,13 +11,16 @@ const RELATIONS = ['extends', 'conflicts', 'duplicates', 'supersedes', 'none'];
 // the share of live features at which an impact is large (the owner's number)
 const LARGE = 0.5;
 
-// reach.live: { reached: [ids], total }, the declared features a story affects out of those shipped.
-// Empty when the reach is unknown: a share is never guessed.
+// reach.live: { reached: [ids], total, counted, uncounted: [paths] }, the declared features a story
+// affects out of those shipped. A share is never guessed: with unplaced files it is a lower bound,
+// and with none placed it is not known.
 function share(reach) {
   if (!reach || reach.error || !reach.live) return { line: '', findings: [] };
-  const { reached, total } = reach.live;
-  if (!total) return { line: 'Impact: no live feature is declared in .delivery/features.json, so no share', findings: [] };
-  const said = `${reached.length}/${total} live features affected${reached.length ? `: ${reached.join(', ')}` : ''}`;
+  const { reached, total, counted, uncounted = [] } = reach.live;
+  if (!total) return { line: 'Impact: no live feature found (.delivery/features.json is missing, unreadable, or declares no code here), so no share', findings: [] };
+  const left = uncounted.length ? ` (not counted: ${uncounted.join(', ')})` : '';
+  if (uncounted.length && !counted) return { line: `Impact: share not known${left}`, findings: [] };
+  const said = `${uncounted.length ? 'at least ' : ''}${reached.length}/${total} live features affected${reached.length ? `: ${reached.join(', ')}` : ''}${left}`;
   const large = reached.length / total >= LARGE;
   return { line: `Impact: ${said}`, findings: large ? [{ level: 'warn', rule: 'R-35', code: 'impact-large', detail: `${said}. That is ${LARGE * 100}% or more: the owner decides whether to take on all that work or prune first` }] : [] };
 }

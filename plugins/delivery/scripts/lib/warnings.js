@@ -89,8 +89,10 @@ function ack(root, { id, reason, by, instance, now } = {}) {
 // (what the check found again): a fixed story clears its own warnings. Returns the ids resolved.
 function resolve(root, { bead, kinds, still = [], by, instance, reason, now } = {}) {
   const done = [];
+  // compared as stored: record() cuts a long detail, and a warning still found must stay open
+  const found = still.map((s) => String(s || '').slice(0, 500));
   for (const w of list(root)) {
-    if (w.acked_by || w.bead !== bead || !kinds.includes(w.kind) || still.includes(w.detail)) continue;
+    if (w.acked_by || w.bead !== bead || !kinds.includes(w.kind) || found.includes(w.detail)) continue;
     if (ack(root, { id: w.id, reason, by, instance, now }).ok) done.push(w.id);
   }
   return done;

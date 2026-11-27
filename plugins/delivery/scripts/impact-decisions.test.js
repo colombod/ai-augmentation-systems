@@ -26,7 +26,11 @@ test('impact: the share of live features is said, and 50% or more is a warning f
   assert.equal(of(0, 2).line, 'Impact: 0/2 live features affected');
   for (const [n, total] of [[1, 2], [2, 3], [3, 3]]) assert.deepEqual(of(n, total).findings.map((f) => `${f.level}:${f.code}`), ['warn:impact-large'], `${n}/${total}`);
   assert.match(of(1, 2).findings[0].detail, /1\/2 live features affected: a\. That is 50% or more: the owner decides/);
-  assert.match(of(0, 0).line, /no live feature is declared/);
+  assert.match(of(0, 0).line, /no live feature found/);
+  const partly = (counted) => ID.share({ live: { reached: counted ? ['a'] : [], total: 3, counted, uncounted: ['x/new.js'] } });
+  assert.equal(partly(1).line, 'Impact: at least 1/3 live features affected: a (not counted: x/new.js)');
+  assert.equal(partly(0).line, 'Impact: share not known (not counted: x/new.js)');
+  assert.deepEqual(partly(0).findings, []);
   assert.deepEqual(of(0, 0).findings, []);
   assert.deepEqual(ID.share({ error: 'no map' }), { line: '', findings: [] });
 });
