@@ -113,7 +113,7 @@ test('merge-gate check warns when the pull request reaches a feature its story d
   const base = git('branch', '--show-current');
   // a pull request's branch: one change on top of the base
   const branch = (name, change) => { git('checkout', '-q', '-b', name, base); change(); git('add', '-A'); git('commit', '-qm', name); const sha = git('rev-parse', 'HEAD'); git('checkout', '-q', base); return sha; };
-  const edit = (...files) => () => { for (const f of files) fs.writeFileSync(path.join(product, f), `// ${f}\n`); };
+  const edit = (...files) => () => { for (const f of files) fs.writeFileSync(path.join(product, f), `process.title = '${f}';\n`); };
   const checkAt = (sha, over = {}) => {
     h.setPr(478, (p) => { Object.assign(p, { headRefOid: sha, baseRefName: base, files: [{ path: 'src/import.js', additions: 1, deletions: 0 }], body: `Refs ${BEAD}\nDoc-impact: none (a test fixture)`, ...over }); });
     h.review('delivery-lead', 'request 478 --reviewer builder-2');

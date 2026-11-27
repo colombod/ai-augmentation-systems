@@ -133,13 +133,14 @@ function impactStep(pr, view, head, rows, { root, team, roleDir, bd }) {
       const gone = [];
       const kept = [];
       for (let i = 0; i + 1 < parts.length; i += 2) (parts[i] === 'D' ? gone : kept).push(parts[i + 1]);
-      reach = bothSides(kept.length ? Ready.reachOf(dir, kept, head) : null, gone.length ? Ready.reachOf(dir, gone, from) : null);
+      reach = bothSides(kept.length ? Ready.reachOf(dir, kept, head, from) : null, gone.length ? Ready.reachOf(dir, gone, from) : null);
     } else {
       notes.push(`The base ${base} was not found, so deleted and renamed files were not checked.`);
       // gh pr view lists at most 100 files
       if (view.files.length === 100) notes.push('Only the first 100 changed files were read.');
       reach = Ready.reachOf(dir, view.files.map((f) => f.path), head);
     }
+    if (reach && reach.syntaxError) notes.push(`The syntax was not read (${reach.syntaxError}), so features are counted by file links alone.`);
     const found = reach && ID.widened({ pr, reach, texts });
     if (!notes.length) return found || null;
     return `${found || `impact of PR ${pr} only partly checked.`} ${notes.join(' ')}`;
@@ -153,7 +154,8 @@ function bothSides(a, b) {
   if (bad || sides.length < 2) return bad || sides[0] || null;
   const all = (f) => [...new Set(sides.flatMap(f))];
   const ids = all((x) => x.live.ids);
-  return { features: all((x) => x.features.map((y) => y.id)).map((id) => ({ id })), live: { reached: all((x) => x.live.reached), ids, total: ids.length, uncounted: all((x) => x.live.uncounted) } };
+  const syntaxError = sides.map((x) => x.syntaxError).find(Boolean);
+  return { ...(syntaxError ? { syntaxError } : {}), features: all((x) => x.features.map((y) => y.id)).map((id) => ({ id })), live: { reached: all((x) => x.live.reached), ids, total: ids.length, uncounted: all((x) => x.live.uncounted) } };
 }
 
 function defaultPlanDrift(root) {

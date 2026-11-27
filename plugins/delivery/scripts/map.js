@@ -107,7 +107,7 @@ function main(argv, { write = (s) => process.stdout.write(s) } = {}) {
     var headSha = head;
   }
   if (!paths.length) { write('map.js: impact needs paths, --diff or --story\n'); return 2; }
-  const r = F.impact(map, feats, paths);
+  const r = F.impact(map, feats, paths, o.diff ? { from: map.sha, to: headSha } : {});
   // Files the change adds are not at the base: map them at the head, where they exist, so a new file
   // a feature reaches is reached, not reported "not in the commit" (found on the Vault, 92d8452).
   if (o.diff && r.unknown.length && headSha && headSha !== map.sha) {
@@ -128,6 +128,7 @@ function main(argv, { write = (s) => process.stdout.write(s) } = {}) {
   }
   r.planned = F.plannedFor(feats, r.unknown);
   if (o.json) { write(`${JSON.stringify(r)}\n`); return 0; }
+  if (r.syntaxError) write(`Syntax not read (${r.syntaxError}): features are counted by file links alone\n`);
   write(`Impact at ${r.sha} of ${r.changed.length} changed file${r.changed.length === 1 ? '' : 's'}: ${r.reached.length} of ${r.features} features reached\n`);
   // nearest first; past NEAR hops a reach is real but indirect: counted, and listed with --all
   const NEAR = 2;

@@ -241,7 +241,7 @@ function buildMap(repo, ref = 'HEAD') {
   const analysed = Object.keys(texts);
   // an empty file is analysed (it references nothing), not blind
   const blind = all.filter((f) => !Object.prototype.hasOwnProperty.call(texts, f));
-  return { sha, files: all, analysed, blind, edges, texts, pluginRoots };
+  return { repo, sha, files: all, analysed, blind, edges, texts, pluginRoots };
 }
 
 // everything a set of start files reaches: Map(file -> { hops, via: prevFile, line, kind })

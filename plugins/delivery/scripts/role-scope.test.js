@@ -72,6 +72,8 @@ const PROCESS_FILES = {
   'scripts/lib/self-update.js': 'git, gh and `claude plugin`, which start no role session',
   'scripts/lib/service-directory.js': 'its own file, through node, for one bounded request to the service directory on 127.0.0.1:8085 (the plugin\'s code is synchronous); it starts no session',
   'scripts/lib/session-message.js': 'the socket client that delivers a message to a running session',
+  'scripts/lib/syntax.js': 'git, to read a change\'s lines, and itself through node, to run the parser from synchronous code',
+  'scripts/testing/check-reach.js': 'git, to find the repository whose recorded test run it checks',
   'scripts/lib/team-revive.js': 'systemctl --user is-enabled and is-active, the reads that tell whether a unit the plugin did not write still serves a role directory',
   'scripts/lib/wake-run.js': 'the supervisor: runs the command startRole gives it, in its own process group',
   'scripts/lib/watch.js': 'git, to name a worktree\'s branch',

@@ -1,0 +1,101 @@
+// scripts/syntax.test.js — reach by syntax tree: who uses what a change touches, and never narrower
+// than the code can show.
+require('./testing/role-env.js').clearRoleEnv();
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { execFileSync } = require('child_process');
+const C = require('./lib/codemap.js');
+const F = require('./lib/features.js');
+
+// fixtures say req('x') for a relative require, so this file names no path that is not there
+// (bare('x') is a require written exactly as given)
+const code = (text) => text.replace(/\breq\('(\w+)'\)/g, (m, f) => `${'require'}('./${f}.js')`).replace(/\bbare\(/g, `${'require'}(`);
+function product(files, features) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'syntax-'));
+  const g = (...a) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...a], { cwd: root, encoding: 'utf8' }).trim();
+  const put = (set) => { for (const [f, text] of Object.entries(set)) { fs.mkdirSync(path.dirname(path.join(root, f)), { recursive: true }); fs.writeFileSync(path.join(root, f), code(text)); } g('add', '-A'); g('commit', '-qm', 'x'); return g('rev-parse', 'HEAD'); };
+  g('init', '-q');
+  const base = put({ ...files, '.delivery/features.json': JSON.stringify({ features: features.map(([id, a]) => ({ id, name: id, anchors: [a] })) }) });
+  // the declared features that reach `paths`; with a change, only by the definitions it touched
+  const ids = (paths, change) => {
+    const head = change ? put(change) : base;
+    const map = C.buildMap(root, head);
+    const r = F.impact(map, F.featuresOf(map), paths || Object.keys(change), change ? { from: base, to: head } : {});
+    assert.equal(r.syntaxError, undefined);
+    return r.reached.filter((x) => x.kind === 'declared').map((x) => x.id).sort();
+  };
+  return { root, base, put, ids };
+}
+
+const LIB = "const RATE = 2;\nfunction buy() { return RATE; }\nfunction sell() { return 1; }\nmodule.exports = { buy, sell };\n";
+const SHOP = { 'src/lib.js': LIB, 'src/buy.js': "const L = req('lib');\nL.buy();\n", 'src/sell.js': "const { sell } = req('lib');\nsell();\n" };
+const BOTH = [['buyer', 'src/buy.js'], ['seller', 'src/sell.js']];
+
+test('syntax: a changed function counts only for the features that use it, directly or through another', () => {
+  const at = (change) => product(SHOP, BOTH).ids(null, { 'src/lib.js': change });
+  assert.deepEqual(at(LIB.replace('return 1', 'return 3')), ['seller']);
+  assert.deepEqual(at(LIB.replace('return RATE', 'return RATE + 1')), ['buyer']);
+  assert.deepEqual(at(LIB.replace('RATE = 2', 'RATE = 5')), ['buyer'], 'a value used by one function');
+  assert.deepEqual(at(`// a note\n${LIB}`), [], 'a comment changes nothing');
+  assert.deepEqual(at(`${LIB}process.title = 'x';\n`), ['buyer', 'seller'], 'code that runs on load reaches every user');
+});
+
+test('syntax: with only the file known, every user of any of it counts, and a file only linked does not', () => {
+  const p = product({ ...SHOP, 'src/deep.js': 'module.exports = {};\n', 'src/lib.js': LIB.replace('function sell() { return 1; }', "function sell() { return req('deep'); }") }, BOTH);
+  assert.deepEqual(p.ids(['src/lib.js']), ['buyer', 'seller']);
+  assert.deepEqual(p.ids(['src/deep.js']), ['seller'], 'buy() never gets to the require inside sell()');
+});
+
+test('syntax: where a use cannot be followed the whole file counts, and what runs on load always does', () => {
+  const run = (lib, user, change) => product({ 'src/lib.js': lib, 'src/u.js': user }, [['u', 'src/u.js']]).ids(null, { 'src/lib.js': change });
+  const other = LIB.replace('return 1', 'return 3');
+  assert.deepEqual(run(LIB, "const L = req('lib');\nObject.keys(L);\n", other), ['u'], 'passed around as a value');
+  assert.deepEqual(run(LIB, "const L = req('lib');\nL[process.argv[2]]();\n", other), ['u'], 'a computed member');
+  assert.deepEqual(run(LIB, "function go() { return req('lib').buy(); }\ngo();\n", other), [], 'an inline require uses one member');
+  const eager = "const pick = (x) => x;\nconst ALL = [1].map(pick);\nfunction f() {}\nmodule.exports = { f };\n";
+  assert.deepEqual(run(eager, "req('lib').f();\n", eager.replace('(x) => x', '(x) => x + 1')), ['u'], 'an initializer that runs on load');
+  const seam = "function ok() { return 1; }\nfunction f() { return module.exports.ok(); }\nmodule.exports = { f, ok };\n";
+  assert.deepEqual(run(seam, "req('lib').f();\n", seam.replace('return 1', 'return 2')), ['u'], 'its own export, called by name');
+});
+
+// each of these was once dropped by the narrowing (the review of #259), or could be
+test('syntax: a feature a change affects is never dropped, whatever the shape of the code', () => {
+  // [what, the files, the change]: feature u starts at src/u.js
+  const cases = [
+    ['an ES import', { 'src/lib.js': 'export function f() { return 1; }\n', 'src/u.js': "import { f } from './lib.js';\nf();\n" }, { 'src/lib.js': 'export function f() { return 2; }\n' }],
+    ['an ES re-export', { 'src/lib.js': 'export function f() { return 1; }\n', 'src/mid.js': "export { f } from './lib.js';\n", 'src/u.js': "import { f } from './mid.js';\nf();\n" }, { 'src/lib.js': 'export function f() { return 2; }\n' }],
+    ['a dynamic import', { 'src/lib.js': 'export const a = 1;\n', 'src/u.js': "async function go() { await import('./lib.js'); }\ngo();\n" }, { 'src/lib.js': 'export const a = 2;\n' }],
+    ['an extensionless require of a .ts file', { 'src/lib.ts': 'export const a = 1;\n', 'src/u.js': "bare('./lib');\n" }, { 'src/lib.ts': 'export const a = 2;\n' }],
+    ['code after a comment on its line', { 'src/lib.js': '/** @type {number} */ const T = 5;\nfunction f() { return T; }\nmodule.exports = { f };\n', 'src/u.js': "req('lib').f();\n" }, { 'src/lib.js': '/** @type {number} */ const T = 1;\nfunction f() { return T; }\nmodule.exports = { f };\n' }],
+    ['a call through this', { 'src/lib.js': 'module.exports = {\n  a() { return this.b(); },\n  b() { return 1; },\n};\n', 'src/u.js': "req('lib').a();\n" }, { 'src/lib.js': 'module.exports = {\n  a() { return this.b(); },\n  b() { return 2; },\n};\n' }],
+    ['a computed export', { 'src/lib.js': 'exports.run = (c) => exports[c]();\nexports.build = () => 1;\n', 'src/u.js': "req('lib').run('build');\n" }, { 'src/lib.js': 'exports.run = (c) => exports[c]();\nexports.build = () => 2;\n' }],
+    ['an export assigned from a call', { 'src/lib.js': 'function reg() { return 1; }\nexports.tok = reg();\nexports.get = () => 0;\n', 'src/u.js': "req('lib').get();\n" }, { 'src/lib.js': 'function reg() { return 2; }\nexports.tok = reg();\nexports.get = () => 0;\n' }],
+    ['a static field', { 'src/lib.js': 'function init() { return 1; }\nclass A { static s = init(); }\nexports.get = () => 0;\n', 'src/u.js': "req('lib').get();\n" }, { 'src/lib.js': 'function init() { return 2; }\nclass A { static s = init(); }\nexports.get = () => 0;\n' }],
+    ['a removed side-effect require', { 'src/setup.js': "process.title = 's';\n", 'src/lib.js': "const _s = req('setup');\nfunction f() {}\nmodule.exports = { f };\n", 'src/u.js': "req('lib').f();\n" }, { 'src/lib.js': 'function f() {}\nmodule.exports = { f };\n' }],
+    ['module.require', { 'src/lib.js': 'exports.a = 1;\n', 'src/u.js': "module.bare('./lib.js');\n" }, { 'src/lib.js': 'exports.a = 2;\n' }],
+    ['an export pointed elsewhere', { 'src/lib.js': 'function a() {}\nfunction b() {}\nmodule.exports = { g: a, b };\n', 'src/u.js': "req('lib').g();\n" }, { 'src/lib.js': 'function a() {}\nfunction b() {}\nmodule.exports = { g: b, b };\n' }],
+    ['a require pointed elsewhere', { 'src/a.js': 'exports.v = 1;\n', 'src/b.js': 'exports.v = 2;\n', 'src/lib.js': "const D = req('a');\nfunction f() { return D.v; }\nmodule.exports = { f };\n", 'src/u.js': "req('lib').f();\n" }, { 'src/lib.js': "const D = req('b');\nfunction f() { return D.v; }\nmodule.exports = { f };\n" }],
+    ['a re-exported require', { 'src/deep.js': 'function f() { return 1; }\nmodule.exports = { f };\n', 'src/lib.js': "const { f } = req('deep');\nmodule.exports = { f };\n", 'src/u.js': "req('lib').f();\n" }, { 'src/deep.js': 'function f() { return 2; }\nmodule.exports = { f };\n' }],
+    ['a spread export', { 'src/deep.js': 'exports.f = () => 1;\n', 'src/lib.js': "module.exports = { ...req('deep') };\n", 'src/u.js': "req('lib').f();\n" }, { 'src/deep.js': 'exports.f = () => 2;\n' }],
+    ['state written in one function and read in another', { 'src/lib.js': "let h = null;\nfunction set() { h = () => 1; }\nfunction get() { return h && h(); }\nmodule.exports = { set, get };\n", 'src/u.js': "req('lib').get();\n" }, { 'src/lib.js': "let h = null;\nfunction set() { h = () => 2; }\nfunction get() { return h && h(); }\nmodule.exports = { set, get };\n" }],
+    ['a script run as main', { 'src/lib.js': 'function main() { return 1; }\nif (require.main === module) main();\n', 'src/u.js': "const path = bare('path');\nconst p = path.join(__dirname, 'lib.js');\n" }, { 'src/lib.js': 'function main() { return 2; }\nif (require.main === module) main();\n' }],
+    ['a file with a syntax error', { 'src/lib.js': 'function f() { return 1; }\nmodule.exports = { f };\n', 'src/u.js': "req('lib');\n)(\n" }, { 'src/lib.js': 'function f() { return 2; }\nmodule.exports = { f };\n' }],
+  ];
+  for (const [what, files, change] of cases) assert.deepEqual(product(files, [['u', 'src/u.js']]).ids(null, change), ['u'], what);
+});
+
+test('syntax: when the parser cannot answer, the file links stand and it is said', () => {
+  const p = product(SHOP, BOTH);
+  const map = C.buildMap(p.root, p.base);
+  const r = F.impact(map, F.featuresOf(map), ['src/lib.js'], { syntax: { narrow: () => ({ error: 'no parser' }) } });
+  assert.equal(r.syntaxError, 'no parser');
+  assert.deepEqual(r.reached.map((x) => x.id).sort(), ['buyer', 'seller']);
+  assert.deepEqual(r.narrowed, []);
+  const links = F.impact(map, F.featuresOf(map), ['src/lib.js'], { syntax: null });
+  assert.equal(links.syntaxError, undefined);
+  assert.deepEqual(links.reached, r.reached, 'asked for file links only');
+  assert.match(require('./lib/syntax.js').narrow({ repo: path.join(p.root, 'nowhere'), sha: p.base, paths: [], features: [] }).error, /git/);
+});

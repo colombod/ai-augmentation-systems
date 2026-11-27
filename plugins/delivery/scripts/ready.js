@@ -71,21 +71,22 @@ function storyReach(root, text) {
   return reachOf(root, paths);
 }
 
-// What changing `paths` reaches at `ref`, in the same shape, or { error }
-function reachOf(root, paths, ref = 'HEAD') {
+// What changing `paths` reaches at `ref`, in the same shape, or { error }. With `from`, a changed
+// JavaScript file counts only for who uses the definitions changed since then.
+function reachOf(root, paths, ref = 'HEAD', from) {
   try {
     const C = require('./lib/codemap.js');
     const F = require('./lib/features.js');
     const map = C.buildMap(root, ref);
     const feats = F.featuresOf(map);
-    const r = F.impact(map, feats, paths);
+    const r = F.impact(map, feats, paths, from ? { from, to: map.sha } : {});
     // live: the declared features that have code at this commit; derived entry points are not counted.
     // A file the story adds counts for the features whose anchors claim it; what stays unplaced is named.
     const live = feats.filter((f) => f.kind === 'declared' && f.anchors.length).map((f) => f.id);
     const planned = F.plannedFor(feats, r.unknown);
     const hit = new Set([...r.reached.map((f) => f.id), ...planned.flatMap((p) => p.features.map((f) => f.id))]);
     const uncounted = [...r.unknown.filter((p) => !planned.some((x) => x.path === p)), ...r.ambiguous.map((a) => a.path)];
-    return { sha: r.sha, live: { reached: live.filter((id) => hit.has(id)), ids: live, total: live.length, counted: r.changed.length + planned.length, uncounted }, features: r.reached.map((f) => ({ id: f.id, hops: f.hops })), hubs: r.hubs.map((h) => h.path), unreached: r.unreached.map((u) => u.path), unknown: r.unknown };
+    return { sha: r.sha, ...(r.syntaxError ? { syntaxError: r.syntaxError } : {}), live: { reached: live.filter((id) => hit.has(id)), ids: live, total: live.length, counted: r.changed.length + planned.length, uncounted }, features: r.reached.map((f) => ({ id: f.id, hops: f.hops })), hubs: r.hubs.map((h) => h.path), unreached: r.unreached.map((u) => u.path), unknown: r.unknown };
   } catch (err) {
     return { error: String(err.message).split('\n')[0] };
   }
@@ -95,6 +96,7 @@ function reachLines(r) {
   if (r.error) return `Reach: reach-not-computed (${r.error})`;
   const lines = [`Reach at ${r.sha.slice(0, 12)}: ${r.features.length ? r.features.map((f) => `${f.id} (${f.hops} hop${f.hops === 1 ? '' : 's'})`).join(', ') : 'no feature'} (map.js impact --story for the chains)`];
   if (r.hubs.length) lines.push(`Reach: touches a hub (${r.hubs.join(', ')}): a change there reaches most of the product`);
+  if (r.syntaxError) lines.push(`Reach: syntax not read (${r.syntaxError}): features are counted by file links alone`);
   if (r.unreached.length) lines.push(`Reach: no feature reaches ${r.unreached.join(', ')}`);
   const { line } = ID.share(r);
   if (line) lines.push(line);
