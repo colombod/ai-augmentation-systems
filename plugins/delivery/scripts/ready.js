@@ -66,12 +66,17 @@ function productRepo(who) {
 }
 
 function storyReach(root, text) {
+  const paths = require('./map.js').storyPaths(text);
+  if (!paths.length) return { error: 'the story names no files (its Files and modules table is empty)' };
+  return reachOf(root, paths);
+}
+
+// What changing `paths` reaches at `ref`, in the same shape, or { error }
+function reachOf(root, paths, ref = 'HEAD') {
   try {
-    const paths = require('./map.js').storyPaths(text);
-    if (!paths.length) return { error: 'the story names no files (its Files and modules table is empty)' };
     const C = require('./lib/codemap.js');
     const F = require('./lib/features.js');
-    const map = C.buildMap(root, 'HEAD');
+    const map = C.buildMap(root, ref);
     const feats = F.featuresOf(map);
     const r = F.impact(map, feats, paths);
     // live: the declared features that have code at this commit; derived entry points are not counted.
@@ -172,7 +177,7 @@ async function main(argv, { cwd = process.cwd(), env = process.env, bd, now, ver
   return { code: findings.some((f) => f.level === 'block') ? 1 : 0, out: render(id, findings, extra, a.flags.has('json')) };
 }
 
-module.exports = { main };
+module.exports = { main, productRepo, reachOf };
 
 if (require.main === module) {
   main(process.argv.slice(2)).then((r) => { process.stdout.write(`${r.out}\n`); process.exitCode = r.code; },

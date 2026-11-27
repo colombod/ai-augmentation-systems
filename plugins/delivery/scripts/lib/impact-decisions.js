@@ -67,6 +67,21 @@ function evidenceProblem(row, { root, storyText, ownerRecord }) {
   return `a guard needs a property id or a test path present or named by this story (${p} is neither)`;
 }
 
+// What a pull request reaches that its stories never decided, as one warning line, or null. reach:
+// what its changed files reach at its head; texts: its stories. A widened impact is told, not refused.
+function widened({ pr, reach, texts }) {
+  if (reach.error) return `impact of PR ${pr} not checked: ${reach.error}`;
+  const reached = reach.features.map((x) => x.id);
+  const listed = new Set(texts.flatMap((t) => (parseTable(t, reached) || []).flatMap((r) => r.ids)));
+  const added = reached.filter((id) => !listed.has(id));
+  const { reached: live, total, uncounted = [] } = reach.live;
+  const left = uncounted.length ? ` Not counted: ${uncounted.join(', ')}.` : '';
+  if (!added.length) return left ? `impact of PR ${pr} only partly checked.${left}` : null;
+  const share = total ? ` Live features affected: ${uncounted.length ? 'at least ' : ''}${live.length}/${total}; its stories list ${live.filter((id) => listed.has(id)).length} of those.` : '';
+  const large = total && live.length / total >= LARGE ? ` That is ${LARGE * 100}% or more: the owner decides before this merge.` : '';
+  return `PR ${pr} reaches ${added.length} feature${added.length === 1 ? '' : 's'} its stories do not list: ${added.join(', ')}.${share}${large} Tell the owner, and decide each in the story.${left}`;
+}
+
 // reach: { features: [{ id, hops }] } or { error }. Findings: [{ level, rule, code, detail }]
 function check({ text, reach, root, ownerRecord }) {
   const f = (level, code, detail) => ({ level, rule: 'R-35', code, detail });
@@ -99,4 +114,4 @@ function check({ text, reach, root, ownerRecord }) {
   return out;
 }
 
-module.exports = { parseTable, check, share, DECISIONS, RELATIONS, LARGE };
+module.exports = { parseTable, check, share, widened, DECISIONS, RELATIONS, LARGE };

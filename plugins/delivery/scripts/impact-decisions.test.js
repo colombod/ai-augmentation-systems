@@ -35,6 +35,20 @@ test('impact: the share of live features is said, and 50% or more is a warning f
   assert.deepEqual(ID.share({ error: 'no map' }), { line: '', findings: [] });
 });
 
+test('impact: a pull request that reaches more than its stories list is told, with the share', () => {
+  const r = (ids, live, extra = {}) => ({ features: ids.map((id) => ({ id })), live: { reached: live, total: 4, uncounted: [], ...extra } });
+  const story = table('| a | accept | none | x.js:1 |');
+  assert.equal(ID.widened({ pr: 7, reach: r(['a'], ['a']), texts: [story] }), null);
+  const one = ID.widened({ pr: 7, reach: r(['a', 'x:y'], ['a']), texts: [story] });
+  assert.match(one, /^PR 7 reaches 1 feature its stories do not list: x:y\. Live features affected: 1\/4; its stories list 1 of those\./);
+  assert.doesNotMatch(one, /50%/);
+  assert.match(ID.widened({ pr: 7, reach: r(['a', 'b'], ['a', 'b']), texts: [story] }), /2\/4; its stories list 1 of those\. That is 50% or more: the owner decides before this merge/);
+  // any story on the pull request can list a feature
+  assert.equal(ID.widened({ pr: 7, reach: r(['a', 'b'], ['a', 'b']), texts: [story, table('| b | accept | none | x.js:1 |')] }), null);
+  assert.match(ID.widened({ pr: 7, reach: r(['a'], ['a'], { uncounted: ['gone.js'] }), texts: [story] }), /only partly checked\. Not counted: gone\.js/);
+  assert.match(ID.widened({ pr: 7, reach: { error: 'no map' }, texts: [story] }), /not checked: no map/);
+});
+
 test('impact: every reached feature needs one decision with evidence', () => {
   assert.deepEqual(codes(table('| billing | accept | extends | src/bill.js:12 reads only |', '| tax | accept | none | src/tax.js:3 untouched |')), []);
   assert.deepEqual(codes(table('| billing | accept | extends | src/bill.js:12 |')), ['block:impact-missing']);

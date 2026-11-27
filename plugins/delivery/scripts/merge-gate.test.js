@@ -99,6 +99,35 @@ test('R-32: "changes" blocks until a newer pass on the head; CI red blocks; a Co
   assert.match(h.gate('delivery-lead', 'check 478').out, /passes at a1b2c3d4e5f6: review rv-478-\S+ by agent-7f3a, CI green/);
 });
 
+test('merge-gate check warns when the pull request reaches a feature its story does not list, and never refuses for it', () => {
+  const h = setup();
+  const { execFileSync } = require('child_process');
+  // the code is in the Delivery Manager's product checkout; the story is in the shared project
+  const product = path.join(h.roleDir('delivery-lead'), 'product');
+  const git = (...x) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...x], { cwd: product, encoding: 'utf8' }).trim();
+  for (const f of ['src/import.js', 'src/export.js', '.delivery/features.json']) { fs.mkdirSync(path.dirname(path.join(product, f)), { recursive: true }); fs.writeFileSync(path.join(product, f), ''); }
+  fs.writeFileSync(path.join(product, '.delivery', 'features.json'), JSON.stringify({ features: ['import', 'export'].map((id) => ({ id, name: id, anchors: [`src/${id}.js`] })) }));
+  const story = path.join(h.root, '.delivery', 'stories', 'vault-0n9-3.md');
+  fs.appendFileSync(story, '\n## Impact decisions\n\n| Feature | Decision | Relation | Evidence |\n| - | - | - | - |\n| import | accept | extends | src/import.js:1 read |\n');
+  git('add', '-A'); git('commit', '-qm', 'x');
+  const head = git('rev-parse', 'HEAD');
+  const changes = (...paths) => h.setPr(478, (p) => { p.headRefOid = head; p.files = paths.map((x) => ({ path: x, additions: 1, deletions: 0 })); p.body = `Refs ${BEAD}\nDoc-impact: none (a test fixture)`; });
+  changes('src/import.js');
+  h.review('delivery-lead', 'request 478 --reviewer builder-2');
+  assert.equal(h.pass('builder-2', head).code, 0);
+  const listed = h.gate('delivery-lead', 'check 478');
+  assert.equal(listed.code, 0, listed.out);
+  assert.doesNotMatch(listed.out, /do not list|impact of PR/);
+  changes('src/import.js', 'src/export.js');
+  const wider = h.gate('delivery-lead', 'check 478');
+  assert.equal(wider.code, 0, wider.out);
+  assert.match(wider.out, /warning: PR 478 reaches 1 feature its stories do not list: export\. Live features affected: 2\/2; its stories list 1 of those\. That is 50% or more: the owner decides before this merge/);
+  h.setPr(478, (p) => { p.headRefOid = H2; });
+  h.review('delivery-lead', 'request 478 --reviewer builder-2');
+  h.pass('builder-2', H2);
+  assert.match(h.gate('delivery-lead', 'check 478').out, /warning: impact of PR 478 not checked: commit b2c3d4e5f607 is not in /);
+});
+
 test('a reviewed, green change users can see is refused at the gate and the merge until its description carries a doc-impact line', () => {
   const h = setup({ 478: pr478({ body: `Imports a dropped CSV in plain chat.\n\nRefs ${BEAD}` }) });
   h.review('delivery-lead', 'request 478 --reviewer builder-2');

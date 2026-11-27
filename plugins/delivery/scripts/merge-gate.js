@@ -10,8 +10,11 @@
 // reviewed. gh supplies the head, mergeable and the checks; where gh cannot read them, the head named
 // on the command and the Delivery Manager's recorded `review.js ci` row stand in. The Delivery
 // Manager's GitHub approvals (`gh pr review --approve`) are refused too: approvals are review rows.
-// Size and scope are warnings only. Exit codes: 0 passes / done; 1 refused; 2 usage.
+// Size, scope and a widened impact (features reached that the stories never listed) are warnings only. Exit codes: 0 passes / done; 1 refused; 2 usage.
+const fs = require('fs');
 const path = require('path');
+const { spawnSync } = require('child_process');
+const ID = require('./lib/impact-decisions.js');
 const R = require('./lib/reviews.js');
 const G = require('./lib/gates.js');
 const DI = require('./lib/doc-impact.js');
@@ -83,6 +86,35 @@ function versionStep(pr, view, head, { repo, root, readFile }) {
   return { why: `PR ${pr}: ${r.why}`, fix: `Send it back to take the next free version above ${baseRef}'s (merge ${baseRef} in, raise the version, push): ${R.cmd('review.js', `send-back ${pr} --reason '${r.base ? `version ${r.head || 'missing'} is not above ${baseRef} ${r.base}` : 'plugin version not checkable'}' --note 'merge ${baseRef} in and take the next free version'`)}` };
 }
 
+// What the pull request really reaches, against what its stories decided (lib/impact-decisions.js):
+// a fix can widen the impact after the story was made ready. One warning line or null; where it cannot
+// be compared it says so. Never a refusal.
+function impactStep(pr, view, head, rows, { root, team, roleDir, bd }) {
+  const skipped = (why) => `impact of PR ${pr} not checked: ${why}`;
+  try {
+    if (view.unavailable || !Array.isArray(view.files) || !head) return skipped('gh cannot read its changed files');
+    const req = R.lastRequest(rows) || {};
+    const store = bd || require('./lib/bd.js').makeBd({ cwd: root, timeoutMs: 10000 });
+    const texts = [];
+    for (const id of new Set([...(req.stories || []), ...(req.beads || [])])) {
+      let file = null;
+      try { file = ((store.show(id) || {}).metadata || {}).story_file; } catch (err) { file = null; }
+      if (!file || path.basename(String(file)) !== String(file)) continue;
+      try { texts.push(fs.readFileSync(path.join(root, '.delivery', 'stories', String(file)), 'utf8')); } catch (err) { /* said below when none reads */ }
+    }
+    if (!texts.length) return skipped('no story file is recorded for it');
+    const Ready = require('./ready.js');
+    const dir = Ready.productRepo({ root, team, roleDir });
+    const git = (...a) => spawnSync('git', ['-C', dir, ...a], { encoding: 'utf8', timeout: 20000 });
+    const has = () => git('cat-file', '-e', `${head}^{commit}`).status === 0;
+    if (!has()) git('fetch', '--quiet', '--no-write-fetch-head', 'origin', head);
+    if (!has()) return skipped(`commit ${R.short(head)} is not in ${dir}; fetch it there and check again`);
+    const found = ID.widened({ pr, reach: Ready.reachOf(dir, view.files.map((f) => f.path), head), texts });
+    // gh pr view lists at most 100 files
+    return view.files.length === 100 ? `${found || `impact of PR ${pr} only partly checked.`} Only the first 100 changed files were read.` : found;
+  } catch (err) { return skipped(String(err.message).split('\n')[0]); }
+}
+
 function defaultPlanDrift(root) {
   let beads = null;
   try { beads = require('./lib/bd.js').makeBd({ cwd: root, timeoutMs: 10000 }).list({ all: true }); } catch (err) { beads = null; }
@@ -91,7 +123,9 @@ function defaultPlanDrift(root) {
 
 function check(root, pr, opts) {
   const g = gate(root, pr, opts);
-  const warn = (g.warnings || []).map((w) => `warning: ${w.detail}`);
+  // computed here, not in gate(): the lane's merge check runs gate() inside a hook, and this maps the product
+  const impact = g.ok ? impactStep(pr, g.view, g.head, g.rows, { root, ...opts }) : null;
+  const warn = [...(g.warnings || []).map((w) => w.detail), ...(impact ? [impact] : [])].map((d) => `warning: ${d}`);
   if (!g.ok) return { code: 1, out: [`merge-gate: refused: ${g.why}.`, g.fix, ...warn].join('\n'), gate: g };
   const via = g.view.unavailable ? ` (gh: ${g.view.unavailable}; head and CI from the record)` : '';
   return { code: 0, out: [`merge-gate: PR ${pr} passes at ${R.short(g.head)}: review ${g.review.id} by ${g.review.reviewer}, CI green${via}.`,
@@ -258,7 +292,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, gh, now, who: 
   if (!who.root) return { code: 2, out: 'merge-gate.js: no project found; pass --project <root>' };
   const repo = productRepoOf(who.team, { roleDir: who.roleDir });
   if (!repo && (sub === 'check' || sub === 'merged')) return { code: 1, out: `merge-gate.js: ${UNKNOWN(pr)}` };
-  if (sub === 'check') return check(who.root, pr, { head: a.head, gh, team: who.team, repo, planDrift });
+  if (sub === 'check') return check(who.root, pr, { head: a.head, gh, team: who.team, repo, planDrift, bd, roleDir: who.roleDir });
   if (sub !== 'merged') return { code: 2, out: USAGE };
   const wp = writerProblem(who, ['delivery-lead']);
   if (wp) return { code: 1, out: `merge-gate.js: ${wp}` };
@@ -304,7 +338,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, gh, now, who: 
   return { code: 0, out: [...out, ...plan].join('\n') };
 }
 
-module.exports = { main, gate, check, ghPrCalls, mergeCommandProblem, handOver };
+module.exports = { main, gate, check, impactStep, ghPrCalls, mergeCommandProblem, handOver };
 
 if (require.main === module) {
   let r;
