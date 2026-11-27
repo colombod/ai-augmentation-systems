@@ -12,8 +12,10 @@ const table = (...rows) => `## Impact decisions\n\n| Feature | Decision | Relati
 const ok = (rid) => ({ ok: /^dec-/.test(rid), why: `${rid} does not verify` });
 const codes = (text, r = reach, extra = {}) => ID.check({ text, reach: r, root: os.tmpdir(), ownerRecord: ok, ...extra }).map((f) => `${f.level}:${f.code}`);
 
-test('impact: no table is a warning, never a block; and nothing reached needs nothing', () => {
-  assert.deepEqual(codes('# story'), ['warn:impact-undecided']);
+test('impact: no table blocks a story that reaches features; unknown reach warns; nothing reached needs nothing', () => {
+  assert.deepEqual(codes('# story'), ['block:impact-undecided']);
+  assert.match(ID.check({ text: '# story', reach, root: os.tmpdir() })[0].detail, /billing, tax are reached/);
+  assert.deepEqual(codes('# story', { error: 'no map' }), ['warn:impact-undecided']);
   assert.deepEqual(codes('# story', { features: [] }), []);
 });
 
@@ -32,6 +34,18 @@ test('impact: evidence must resolve: accept needs file:line, decommission an own
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'impact-'));
   fs.writeFileSync(path.join(root, 'bill.test.js'), '');
   assert.deepEqual(codes(table('| billing | guard | extends | bill.test.js |', '| tax | accept | none | a.js:1 |'), reach, { root }), []);
+});
+
+test('impact: a feature id with spaces, or starting with "feature", can be decided', () => {
+  const r = { features: [{ id: 'User login', hops: 0 }, { id: 'feature-dev:go', hops: 1 }, { id: 'features', hops: 1 }] };
+  const rows = (first) => table(`| ${first} | accept | none | a.js:1 |`, '| feature-dev:go | accept | none | a.js:1 |', '| features | accept | none | a.js:1 |');
+  assert.deepEqual(codes(rows('User login'), r), []);
+  assert.deepEqual(codes(rows('`User login`'), r), []);
+  assert.deepEqual(codes(table('| User login, feature-dev:go features | accept | none | a.js:1 |'), r), []);
+  assert.deepEqual(codes(table('| `User login`, `feature-dev:go`, features | accept | none | a.js:1 |'), r), []);
+  // an id that is no longer reached stays one id when backticked
+  assert.deepEqual(codes(table('| `Old thing` | guard | none | P-none |'), { features: [] }, { storyText: '' }).filter((c) => c.includes('shared-row')), []);
+  assert.deepEqual(codes(table('| Feature(s) | Decision | Relation | Evidence |'), { features: [] }), []);
 });
 
 test('impact: a known conflict is never accepted; a missing reach blocks a table; an old reach row only warns', () => {

@@ -2,7 +2,7 @@
 // scripts/ready.js — the ready gate (R-10, R-19, R-35) on one story.
 //   ready.js <bead> [--record [--owner-record dec-...]] [--json] [--project <root>]
 //   ready.js --story <story file> [--initiative <slug>] [--json] [--project <root>]
-// Missing sections and mechanism-worded criteria are warnings, a divergence (D1, D2, D4) is a block:
+// Missing sections (but for Impact decisions, R-35) and mechanism-worded criteria are warnings, a divergence (D1, D2, D4) is a block:
 // criteria resting on an external-host assumption still assumed, or on a spike result its decision
 // owner has not acknowledged, or on a refuted assumption (the register, lib/assumptions.js).
 // Without --record it only reports. --record (the Delivery Manager's role session) stamps the hash of
@@ -104,8 +104,8 @@ async function main(argv, { cwd = process.cwd(), env = process.env, bd, now, ver
       const store = bd || require('./lib/bd.js').makeBd({ cwd: who.root });
       findings.push(...A.forStory(who.root, { id: sid, metadata: { story: sid } }, { bd: store, team: who.team, verifyRecord, initiative: a.initiative }).findings);
     }
-    // the feature map (owner's ask: blast radius from the feature's side before code): information,
-    // never a block; a fault reads reach-not-computed and the gate's verdict is unchanged
+    // the feature map (blast radius from the feature's side, before code): reached features must be
+    // decided (R-35); a fault in the map reads reach-not-computed
     const storyText = fs.readFileSync(path.resolve(cwd, a.story), 'utf8');
     const reach = storyReach(productRepo(who), storyText);
     findings.push(...ID.check({ text: storyText, reach, root: who.root, ownerRecord: (rid) => require('./lib/gate-context.js').ownerRecord(who.root, rid, verifyRecord) }));
@@ -127,7 +127,7 @@ async function main(argv, { cwd = process.cwd(), env = process.env, bd, now, ver
     ...G.claimDivergence({ story: inp.story, bead, parent: inp.parent, parentStory: inp.parentStory }).filter((f) => f.code !== 'not-ready' && f.code !== 'criteria-changed')];
   const asm = A.forStory(who.root, bead, { bd: store, team: who.team, verifyRecord, storyId: (bead.metadata || {}).story || String(inp.story.meta.id || '') });
   findings.push(...asm.findings);
-  // what the story does to the features it reaches: decided, or a warning for a story without the table
+  // what the story does to the features it reaches: each decided before it is ready
   const sf = (bead.metadata || {}).story_file;
   let storyText = '';
   try { storyText = fs.readFileSync(path.join(who.root, '.delivery', 'stories', String(sf)), 'utf8'); } catch (err) { storyText = ''; }

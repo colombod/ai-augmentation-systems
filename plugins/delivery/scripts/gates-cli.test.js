@@ -63,8 +63,8 @@ test('ready.js --story checks a story file before it has a bead; an undeclared s
   assert.match(r.out, /block D2 surface-unknown/);
 });
 
-// the feature map at the ready gate: what the story's files reach, as information only
-test('ready.js --story prints the story\'s reach from the feature map; where it cannot, it says so and the verdict is unchanged', async () => {
+// the feature map at the ready gate: what the story's files reach
+test('ready.js --story prints the story\'s reach from the feature map; a reached feature with no decision blocks', async () => {
   const story = `${STORY}\n## Files and modules\n\n| Path | What to do |\n| :-- | :-- |\n| \`p/scripts/run.js\` | modify |\n`;
   const root = makeProject({ story });
   const file = path.join(root, '.delivery', 'stories', 'vault-0n9-3.md');
@@ -80,13 +80,15 @@ test('ready.js --story prints the story\'s reach from the feature map; where it 
   const g = (...x) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...x], { cwd: root, stdio: 'ignore' });
   g('init', '-q'); g('add', '-A'); g('commit', '-qm', 'x');
   const after = await ready.main(['--story', file, '--initiative', 'vault', '--project', root], { cwd: root, env });
-  assert.equal(after.code, before.code, 'reach never changes the verdict');
+  assert.equal(before.code, 0, 'an unknown reach alone does not block');
+  assert.equal(after.code, 1, after.out);
+  assert.match(after.out, /block R-35 impact-undecided: .*p:go is reached and undecided/);
   assert.match(after.out, /\nReach at [0-9a-f]{12}: p:go \(1 hop\)/);
   const json = JSON.parse((await ready.main(['--story', file, '--initiative', 'vault', '--project', root, '--json'], { cwd: root, env })).out);
   assert.deepEqual(json.reach.features, [{ id: 'p:go', hops: 1 }]);
 });
 
-test('ready.js --story: impact decisions warn when absent, block when a reached feature has none, pass when decided', async () => {
+test('ready.js --story: impact decisions block when absent, block when a reached feature has none, pass when decided', async () => {
   const base = `${STORY}\n## Files and modules\n\n| Path | What to do |\n| :-- | :-- |\n| \`p/scripts/run.js\` | modify |\n`;
   const root = makeProject({ story: base });
   const { execFileSync } = require('child_process');
@@ -102,7 +104,8 @@ test('ready.js --story: impact decisions warn when absent, block when a reached 
   const run = () => ready.main(['--story', file, '--initiative', 'vault', '--project', root], { cwd: root, env });
   const table = (rows) => `${base}\n## Impact decisions\n\n| Feature | Decision | Relation | Evidence |\n| - | - | - | - |\n${rows}\n`;
   const none = await run();
-  assert.match(none.out, /warn R-35 impact-undecided/);
+  assert.equal(none.code, 1);
+  assert.match(none.out, /block R-35 impact-undecided/);
   fs.writeFileSync(file, table('| other | accept | none | a.js:1 |'));
   const bad = await run();
   assert.equal(bad.code, 1);
@@ -110,6 +113,28 @@ test('ready.js --story: impact decisions warn when absent, block when a reached 
   fs.writeFileSync(file, table('| p:go | accept | extends | p/scripts/run.js:1 only gains a flag |'));
   const good = await run();
   assert.doesNotMatch(good.out, /impact-missing|impact-undecided/);
+});
+
+test('ready.js --record never marks a story ready while a feature it reaches has no decision', async () => {
+  const story = `${STORY}\n## Files and modules\n\n| Path | What to do |\n| :-- | :-- |\n| \`p/scripts/run.js\` | modify |\n`;
+  const { root, bd, bead } = setup({ story });
+  fs.mkdirSync(path.join(root, 'p', '.claude-plugin'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'p', 'skills', 'go'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'p', 'scripts'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'p', '.claude-plugin', 'plugin.json'), '{"name":"p"}');
+  fs.writeFileSync(path.join(root, 'p', 'skills', 'go', 'SKILL.md'), 'Run `node ${CLAUDE_PLUGIN_ROOT}/scripts/run.js`.\n');
+  fs.writeFileSync(path.join(root, 'p', 'scripts', 'run.js'), '');
+  const g = (...x) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...x], { cwd: root, stdio: 'ignore' });
+  g('init', '-q'); g('add', '-A'); g('commit', '-qm', 'x');
+  const rec = () => ready.main([ID, '--record'], { cwd: root, env, bd, now: NOW, who: whoFor(root, 'delivery-lead') });
+  const held = await rec();
+  assert.equal(held.code, 1, held.out);
+  assert.match(held.out, /block R-35 impact-undecided/);
+  assert.equal((bead().metadata || {}).ready_hash, undefined, 'nothing is stamped');
+  fs.writeFileSync(path.join(root, '.delivery', 'stories', 'vault-0n9-3.md'), `${story}\n## Impact decisions\n\n| Feature | Decision | Relation | Evidence |\n| - | - | - | - |\n| p:go | accept | extends | p/scripts/run.js:1 only gains a flag |\n`);
+  const done = await rec();
+  assert.equal(done.code, 0, done.out);
+  assert.ok(bead().metadata.ready_hash, 'decided, so stamped');
 });
 
 // a team whose code lives apart from the planning repository: the role's product checkout is mapped

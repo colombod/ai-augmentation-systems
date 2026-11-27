@@ -10,7 +10,9 @@ const DECISIONS = ['guard', 'decommission', 'accept'];
 const RELATIONS = ['extends', 'conflicts', 'duplicates', 'supersedes', 'none'];
 
 // rows of the table under "## Impact decisions": | feature(s) | decision | relation | evidence |
-function parseTable(text) {
+// `known` holds the reached feature ids: a declared id may contain spaces, so a known id is read
+// whole before a cell is split on spaces.
+function parseTable(text, known = []) {
   const m = /^##\s+Impact decisions\s*$/im.exec(String(text || ''));
   if (!m) return null;
   const rest = String(text).slice(m.index + m[0].length).split(/^##\s/m)[0];
@@ -18,8 +20,13 @@ function parseTable(text) {
   for (const line of rest.split('\n')) {
     if (!/^\s*\|/.test(line)) continue;
     const cells = line.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
-    if (cells.length < 4 || /^:?-+:?$/.test(cells[0]) || /^feature/i.test(cells[0])) continue;
-    const ids = cells[0].replace(/`/g, '').split(/[,\s]+/).filter(Boolean);
+    // the header is the row naming the decision column, so a feature id may start with "feature"
+    if (cells.length < 4 || /^:?-+:?$/.test(cells[0]) || /^`?decision`?$/i.test(cells[1])) continue;
+    const ids = cells[0].split(',').flatMap((part) => {
+      const whole = part.replace(/`/g, '').trim();
+      if (known.includes(whole) || /^\s*`[^`]+`\s*$/.test(part)) return [whole];
+      return whole.split(/\s+/);
+    }).filter(Boolean);
     rows.push({ ids, decision: cells[1].replace(/`/g, '').toLowerCase(), relation: cells[2].replace(/`/g, '').toLowerCase(), evidence: cells.slice(3).join('|').trim() });
   }
   return rows;
@@ -47,9 +54,15 @@ function evidenceProblem(row, { root, storyText, ownerRecord }) {
 // reach: { features: [{ id, hops }] } or { error }. Findings: [{ level, rule, code, detail }]
 function check({ text, reach, root, ownerRecord }) {
   const f = (level, code, detail) => ({ level, rule: 'R-35', code, detail });
-  const rows = parseTable(text);
   const reached = reach && !reach.error ? reach.features : [];
-  if (!rows) return reach && !reach.error && !reached.length ? [] : [f('warn', 'impact-undecided', 'no "## Impact decisions" table: what this story does to the features it reaches is undecided')];
+  const rows = parseTable(text, reached.map((x) => x.id));
+  if (!rows) {
+    // a story known to reach features is not ready until each is decided; with no computed reach
+    // there is nothing to name, so it stays a warning
+    if (reach && !reach.error && !reached.length) return [];
+    if (!reached.length) return [f('warn', 'impact-undecided', 'no "## Impact decisions" table and the reach is not known: what this story does to existing features is undecided')];
+    return [f('block', 'impact-undecided', `no "## Impact decisions" table: ${reached.map((x) => x.id).join(', ')} ${reached.length === 1 ? 'is' : 'are'} reached and undecided`)];
+  }
   if (reach && reach.error) return [f('block', 'impact-reach', `the reach was not computed (${reach.error}); missing evidence is never a pass`)];
   const out = [];
   const seen = new Map();
